@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "public"."OTP" ADD COLUMN     "isUsed" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN     "resendCount" INTEGER NOT NULL DEFAULT 0;
