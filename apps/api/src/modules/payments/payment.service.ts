@@ -32,7 +32,8 @@ export default class PaymentService {
       const repository = new PaymentRepository(tx);
 
       const activeSubscription = await repository.findActiveSubscription(
-        data.agentId,
+        data.ownerType,
+        data.ownerId,
         data.planId,
       );
 
@@ -43,7 +44,8 @@ export default class PaymentService {
       }
 
       const pendingPayment = await repository.findPendingPayment(
-        data.agentId,
+        data.ownerType,
+        data.ownerId,
         data.planId,
         data.billingCycle,
       );
@@ -87,8 +89,6 @@ export default class PaymentService {
 
         billingCycle: data.billingCycle,
 
-        agentId: data.agentId,
-
         amount: Number(pricing.price),
 
         taxAmount: 0,
@@ -124,7 +124,7 @@ export default class PaymentService {
 
     const subscription = await subscriptionService.createPaidSubscription(
       {
-        agentId: payment.agentId,
+        agentId: payment.ownerId,
 
         bcId: payment.bcId ?? undefined,
 
@@ -173,10 +173,7 @@ export default class PaymentService {
     return withTransaction(async (tx) => {
       const repository = new PaymentRepository(tx);
 
-      const payment = await repository.findPaymentById(
-        data.paymentId,
-        data.agentId,
-      );
+      const payment = await repository.findPaymentById(data.paymentId);
 
       if (!payment) {
         throw new NotFoundError("Payment not found.");

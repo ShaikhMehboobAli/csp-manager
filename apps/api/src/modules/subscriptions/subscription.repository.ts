@@ -49,9 +49,6 @@ export default class SubscriptionRepository {
     ownerType: SubscriptionOwnerType;
     ownerId: string;
 
-    agentId: string;
-    bcId?: string;
-
     planId: string;
 
     machineLimit: number;
@@ -66,8 +63,6 @@ export default class SubscriptionRepository {
         subscriptionNumber: data.subscriptionNumber,
         ownerType: data.ownerType,
         ownerId: data.ownerId,
-        agentId: data.agentId,
-        bcId: data.bcId,
         planId: data.planId,
         machineLimit: data.machineLimit,
         amountPaid: data.amountPaid,
@@ -79,10 +74,11 @@ export default class SubscriptionRepository {
     });
   }
 
-  expireActiveSubscription(agentId: string) {
+  expireActiveSubscription(ownerId: string, planId: string) {
     return this.db.subscription.updateMany({
       where: {
-        agentId,
+        ownerId,
+        planId,
         status: SubscriptionStatus.ACTIVE,
       },
       data: {
@@ -91,10 +87,10 @@ export default class SubscriptionRepository {
     });
   }
 
-  findCurrentSubscription(agentId: string) {
+  findCurrentSubscription(ownerId: string) {
     return this.db.subscription.findFirst({
       where: {
-        agentId,
+        ownerId,
         status: "ACTIVE",
       },
       include: {
@@ -136,10 +132,10 @@ export default class SubscriptionRepository {
     });
   }
 
-  findSubscriptionHistory(agentId: string) {
+  findSubscriptionHistory(ownerId: string) {
     return this.db.subscription.findMany({
       where: {
-        agentId,
+        ownerId,
         status: {
           in: [
             SubscriptionStatus.ACTIVE,

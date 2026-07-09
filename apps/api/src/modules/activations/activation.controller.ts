@@ -24,3 +24,12 @@ export const getActivationById: RequestHandler<ActivationParams> = async (
 
   return res.status(200).json(result);
 };
+
+export const regeneratePassword = async (req: Request, res: Response) => {
+  const result = await activationService.regeneratePassword(
+    req.params.activationId as string,
+    req.user!.agentId,
+  );
+
+  return res.status(200).json(result);
+};

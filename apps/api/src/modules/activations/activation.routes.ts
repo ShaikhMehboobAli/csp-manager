@@ -11,4 +11,10 @@ router.get(
   authMiddleware,
   ActivationController.getActivationById,
 );
+
+router.post(
+  "/:activationId/regenerate-password",
+  authMiddleware,
+  ActivationController.regeneratePassword,
+);
 export default router;

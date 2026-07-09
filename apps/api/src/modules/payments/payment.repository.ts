@@ -2,6 +2,7 @@ import { PrismaDb } from "../../core/database/prisma.types";
 import {
   BillingCycle,
   PaymentStatus,
+  SubscriptionOwnerType,
   SubscriptionStatus,
 } from "../../generated/prisma/enums";
 import { CreatePaymentInput } from "./types/repository.types";
@@ -32,13 +33,15 @@ export default class PaymentRepository {
   }
 
   findPendingPayment(
-    agentId: string,
+    ownerType: SubscriptionOwnerType,
+    ownerId: string,
     planId: string,
     billingCycle: BillingCycle,
   ) {
     return this.db.payment.findFirst({
       where: {
-        agentId,
+        ownerType,
+        ownerId,
         planId,
         billingCycle,
         status: PaymentStatus.PENDING,
@@ -49,21 +52,25 @@ export default class PaymentRepository {
     });
   }
 
-  findActiveSubscription(agentId: string, planId: string) {
+  findActiveSubscription(
+    ownerType: SubscriptionOwnerType,
+    ownerId: string,
+    planId: string,
+  ) {
     return this.db.subscription.findFirst({
       where: {
-        agentId,
+        ownerType,
+        ownerId,
         planId,
         status: SubscriptionStatus.ACTIVE,
       },
     });
   }
 
-  findPaymentById(paymentId: string, agentId: string) {
+  findPaymentById(paymentId: string) {
     return this.db.payment.findUnique({
       where: {
         id: paymentId,
-        agentId,
       },
     });
   }
@@ -100,10 +107,10 @@ export default class PaymentRepository {
     });
   }
 
-  findPaymentHistory(agentId: string) {
+  findPaymentHistory(ownerId: string) {
     return this.db.payment.findMany({
       where: {
-        agentId,
+        ownerId,
       },
       include: {
         plan: {
@@ -121,11 +128,11 @@ export default class PaymentRepository {
     });
   }
 
-  findPaymentDetails(paymentId: string, agentId: string) {
+  findPaymentDetails(paymentId: string, ownerId: string) {
     return this.db.payment.findFirst({
       where: {
         id: paymentId,
-        agentId,
+        ownerId,
       },
       include: {
         plan: true,

@@ -403,8 +403,7 @@ model BusinessCorrespondent {
 
   deletedByUserId String?
 
-  isDeleted    Boolean        @default(false)
-  Subscription Subscription[]
+  isDeleted Boolean @default(false)
 
   @@index([status])
 }
@@ -458,10 +457,6 @@ model Agent {
   FloatAdjustmentRequest FloatAdjustmentRequest[]
 
   machines Machine[]
-
-  payments Payment[]
-
-  subscriptions Subscription[]
 
   isProfileCompleted Boolean @default(false)
 
@@ -539,9 +534,7 @@ model PlanPricing {
   plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
 
   @@unique([planId, billingCycle])
-
   @@index([planId])
-
   @@index([billingCycle])
 }
 
@@ -559,10 +552,6 @@ model Subscription {
   id String @id @default(cuid())
 
   subscriptionNumber String @unique
-
-  agentId String?
-
-  bcId String?
 
   planId String
 
@@ -583,8 +572,6 @@ model Subscription {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  businessCorrespondent BusinessCorrespondent? @relation(fields: [bcId], references: [bcId], onDelete: Restrict)
-
   plan Plan @relation(fields: [planId], references: [id], onDelete: Restrict)
 
   histories SubscriptionHistory[]
@@ -597,14 +584,11 @@ model Subscription {
 
   activations Activation[]
 
-  agent Agent? @relation(fields: [agentId], references: [agentId], onDelete: Restrict)
-
   createdSource SubscriptionCreatedSource @default(SELF)
 
   createdBy String?
   updatedBy String?
 
-  @@index([agentId])
   @@index([planId])
   @@index([status])
   @@index([startDate])
@@ -768,7 +752,7 @@ model Machine {
   updatedBy String?
 
   AuditLog AuditLog[]
-  Agent    Agent?     @relation(fields: [agentId], references: [agentId])
+  agent    Agent?     @relation(fields: [agentId], references: [agentId])
   agentId  String?
 
   @@index([currentAgentId])
@@ -804,10 +788,18 @@ model Activation {
 
   expiresAt DateTime
 
+  assignedAgentId String?
+
+  assignedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   isCurrent Boolean @default(true)
+
+  passwordGeneratedAt DateTime?
+
+  passwordRegeneratedAt DateTime?
 
   machine Machine? @relation(fields: [machineId], references: [id], onDelete: Restrict)
 
@@ -1098,7 +1090,7 @@ model Payment {
   paymentNumber String @unique
 
   subscriptionId String?
-  
+
   ownerType SubscriptionOwnerType
 
   ownerId String
@@ -1145,10 +1137,6 @@ model Payment {
   currency String @default("INR")
 
   invoiceNumber String? @unique
-
-  agentId String
-
-  agent Agent @relation(fields: [agentId], references: [agentId], onDelete: Restrict)
 
   @@index([subscriptionId])
   @@index([status])
@@ -1238,7 +1226,6 @@ model Communication {
   @@index([channel])
   @@index([status])
 }
-
 
 ///////////////////////////
 //RunningNumber Model for SUBSCRIPTION, Payment, Invoice

@@ -23,11 +23,11 @@ export default class ActivationRepository {
     });
   }
 
-  findByAgent(agentId: string) {
+  findByOwner(ownerId: string) {
     return this.db.activation.findMany({
       where: {
         subscription: {
-          agentId,
+          ownerId,
         },
       },
       include: {
@@ -52,11 +52,11 @@ export default class ActivationRepository {
     });
   }
 
-  findActivationsByAgent(agentId: string) {
+  findActivationsByOwner(ownerId: string) {
     return this.db.activation.findMany({
       where: {
         subscription: {
-          agentId,
+          ownerId,
         },
       },
       include: {
@@ -102,11 +102,40 @@ export default class ActivationRepository {
         },
         subscription: {
           select: {
+            subscriptionNumber: true,
             ownerId: true,
             ownerType: true,
-            agentId: true,
+            endDate: true,
           },
         },
+      },
+    });
+  }
+
+  updateActivationPassword(
+    activationId: string,
+    activationPasswordHash: string,
+  ) {
+    return this.db.activation.update({
+      where: {
+        id: activationId,
+      },
+      data: {
+        activationPasswordHash,
+      },
+    });
+  }
+
+  findActivationForOwner(activationId: string, ownerId: string) {
+    return this.db.activation.findFirst({
+      where: {
+        id: activationId,
+        subscription: {
+          ownerId,
+        },
+      },
+      include: {
+        subscription: true,
       },
     });
   }

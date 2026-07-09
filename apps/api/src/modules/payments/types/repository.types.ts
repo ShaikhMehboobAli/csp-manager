@@ -13,8 +13,6 @@ export interface CreatePaymentInput {
 
   ownerId: string;
 
-  agentId: string;
-
   bcId?: string;
 
   planId: string;

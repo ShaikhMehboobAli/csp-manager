@@ -94,7 +94,7 @@ export default class SubscriptionService {
         throw new BadRequestError("Selected billing cycle is not available.");
       }
 
-      await repository.expireActiveSubscription(data.agentId);
+      await repository.expireActiveSubscription(data.ownerId, data.planId);
 
       const subscriptionNumber =
         await codeGenerator.generateSubscriptionNumber();
@@ -123,9 +123,6 @@ export default class SubscriptionService {
 
         ownerType: data.ownerType,
         ownerId: data.ownerId,
-
-        agentId: data.agentId,
-        bcId: data.bcId,
 
         planId: plan.id,
 
