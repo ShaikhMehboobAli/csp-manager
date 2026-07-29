@@ -1,5 +1,7 @@
 import { BadRequestError } from "../../../core/errors/BadRequestError";
+import { ForbiddenError } from "../../../core/errors/ForbiddenError";
 import { NotFoundError } from "../../../core/errors/NotFoundError";
+import { CurrentUser } from "../../../core/types/auth.types";
 import {
   Agent,
   AgentType,
@@ -18,7 +20,9 @@ import {
   CreateKOInput,
   CreateKOResponse,
 } from "../types/service.types";
+import { canManageAgent } from "../utils/agent-authorization";
 import { ListAgentsDto } from "../validations/list-agents.validation";
+import { UpdateAgentDto } from "../validations/update-agent.validation";
 
 export class AgentService {
   //   private readonly subscriptionService: SubscriptionService;
@@ -325,5 +329,55 @@ export class AgentService {
         totalPages: Math.ceil(total / filters.limit),
       },
     };
+  }
+
+  async updateAgent(
+    agentId: string,
+    data: UpdateAgentDto,
+    currentUser: CurrentUser,
+  ) {
+    const repository = new AgentRepository(this.prisma);
+    const agent = await repository.findByAgentId(agentId);
+
+    if (!agent || agent.isDeleted) {
+      throw new NotFoundError("Agent not found.");
+    }
+
+    //access to only current authorization
+    if (!canManageAgent(currentUser, agent)) {
+      throw new ForbiddenError("You are not allowed to update this agent.");
+    }
+
+    const updatedAgent = await repository.updateAgent(agentId, {
+      ...data,
+      updatedBy: currentUser.agentId,
+    });
+
+    return mapAgent(updatedAgent);
+  }
+
+  async deleteAgent(agentId: string, currentUser: CurrentUser) {
+    const repository = new AgentRepository(this.prisma);
+    const agent = await repository.findByAgentId(agentId);
+
+    if (!agent || agent.isDeleted) {
+      throw new NotFoundError("Agent not found.");
+    }
+
+    if (agent.agentId === currentUser.agentId) {
+      throw new BadRequestError("You cannot delete your own account.");
+    }
+
+    if (!canManageAgent(currentUser, agent)) {
+      throw new ForbiddenError("You are not allowed to delete this agent.");
+    }
+
+    const childCount = await repository.countChildren(agent.agentId);
+
+    if (childCount > 0) {
+      throw new BadRequestError("Delete child agents first.");
+    }
+
+    await repository.softDeleteAgent(agentId, currentUser.agentId);
   }
 }

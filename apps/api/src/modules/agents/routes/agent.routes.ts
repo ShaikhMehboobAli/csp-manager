@@ -19,5 +19,7 @@ router.get(
 );
 
 router.get("/:agentId", authMiddleware, AgentController.getAgent);
+router.patch("/:agentId", authMiddleware, AgentController.updateAgent);
+router.delete("/:agentId", authMiddleware, AgentController.deleteAgent);
 
 export default router;

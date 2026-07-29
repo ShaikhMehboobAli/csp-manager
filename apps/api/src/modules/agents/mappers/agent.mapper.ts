@@ -15,8 +15,8 @@ export function mapAgent(agent: Agent) {
     bcId: agent.bcId,
     parentAgentId: agent.parentAgentId,
 
-    cashLimit: agent.cashLimit,
-    openingCash: agent.openingCash,
+    cashLimit: agent.cashLimit?.toString() ?? null,
+    openingCash: agent.openingCash?.toString() ?? null,
 
     linkedAt: agent.linkedAt,
 

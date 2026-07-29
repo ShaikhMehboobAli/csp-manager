@@ -262,6 +262,7 @@ export class AgentRepository {
   }) {
     return this.db.agent.findMany({
       where: {
+        isDeleted: false,
         ...(params.type && {
           type: params.type,
         }),
@@ -291,11 +292,44 @@ export class AgentRepository {
   }) {
     return this.db.agent.count({
       where: {
+        isDeleted: false,
         ...(params.type && { type: params.type }),
         ...(params.bcId && { bcId: params.bcId }),
         ...(params.parentAgentId && {
           parentAgentId: params.parentAgentId,
         }),
+      },
+    });
+  }
+
+  async updateAgent(agentId: string, data: Prisma.AgentUpdateInput) {
+    return this.db.agent.update({
+      where: {
+        agentId,
+      },
+      data,
+    });
+  }
+
+  async softDeleteAgent(agentId: string, deletedBy: string) {
+    return this.db.agent.update({
+      where: {
+        agentId,
+      },
+      data: {
+        isDeleted: true,
+        deletedAt: new Date(),
+        deletedByUserId: deletedBy,
+        updatedBy: deletedBy,
+      },
+    });
+  }
+
+  async countChildren(parentAgentId: string) {
+    return this.db.agent.count({
+      where: {
+        parentAgentId,
+        isDeleted: false,
       },
     });
   }

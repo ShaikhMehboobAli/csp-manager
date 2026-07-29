@@ -60,6 +60,8 @@ export interface CreateCSPInput {
 
   cashLimit?: Prisma.Decimal | number;
   openingCash?: Prisma.Decimal | number;
+  //   cashLimit: string | null;
+  //   openingCash: string | null;
 
   machineCount: number;
 
@@ -112,8 +114,10 @@ export interface AgentResponse {
   bcId: string | null;
   parentAgentId: string | null;
 
-  cashLimit: Prisma.Decimal | null;
-  openingCash: Prisma.Decimal | null;
+  //   cashLimit: Prisma.Decimal | null;
+  //   openingCash: Prisma.Decimal | null;
+  cashLimit: string | null;
+  openingCash: string | null;
 
   linkedAt: Date | null;
 
