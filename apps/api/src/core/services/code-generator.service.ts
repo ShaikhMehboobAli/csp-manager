@@ -43,4 +43,8 @@ export default class CodeGeneratorService {
 
     return `${prefix}-${year}-${nextValue.toString().padStart(6, "0")}`;
   }
+
+  async generateMachineCode() {
+    return this.generateSequentialNumber(RunningNumberType.MACHINE, "MAC");
+  }
 }

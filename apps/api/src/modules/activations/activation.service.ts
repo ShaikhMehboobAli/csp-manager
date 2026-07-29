@@ -1,12 +1,21 @@
 import { withTransaction } from "../../core/database/transaction";
 import { PrismaDb } from "../../core/database/prisma.types";
 import ActivationRepository from "./activation.repository";
-import { GenerateActivationsInput } from "./types/service.types";
+import {
+  AssignActivationInput,
+  GenerateActivationsInput,
+} from "./types/service.types";
 import { createCodeGeneratorService } from "../../core/services/service.factory";
 import ActivationPasswordService from "./activation-password.service";
-import { ActivationStatus } from "../../generated/prisma/enums";
+import {
+  ActivationStatus,
+  AgentStatus,
+  AgentType,
+  SubscriptionOwnerType,
+} from "../../generated/prisma/enums";
 import { NotFoundError } from "../../core/errors/NotFoundError";
 import { BadRequestError } from "../../core/errors/BadRequestError";
+import { ForbiddenError } from "../../core/errors/ForbiddenError";
 
 export default class ActivationService {
   private readonly passwordService = new ActivationPasswordService();
@@ -138,6 +147,113 @@ export default class ActivationService {
 
           activationPassword: credentials.password,
         },
+      };
+    });
+  }
+
+  private validateHierarchy(
+    ownerType: SubscriptionOwnerType,
+    ownerId: string,
+    targetAgent: {
+      type: AgentType;
+      bcId: string | null;
+      parentAgentId: string | null;
+    },
+  ) {
+    // BC can assign to any CSP/KO under itself
+    if (ownerType === SubscriptionOwnerType.BC) {
+      if (targetAgent.bcId !== ownerId) {
+        throw new ForbiddenError("Agent does not belong to this BC.");
+      }
+
+      return;
+    }
+
+    // CSP can assign only to its own KO
+    if (ownerType === SubscriptionOwnerType.CSP) {
+      if (targetAgent.type !== AgentType.KO) {
+        throw new ForbiddenError("CSP can assign only to KO.");
+      }
+
+      if (targetAgent.parentAgentId !== ownerId) {
+        throw new ForbiddenError("KO does not belong to this CSP.");
+      }
+    }
+  }
+
+  async assignActivation(data: AssignActivationInput) {
+    return withTransaction(async (tx) => {
+      const repository = new ActivationRepository(tx);
+
+      /**
+       * Step 1
+       * Find Activation
+       */
+      const activation = await repository.findActivationForAssignment(
+        data.activationId,
+      );
+
+      if (!activation) {
+        throw new NotFoundError("Activation not found.");
+      }
+
+      /**
+       * Step 2
+       * Validate Status
+       */
+      if (activation.status !== ActivationStatus.NOT_ACTIVATED) {
+        throw new BadRequestError("Activation has already been used.");
+      }
+
+      /**
+       * Step 3
+       * Already Assigned?
+       */
+      if (activation.assignedAgentId) {
+        throw new BadRequestError("Activation is already assigned.");
+      }
+
+      /**
+       * Step 4
+       * Find Target Agent
+       */
+      const agent = await repository.findAgentByAgentId(data.assignedAgentId);
+
+      if (!agent) {
+        throw new NotFoundError("Agent not found.");
+      }
+
+      /**
+       * Step 5
+       * Agent Status
+       */
+      if (agent.status !== AgentStatus.ACTIVE) {
+        throw new BadRequestError("Agent is inactive.");
+      }
+
+      /**
+       * Step 6
+       * Hierarchy Validation
+       */
+      const hierarchyAgent = await repository.findAgentWithHierarchy(
+        data.assignedAgentId,
+      );
+
+      if (!hierarchyAgent) {
+        throw new NotFoundError("Agent not found.");
+      }
+
+      this.validateHierarchy(
+        data.assignedByOwnerType,
+        data.assignedByOwnerId,
+        hierarchyAgent,
+      );
+
+      await repository.assignActivation(data);
+
+      return {
+        success: true,
+        message: "Activation assigned successfully.",
       };
     });
   }

@@ -2,8 +2,9 @@ import { Request, Response } from "express";
 
 import SubscriptionService from "./subscription.service";
 import { GetPlansDto } from "./validations/get-plans.validation";
+import prisma from "../../config/prisma";
 
-const subscriptionService = new SubscriptionService();
+const subscriptionService = new SubscriptionService(prisma);
 
 export const getPlans = async (req: Request, res: Response) => {
   const result = await subscriptionService.getPlans(req.query as GetPlansDto);

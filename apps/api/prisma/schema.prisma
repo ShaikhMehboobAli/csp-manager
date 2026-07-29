@@ -431,17 +431,22 @@ model Agent {
 
   // Relationship with BC
   bcId                  String?
-  businessCorrespondent BusinessCorrespondent? @relation(fields: [bcId], references: [id], onDelete: Restrict)
+  businessCorrespondent BusinessCorrespondent? @relation(fields: [bcId], references: [bcId], onDelete: Restrict)
 
   // Self Relationship (CSP -> KO)
   parentAgentId String?
 
-  parentAgent Agent? @relation("AgentHierarchy", fields: [parentAgentId], references: [id], onDelete: SetNull)
+  parentAgent Agent? @relation("AgentHierarchy", fields: [parentAgentId], references: [agentId], onDelete: SetNull)
 
   childAgents Agent[] @relation("AgentHierarchy")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  cashLimit Decimal? @db.Decimal(18,2)
+  openingCash Decimal? @db.Decimal(18,2)
+
+  linkedAt DateTime?
 
   receipts Receipt[]
 
@@ -555,8 +560,6 @@ model Subscription {
 
   planId String
 
-  machineLimit Int
-
   amountPaid Decimal @db.Decimal(10, 2)
 
   startDate DateTime
@@ -588,6 +591,8 @@ model Subscription {
 
   createdBy String?
   updatedBy String?
+
+  machineLimit Int
 
   @@index([planId])
   @@index([status])
@@ -789,6 +794,10 @@ model Activation {
   expiresAt DateTime
 
   assignedAgentId String?
+
+  assignedByOwnerType SubscriptionOwnerType?
+
+  assignedByOwnerId String?
 
   assignedAt DateTime?
 
@@ -1235,6 +1244,8 @@ enum RunningNumberType {
   SUBSCRIPTION
   PAYMENT
   INVOICE
+  MACHINE
+  ACTIVATION
 }
 
 model RunningNumber {

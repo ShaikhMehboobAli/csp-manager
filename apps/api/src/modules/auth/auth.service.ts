@@ -21,10 +21,12 @@ import { withTransaction } from "../../core/database/transaction";
 import { NotFoundError } from "../../core/errors/NotFoundError";
 import { ForbiddenError } from "../../core/errors/ForbiddenError";
 import { ConflictError } from "../../core/errors/ConflictError";
-import { Agent } from "../../generated/prisma/client";
+import { Agent, BusinessCorrespondent } from "../../generated/prisma/client";
 import type { VerifyOtpDto } from "./validations/verify-otp.validation";
 import JwtService from "../../core/services/jwt.service";
 import { LoginDto } from "./validations/login.validation";
+import { AccountType } from "./types/auth.types";
+import { BadRequestError } from "../../core/errors/BadRequestError";
 
 export default class AuthService {
   private readonly repository: AuthRepository;
@@ -38,126 +40,282 @@ export default class AuthService {
     this.repository = new AuthRepository(prisma);
   }
 
-  //   async signup(data: SignupDto) {
-  //     const agentRepository = new AuthRepository(prisma);
-
-  //     // Check Agent
-  //     const agent = await agentRepository.findAgentByAgentId(data.agentId);
-
-  //     if (!agent) {
-  //       throw new Error("Invalid Agent Id");
-  //     }
-
-  //     // KO cannot login
-  //     if (agent.type === AgentType.KO) {
-  //       throw new Error("KO cannot create login account.");
-  //     }
-
-  //     // Find Existing User
-  //     const existingUser = await agentRepository.findUserByAgentId(data.agentId);
-
-  //     // Decide Role
-  //     const role =
-  //       agent.type === AgentType.BC ? UserRole.BC_ADMIN : UserRole.CSP_ADMIN;
-
-  //     // Hash Password
-  //     const passwordHash = await this.bcryptService.hash(data.password);
-
-  //     // Generate OTP
-  //     const otp = this.otpService.generate();
-
-  //     const expiresAt = this.otpService.getExpiry();
-
-  //     console.log(existingUser);
-
-  //     console.log(role);
-
-  //     console.log(passwordHash);
-
-  //     console.log(otp);
-
-  //     console.log(expiresAt);
-
-  //     return {
-  //       message: "Signup Flow Ready",
-  //     };
-  //   }
-
   async signup(data: SignupDto) {
     // Validate Agent
-    const agent = await this.repository.findAgentByAgentId(data.agentId);
+    // const agent = await this.repository.findAgentByAgentId(data.agentId);
 
-    if (!agent) {
-      return this.signupNewAgent(data);
-    }
-
-    return this.signupExistingAgent(agent, data);
-
-    // if (agent.type === AgentType.KO) {
-    //   throw new ForbiddenError("KO cannot create login account.");
+    // if (!agent) {
+    //   return this.signupNewAgent(data);
     // }
 
-    // // Hash Password
-    // const passwordHash = await this.bcryptService.hash(data.password);
+    // return this.signupExistingAgent(agent, data);
 
-    // // Generate OTP
-    // const otpCode = this.otpService.generate();
+    switch (data.accountType) {
+      case AgentType.BC:
+        return this.signupBusinessCorrespondent(data);
 
-    // const expiresAt = this.otpService.getExpiry();
+      case AgentType.CSP:
+        return this.signupCSP(data);
 
-    // const user = await withTransaction(async (tx) => {
-    //   const repository = new AuthRepository(tx);
+      default:
+        throw new BadRequestError("Invalid account type.");
+    }
+  }
 
-    //   // Check existing login account
-    //   const existingUser = await repository.findUserByAgentId(data.agentId);
+  //old
+  // private async signupBusinessCorrespondent(data: SignupDto) {
+  //   const existingBC = await this.repository.findBusinessCorrespondentByBcId(
+  //     data.agentId,
+  //   );
 
-    //   let currentUser;
+  //   if (existingBC) {
+  //     return this.signupExistingBusinessCorrespondent(existingBC, data);
+  //   }
 
-    //   if (!existingUser) {
-    //     currentUser = await repository.createPendingUser({
-    //       agentId: data.agentId,
-    //       email: data.email,
-    //       passwordHash,
-    //       role:
-    //         agent.type === AgentType.BC
-    //           ? UserRole.BC_ADMIN
-    //           : UserRole.CSP_ADMIN,
-    //     });
-    //   } else {
-    //     if (existingUser.status === UserStatus.ACTIVE) {
-    //       throw new ConflictError("Account already exists. Please login.");
-    //     }
+  //   return this.signupNewBusinessCorrespondent(data);
+  // }
 
-    //     currentUser = await repository.updatePendingUser({
-    //       userId: existingUser.id,
-    //       email: data.email,
-    //       passwordHash,
-    //     });
-    //   }
+  //working
+  private async signupBusinessCorrespondent(data: SignupDto) {
+    return withTransaction(async (tx) => {
+      const repository = new AuthRepository(tx);
 
-    //   await repository.deleteUnusedOtps(currentUser.id);
+      await this.createBusinessCorrespondentIfNeeded(repository, data);
 
-    //   await repository.createOtp({
-    //     userId: currentUser.id,
-    //     otpCode,
-    //     purpose: OtpPurpose.SIGNUP,
-    //     email: data.email,
-    //     phone: data.phone,
-    //     expiresAt,
-    //   });
+      const user = await this.createPendingAccount(repository, {
+        agentId: data.agentId,
+        email: data.email,
+        phone: data.phone,
+        password: data.password,
+        role: UserRole.BC_ADMIN,
+      });
 
-    //   return currentUser;
-    // });
+      return {
+        success: true,
+        message: "Signup successful. OTP sent for verification.",
+        data: {
+          userId: user.id,
+        },
+      };
+    });
+  }
 
-    // await this.emailService.sendOtp(data.email, otpCode);
+  //old
+  // private async signupCSP(data: SignupDto) {
+  //   const agent = await this.repository.findAgentByAgentId(data.agentId);
 
-    // return {
-    //   success: true,
-    //   message: "OTP sent successfully.",
-    //   data: {
-    //     userId: user.id,
-    //   },
-    // };
+  //   if (!agent) {
+  //     return this.signupNewAgent(data);
+  //   }
+
+  //   return this.signupExistingAgent(agent, data);
+  // }
+  // working
+  private async signupCSP(data: SignupDto) {
+    return withTransaction(async (tx) => {
+      const repository = new AuthRepository(tx);
+
+      await this.createAgentIfNeeded(repository, data);
+
+      const user = await this.createPendingAccount(repository, {
+        agentId: data.agentId,
+        email: data.email,
+        phone: data.phone,
+        password: data.password,
+        role: UserRole.CSP_ADMIN,
+      });
+
+      return {
+        success: true,
+        message: "Signup successful. OTP sent for verification.",
+        data: {
+          userId: user.id,
+        },
+      };
+    });
+  }
+
+  // private async signupNewBusinessCorrespondent(data: SignupDto) {
+  //   const passwordHash = await this.bcryptService.hash(data.password);
+
+  //   const otpCode = this.otpService.generate();
+
+  //   const expiresAt = this.otpService.getExpiry();
+
+  //   const user = await withTransaction(async (tx) => {
+  //     const repository = new AuthRepository(tx);
+
+  //     await repository.createBusinessCorrespondent({
+  //       bcId: data.agentId,
+  //       name: data.name,
+  //       email: data.email,
+  //       phone: data.phone,
+  //       address: data.address,
+  //     });
+
+  //     const currentUser = await repository.createPendingUser({
+  //       agentId: data.agentId,
+  //       email: data.email,
+  //       passwordHash,
+  //       role: UserRole.BC_ADMIN,
+  //     });
+
+  //     await repository.createOtp({
+  //       userId: currentUser.id,
+  //       otpCode,
+  //       purpose: OtpPurpose.SIGNUP,
+  //       email: data.email,
+  //       phone: data.phone,
+  //       expiresAt,
+  //     });
+
+  //     return currentUser;
+  //   });
+
+  //   await this.emailService.sendOtp(data.email, otpCode);
+
+  //   return {
+  //     success: true,
+  //     message: "OTP sent successfully.",
+  //     data: {
+  //       userId: user.id,
+  //     },
+  //   };
+  // }
+
+  // private async signupExistingBusinessCorrespondent(
+  //   bc: BusinessCorrespondent,
+  //   data: SignupDto,
+  // ) {
+  //   const passwordHash = await this.bcryptService.hash(data.password);
+
+  //   const otpCode = this.otpService.generate();
+
+  //   const expiresAt = this.otpService.getExpiry();
+
+  //   const user = await withTransaction(async (tx) => {
+  //     const repository = new AuthRepository(tx);
+
+  //     const existingUser = await repository.findUserByAgentId(bc.bcId);
+
+  //     let currentUser;
+
+  //     if (!existingUser) {
+  //       currentUser = await repository.createPendingUser({
+  //         agentId: bc.bcId,
+  //         email: data.email,
+  //         passwordHash,
+  //         role: UserRole.BC_ADMIN,
+  //       });
+  //     } else {
+  //       if (existingUser.status === UserStatus.ACTIVE) {
+  //         throw new ConflictError("Account already exists. Please login.");
+  //       }
+
+  //       currentUser = await repository.updatePendingUser({
+  //         userId: existingUser.id,
+  //         email: data.email,
+  //         passwordHash,
+  //       });
+  //     }
+
+  //     await repository.deleteUnusedOtps(currentUser.id);
+
+  //     await repository.createOtp({
+  //       userId: currentUser.id,
+  //       otpCode,
+  //       purpose: OtpPurpose.SIGNUP,
+  //       email: data.email,
+  //       phone: data.phone,
+  //       expiresAt,
+  //     });
+
+  //     return currentUser;
+  //   });
+
+  //   await this.emailService.sendOtp(data.email, otpCode);
+
+  //   return {
+  //     success: true,
+  //     message: "OTP sent successfully.",
+  //     data: {
+  //       userId: user.id,
+  //     },
+  //   };
+  // }
+
+  //working
+  private async createBusinessCorrespondentIfNeeded(
+    repository: AuthRepository,
+    data: SignupDto,
+  ) {
+    // Create BC if it doesn't exist
+    const existingBC = await repository.findBusinessCorrespondentByBcId(
+      data.agentId,
+    );
+
+    if (!existingBC) {
+      await repository.createBusinessCorrespondent({
+        bcId: data.agentId,
+        name: data.name,
+        email: data.email,
+        phone: data.phone,
+        address: data.address,
+      });
+    }
+
+    // Create Agent if it doesn't exist
+    const existingAgent = await repository.findAgentByAgentId(data.agentId);
+
+    if (!existingAgent) {
+      await repository.createAgent({
+        agentId: data.agentId,
+        name: data.name,
+        type: AgentType.BC,
+        email: data.email,
+        mobile: data.phone,
+        address: data.address,
+
+        bcId: data.agentId,
+
+        selfRegistered: true,
+        isProfileCompleted: true,
+      });
+    }
+  }
+
+  private async createAgentIfNeeded(
+    repository: AuthRepository,
+    data: SignupDto,
+  ) {
+    const existing = await repository.findAgentByAgentId(data.agentId);
+
+    if (existing) {
+      if (existing.type === AgentType.KO) {
+        throw new ForbiddenError("KO cannot create login account.");
+      }
+
+      await repository.updateAgent(existing.agentId, {
+        name: data.name,
+        email: data.email,
+        mobile: data.phone,
+        address: data.address,
+        selfRegistered: true,
+        isProfileCompleted: true,
+      });
+
+      return;
+    }
+
+    await repository.createAgent({
+      agentId: data.agentId,
+      name: data.name,
+      type: AgentType.CSP,
+      email: data.email,
+      mobile: data.phone,
+      address: data.address,
+      selfRegistered: true,
+    });
   }
 
   async checkAgent(data: CheckAgentDto) {
@@ -179,98 +337,155 @@ export default class AuthService {
     };
   }
 
-  private async signupNewAgent(data: SignupDto) {
-    return withTransaction(async (tx) => {
-      const repository = new AuthRepository(tx);
+  // private async signupNewAgent(data: SignupDto) {
+  //   return withTransaction(async (tx) => {
+  //     const repository = new AuthRepository(tx);
 
-      // Create Agent
-      const agent = await repository.createAgent({
-        agentId: data.agentId,
-        name: data.name,
-        type: data.accountType === "BC" ? AgentType.BC : AgentType.CSP,
-        email: data.email,
-        mobile: data.phone,
-        address: data.address,
-        selfRegistered: true,
-      });
+  //     // Create Agent
+  //     const agent = await repository.createAgent({
+  //       agentId: data.agentId,
+  //       name: data.name,
+  //       type: data.accountType === "BC" ? AgentType.BC : AgentType.CSP,
+  //       email: data.email,
+  //       mobile: data.phone,
+  //       address: data.address,
+  //       selfRegistered: true,
+  //     });
 
-      // Create Pending User + OTP
-      const user = await this.createPendingAccount(repository, agent, data);
+  //     // Create Pending User + OTP
+  //     const user = await this.createPendingAccount(repository, agent, data);
 
-      return {
-        success: true,
-        message: "Signup successful. OTP sent for verification.",
-        data: {
-          userId: user.id,
-        },
-      };
-    });
-  }
+  //     return {
+  //       success: true,
+  //       message: "Signup successful. OTP sent for verification.",
+  //       data: {
+  //         userId: user.id,
+  //       },
+  //     };
+  //   });
+  // }
 
-  private async signupExistingAgent(agent: Agent, data: SignupDto) {
-    if (agent.type === AgentType.KO) {
-      throw new ForbiddenError("KO cannot create login account.");
-    }
+  // private async signupExistingAgent(agent: Agent, data: SignupDto) {
+  //   if (agent.type === AgentType.KO) {
+  //     throw new ForbiddenError("KO cannot create login account.");
+  //   }
 
-    return withTransaction(async (tx) => {
-      const repository = new AuthRepository(tx);
+  //   return withTransaction(async (tx) => {
+  //     const repository = new AuthRepository(tx);
 
-      // Update Agent Profile
-      await repository.updateAgent(agent.agentId, {
-        name: data.name,
-        email: data.email,
-        mobile: data.phone,
-        address: data.address,
-        selfRegistered: true,
-        isProfileCompleted: true,
-      });
+  //     // Update Agent Profile
+  //     await repository.updateAgent(agent.agentId, {
+  //       name: data.name,
+  //       email: data.email,
+  //       mobile: data.phone,
+  //       address: data.address,
+  //       selfRegistered: true,
+  //       isProfileCompleted: true,
+  //     });
 
-      const updatedAgent = await repository.findAgentByAgentId(agent.agentId);
+  //     const updatedAgent = await repository.findAgentByAgentId(agent.agentId);
 
-      if (!updatedAgent) {
-        throw new NotFoundError("Agent not found after update.");
-      }
+  //     if (!updatedAgent) {
+  //       throw new NotFoundError("Agent not found after update.");
+  //     }
 
-      const user = await this.createPendingAccount(
-        repository,
-        updatedAgent,
-        data,
-      );
+  //     const user = await this.createPendingAccount(
+  //       repository,
+  //       updatedAgent,
+  //       data,
+  //     );
 
-      return {
-        success: true,
-        message: "Signup successful. OTP sent for verification.",
-        data: {
-          userId: user.id,
-        },
-      };
-    });
-  }
+  //     return {
+  //       success: true,
+  //       message: "Signup successful. OTP sent for verification.",
+  //       data: {
+  //         userId: user.id,
+  //       },
+  //     };
+  //   });
+  // }
 
+  // old
+  // private async createPendingAccount(
+  //   repository: AuthRepository,
+  //   agent: Agent,
+  //   data: SignupDto,
+  // ) {
+  //   // Hash Password
+  //   const passwordHash = await this.bcryptService.hash(data.password);
+
+  //   // Generate OTP
+  //   const otpCode = this.otpService.generate();
+  //   const expiresAt = this.otpService.getExpiry();
+
+  //   // Check existing user
+  //   const existingUser = await repository.findUserByAgentId(agent.agentId);
+
+  //   let currentUser;
+
+  //   if (!existingUser) {
+  //     currentUser = await repository.createPendingUser({
+  //       agentId: agent.agentId,
+  //       email: data.email,
+  //       passwordHash,
+  //       role:
+  //         agent.type === AgentType.BC ? UserRole.BC_ADMIN : UserRole.CSP_ADMIN,
+  //     });
+  //   } else {
+  //     if (existingUser.status === UserStatus.ACTIVE) {
+  //       throw new ConflictError("Account already exists. Please login.");
+  //     }
+
+  //     currentUser = await repository.updatePendingUser({
+  //       userId: existingUser.id,
+  //       email: data.email,
+  //       passwordHash,
+  //     });
+  //   }
+
+  //   await repository.deleteUnusedOtps(currentUser.id);
+
+  //   await repository.createOtp({
+  //     userId: currentUser.id,
+  //     otpCode,
+  //     purpose: OtpPurpose.SIGNUP,
+  //     email: data.email,
+  //     phone: data.phone,
+  //     expiresAt,
+  //   });
+
+  //   await this.emailService.sendOtp(data.email, otpCode);
+
+  //   return currentUser;
+  // }
+
+  // working
   private async createPendingAccount(
     repository: AuthRepository,
-    agent: Agent,
-    data: SignupDto,
+    input: {
+      agentId: string;
+      email: string;
+      phone: string;
+      password: string;
+      role: UserRole;
+    },
   ) {
-    // Hash Password
-    const passwordHash = await this.bcryptService.hash(data.password);
+    const passwordHash = await this.bcryptService.hash(input.password);
 
-    // Generate OTP
     const otpCode = this.otpService.generate();
+
     const expiresAt = this.otpService.getExpiry();
 
-    // Check existing user
-    const existingUser = await repository.findUserByAgentId(agent.agentId);
+    const existingUser = await repository.findUserByAgentId(input.agentId);
 
     let currentUser;
 
     if (!existingUser) {
       currentUser = await repository.createPendingUser({
-        agentId: agent.agentId,
-        email: data.email,
+        agentId: input.agentId,
+        email: input.email,
         passwordHash,
-        role:
-          agent.type === AgentType.BC ? UserRole.BC_ADMIN : UserRole.CSP_ADMIN,
+        role: input.role,
       });
     } else {
       if (existingUser.status === UserStatus.ACTIVE) {
@@ -279,7 +494,7 @@ export default class AuthService {
 
       currentUser = await repository.updatePendingUser({
         userId: existingUser.id,
-        email: data.email,
+        email: input.email,
         passwordHash,
       });
     }
@@ -290,14 +505,18 @@ export default class AuthService {
       userId: currentUser.id,
       otpCode,
       purpose: OtpPurpose.SIGNUP,
-      email: data.email,
-      phone: data.phone,
+      email: input.email,
+      phone: input.phone,
       expiresAt,
     });
 
-    await this.emailService.sendOtp(data.email, otpCode);
+    await this.sendSignupOtp(input.email, otpCode);
 
     return currentUser;
+  }
+
+  private async sendSignupOtp(email: string, otpCode: string) {
+    await this.emailService.sendOtp(email, otpCode);
   }
 
   async verifyOtp(data: VerifyOtpDto) {

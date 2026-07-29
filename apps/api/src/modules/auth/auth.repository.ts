@@ -99,6 +99,32 @@ export default class AuthRepository {
     });
   }
 
+  async findBusinessCorrespondentByBcId(bcId: string) {
+    return this.db.businessCorrespondent.findUnique({
+      where: {
+        bcId,
+      },
+    });
+  }
+
+  async createBusinessCorrespondent(data: {
+    bcId: string;
+    name: string;
+    email: string;
+    phone: string;
+    address: string;
+  }) {
+    return this.db.businessCorrespondent.create({
+      data: {
+        bcId: data.bcId,
+        name: data.name,
+        email: data.email,
+        mobile: data.phone,
+        address: data.address,
+      },
+    });
+  }
+
   findLatestSignupOtp(userId: string) {
     return this.db.otp.findFirst({
       where: {

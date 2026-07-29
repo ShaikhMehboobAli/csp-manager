@@ -16,3 +16,20 @@ export interface CreatePaidSubscriptionInput {
 
   ownerId: string;
 }
+
+export interface ValidateQuotaInput {
+  ownerType: SubscriptionOwnerType;
+  ownerId: string;
+
+  requested: {
+    csps?: number;
+    kos?: number;
+    machines?: number;
+  };
+}
+
+export interface ValidateMachineLimitInput {
+  ownerType: SubscriptionOwnerType;
+  ownerId: string;
+  requestedMachines: number;
+}

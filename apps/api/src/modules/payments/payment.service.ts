@@ -24,9 +24,9 @@ import SubscriptionService from "../subscriptions/subscription.service";
 import { Payment } from "../../generated/prisma/client";
 import { PaymentWebhookDto } from "./validations/webhook-payment.validation";
 import ActivationService from "../activations/activation.service";
+import prisma from "../../config/prisma";
 
 export default class PaymentService {
-  private subscriptionService = new SubscriptionService();
   async createOrder(data: CreatePaymentOrderInput) {
     return withTransaction(async (tx) => {
       const repository = new PaymentRepository(tx);
@@ -120,7 +120,7 @@ export default class PaymentService {
   ) {
     const repository = new PaymentRepository(tx);
 
-    const subscriptionService = new SubscriptionService();
+    const subscriptionService = new SubscriptionService(prisma);
 
     const subscription = await subscriptionService.createPaidSubscription(
       {

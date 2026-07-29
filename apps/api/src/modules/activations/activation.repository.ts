@@ -1,10 +1,18 @@
 import { PrismaDb } from "../../core/database/prisma.types";
-import { ActivationStatus } from "../../generated/prisma/enums";
+import {
+  ActivationStatus,
+  SubscriptionOwnerType,
+} from "../../generated/prisma/enums";
 
 import bcrypt from "bcrypt";
+import { AssignActivationInput } from "./types/service.types";
+import { BadRequestError } from "../../core/errors/BadRequestError";
+import { AssignActivationCodesRepositoryInput } from "./types/repository.types";
+import { Prisma, PrismaClient } from "../../generated/prisma/client";
 
 export default class ActivationRepository {
-  constructor(private readonly db: PrismaDb) {}
+  // constructor(private readonly db: PrismaDb) {}
+  constructor(private readonly db: PrismaClient | Prisma.TransactionClient) {}
 
   createActivation(data: {
     activationCode: string;
@@ -136,6 +144,125 @@ export default class ActivationRepository {
       },
       include: {
         subscription: true,
+      },
+    });
+  }
+
+  findActivationForAssignment(activationId: string) {
+    return this.db.activation.findUnique({
+      where: {
+        id: activationId,
+      },
+      include: {
+        subscription: true,
+      },
+    });
+  }
+
+  findAgentByAgentId(agentId: string) {
+    return this.db.agent.findUnique({
+      where: {
+        agentId,
+      },
+    });
+  }
+
+  assignActivation(data: AssignActivationInput) {
+    return this.db.activation.update({
+      where: {
+        id: data.activationId,
+      },
+      data: {
+        assignedAgentId: data.assignedAgentId,
+        assignedByOwnerType: data.assignedByOwnerType,
+        assignedByOwnerId: data.assignedByOwnerId,
+        assignedAt: new Date(),
+      },
+    });
+  }
+
+  findAgentWithHierarchy(agentId: string) {
+    return this.db.agent.findUnique({
+      where: {
+        agentId,
+      },
+      select: {
+        id: true,
+        agentId: true,
+        type: true,
+        status: true,
+        bcId: true,
+        parentAgentId: true,
+      },
+    });
+  }
+
+  async countConsumedMachineSlots(
+    ownerType: SubscriptionOwnerType,
+    ownerId: string,
+  ): Promise<number> {
+    return this.db.activation.count({
+      where: {
+        subscription: {
+          ownerType,
+          ownerId,
+        },
+        status: {
+          in: [ActivationStatus.NOT_ACTIVATED, ActivationStatus.ACTIVE],
+        },
+      },
+    });
+  }
+
+  async assignMachineSlots(
+    input: AssignActivationCodesRepositoryInput,
+  ): Promise<void> {
+    const subscription = await this.db.subscription.findFirst({
+      where: {
+        ownerType: input.ownerType,
+        ownerId: input.ownerId,
+        status: "ACTIVE",
+        isDeleted: false,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!subscription) {
+      throw new BadRequestError("Active subscription not found.");
+    }
+
+    const activations = await this.db.activation.findMany({
+      where: {
+        subscriptionId: subscription.id,
+        assignedAgentId: null,
+        status: ActivationStatus.NOT_ACTIVATED,
+      },
+      orderBy: {
+        createdAt: "asc",
+      },
+      take: input.count,
+      select: {
+        id: true,
+      },
+    });
+
+    if (activations.length < input.count) {
+      throw new BadRequestError("Insufficient activation codes available.");
+    }
+
+    await this.db.activation.updateMany({
+      where: {
+        id: {
+          in: activations.map((activation) => activation.id),
+        },
+      },
+      data: {
+        assignedAgentId: input.agentId,
+        assignedByOwnerType: input.ownerType,
+        assignedByOwnerId: input.ownerId,
+        assignedAt: new Date(),
       },
     });
   }

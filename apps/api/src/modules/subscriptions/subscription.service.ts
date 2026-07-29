@@ -11,15 +11,24 @@ import { createCodeGeneratorService } from "../../core/services/service.factory"
 
 import { NotFoundError } from "../../core/errors/NotFoundError";
 
-import { CreatePaidSubscriptionInput } from "./types/service.types";
+import {
+  CreatePaidSubscriptionInput,
+  ValidateMachineLimitInput,
+} from "./types/service.types";
 import { BadRequestError } from "../../core/errors/BadRequestError";
 import { PrismaDb } from "../../core/database/prisma.types";
+import { AgentRepository } from "../agents/repository/agent.repository";
+import ActivationRepository from "../activations/activation.repository";
+import { SubscriptionOwnerType } from "../../generated/prisma/enums";
+import { Prisma, PrismaClient } from "../../generated/prisma/client";
 
 export default class SubscriptionService {
-  private readonly repository: SubscriptionRepository;
+  private readonly subscriptionRepository: SubscriptionRepository;
+  private readonly activationRepository: ActivationRepository;
 
-  constructor() {
-    this.repository = new SubscriptionRepository(prisma);
+  constructor(private readonly db: PrismaClient | Prisma.TransactionClient) {
+    this.subscriptionRepository = new SubscriptionRepository(this.db);
+    this.activationRepository = new ActivationRepository(this.db);
   }
 
   //   async getPlans(data: GetPlansDto) {
@@ -33,7 +42,7 @@ export default class SubscriptionService {
   //   }
 
   async getPlans(data: GetPlansDto) {
-    const plans = await this.repository.getPlans(data.ownerType);
+    const plans = await this.subscriptionRepository.getPlans(data.ownerType);
 
     return {
       success: true,
@@ -43,7 +52,8 @@ export default class SubscriptionService {
   }
 
   async getCurrentSubscription(agentId: string) {
-    const subscription = await this.repository.findCurrentSubscription(agentId);
+    const subscription =
+      await this.subscriptionRepository.findCurrentSubscription(agentId);
 
     if (!subscription) {
       return {
@@ -62,7 +72,7 @@ export default class SubscriptionService {
 
   async getSubscriptionHistory(agentId: string) {
     const subscriptions =
-      await this.repository.findSubscriptionHistory(agentId);
+      await this.subscriptionRepository.findSubscriptionHistory(agentId);
 
     return {
       success: true,
@@ -140,5 +150,47 @@ export default class SubscriptionService {
     }
 
     return withTransaction(execute);
+  }
+
+  private async getActiveSubscriptionOrThrow(
+    ownerType: SubscriptionOwnerType,
+    ownerId: string,
+  ) {
+    const subscription =
+      await this.subscriptionRepository.findActiveSubscription(
+        ownerType,
+        ownerId,
+      );
+
+    if (!subscription) {
+      throw new BadRequestError("Active subscription not found.");
+    }
+
+    return subscription;
+  }
+
+  async validateMachineLimit(input: ValidateMachineLimitInput): Promise<void> {
+    const subscription = await this.getActiveSubscriptionOrThrow(
+      input.ownerType,
+      input.ownerId,
+    );
+
+    const consumed = await this.activationRepository.countConsumedMachineSlots(
+      input.ownerType,
+      input.ownerId,
+    );
+
+    const remaining = subscription.machineLimit - consumed;
+
+    console.log({
+      machineLimit: subscription.machineLimit,
+      consumed,
+      requestedMachines: input.requestedMachines,
+      remaining: subscription.machineLimit - consumed,
+    });
+
+    if (input.requestedMachines > remaining) {
+      throw new BadRequestError(`Only ${remaining} machine slot(s) remaining.`);
+    }
   }
 }

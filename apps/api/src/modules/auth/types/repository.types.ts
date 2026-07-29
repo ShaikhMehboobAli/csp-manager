@@ -36,4 +36,6 @@ export interface CreateAgentInput {
   mobile?: string;
   address?: string;
   selfRegistered: boolean;
+  bcId?: string;
+  isProfileCompleted?: boolean;
 }

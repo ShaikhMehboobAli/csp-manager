@@ -1,4 +1,9 @@
 import { PrismaDb } from "../../core/database/prisma.types";
+import {
+  Prisma,
+  PrismaClient,
+  Subscription,
+} from "../../generated/prisma/client";
 
 import {
   PaymentMethod,
@@ -9,7 +14,8 @@ import {
 } from "../../generated/prisma/enums";
 
 export default class SubscriptionRepository {
-  constructor(private readonly db: PrismaDb) {}
+  // constructor(private readonly db: PrismaDb) {}
+  constructor(private readonly db: PrismaClient | Prisma.TransactionClient) {}
 
   getPlans(ownerType: PlanOwnerType) {
     return this.db.plan.findMany({
@@ -123,14 +129,14 @@ export default class SubscriptionRepository {
     });
   }
 
-  findActiveSubscription(agentId: string) {
-    return this.db.subscription.findFirst({
-      where: {
-        agentId,
-        status: "ACTIVE",
-      },
-    });
-  }
+  // findActiveSubscription(agentId: string) {
+  //   return this.db.subscription.findFirst({
+  //     where: {
+  //       agentId,
+  //       status: "ACTIVE",
+  //     },
+  //   });
+  // }
 
   findSubscriptionHistory(ownerId: string) {
     return this.db.subscription.findMany({
@@ -153,6 +159,32 @@ export default class SubscriptionRepository {
           },
           take: 1,
         },
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+  }
+  async findActiveSubscription(
+    ownerType: SubscriptionOwnerType,
+    ownerId: string,
+  ) {
+    const now = new Date();
+
+    return this.db.subscription.findFirst({
+      where: {
+        ownerType,
+        ownerId,
+        status: SubscriptionStatus.ACTIVE,
+        startDate: {
+          lte: now,
+        },
+        endDate: {
+          gte: now,
+        },
+      },
+      include: {
+        plan: true,
       },
       orderBy: {
         createdAt: "desc",
