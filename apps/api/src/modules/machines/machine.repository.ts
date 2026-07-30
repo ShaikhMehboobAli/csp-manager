@@ -1,10 +1,5 @@
 import { PrismaDb } from "../../core/database/prisma.types";
-import {
-  ActivationStatus,
-  AgentStatus,
-  MachineStatus,
-} from "../../generated/prisma/enums";
-import { CreateMachineInput } from "./types/repository.types";
+import { ActivationStatus, Prisma } from "../../generated/prisma/client";
 
 export default class MachineRepository {
   constructor(private readonly db: PrismaDb) {}
@@ -17,7 +12,7 @@ export default class MachineRepository {
     });
   }
 
-  findActivationByCode(activationCode: string) {
+  findActivation(activationCode: string) {
     return this.db.activation.findUnique({
       where: {
         activationCode,
@@ -28,114 +23,72 @@ export default class MachineRepository {
     });
   }
 
+  findParentAgent(agentId: string) {
+    return this.db.agent.findUnique({
+      where: {
+        agentId,
+      },
+      select: {
+        parentAgentId: true,
+      },
+    });
+  }
+
+  findAgentHierarchy(agentId: string) {
+    return this.db.agent.findUnique({
+      where: {
+        agentId,
+      },
+      select: {
+        agentId: true,
+        type: true,
+        bcId: true,
+        parentAgentId: true,
+      },
+    });
+  }
+
   findMachineByFingerprint(fingerprint: string) {
     return this.db.machine.findUnique({
       where: {
         fingerprint,
       },
-    });
-  }
-
-  createMachine(data: CreateMachineInput) {
-    return this.db.machine.create({
-      data: {
-        machineCode: data.machineCode,
-        fingerprint: data.fingerprint,
-        machineName: data.machineName,
-        watcherVersion: data.watcherVersion,
-        osName: data.osName,
-        osVersion: data.osVersion,
-        deviceName: data.deviceName,
-        ipAddress: data.ipAddress,
-
-        currentAgentId: data.currentAgentId,
-        agentId: data.agentId,
-
-        status: MachineStatus.ACTIVE,
-        isOnline: true,
-        lastStartupAt: new Date(),
-
-        apiKeyHash: data.apiKeyHash,
-        apiKeyIssuedAt: data.apiKeyIssuedAt,
-        apiKeyExpiresAt: data.apiKeyExpiresAt,
-      },
-    });
-  }
-
-  activateActivation(activationId: string, machineId: string, agentId: string) {
-    return this.db.activation.update({
-      where: {
-        id: activationId,
-      },
-      data: {
-        machineId,
-        assignedAgentId: agentId,
-        activatedAt: new Date(),
-        status: ActivationStatus.ACTIVE,
-      },
-    });
-  }
-
-  findActivationById(id: string) {
-    return this.db.activation.findUnique({
-      where: {
-        id,
-      },
       include: {
-        subscription: true,
-      },
-    });
-  }
-
-  findAgent(agentId: string) {
-    return this.db.agent.findUnique({
-      where: {
-        agentId,
-      },
-    });
-  }
-
-  assignActivation(
-    activationId: string,
-    assignedAgentId: string,
-    assignedBy: string,
-  ) {
-    return this.db.activation.update({
-      where: {
-        id: activationId,
-      },
-      data: {
-        assignedAgentId,
-        assignedAt: new Date(),
-        assignedBy,
-      },
-    });
-  }
-
-  countActiveMachines(subscriptionId: string) {
-    return this.db.activation.count({
-      where: {
-        subscriptionId,
-        status: ActivationStatus.ACTIVE,
-        machineId: {
-          not: null,
+        activations: {
+          where: {
+            isCurrent: true,
+          },
+          include: {
+            subscription: true,
+          },
         },
       },
     });
   }
 
-  activateMachine(activationId: string, machineId: string, agentId: string) {
+  createMachine(data: Prisma.MachineCreateInput) {
+    return this.db.machine.create({
+      data,
+    });
+  }
+
+  completeActivation(activationId: string, machineId: string) {
     return this.db.activation.update({
       where: {
         id: activationId,
       },
       data: {
         machineId,
-        activatedAt: new Date(),
-        activatedBy: agentId,
         status: ActivationStatus.ACTIVE,
-        isCurrent: false,
+        activatedAt: new Date(),
+        isCurrent: true,
       },
+    });
+  }
+
+  createMachineSession(data: Prisma.MachineSessionCreateInput) {
+    return this.db.machineSession.create({
+      data,
     });
   }
 }

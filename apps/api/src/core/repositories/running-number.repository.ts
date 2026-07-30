@@ -5,11 +5,26 @@ export default class RunningNumberRepository {
   constructor(private readonly db: PrismaDb) {}
 
   async getNextValue(type: RunningNumberType) {
-    const runningNumber = await this.db.runningNumber.update({
+    // const runningNumber = await this.db.runningNumber.update({
+    //   where: {
+    //     type,
+    //   },
+    //   data: {
+    //     currentValue: {
+    //       increment: 1,
+    //     },
+    //   },
+    // });
+
+    const runningNumber = await this.db.runningNumber.upsert({
       where: {
         type,
       },
-      data: {
+      create: {
+        type,
+        currentValue: 1,
+      },
+      update: {
         currentValue: {
           increment: 1,
         },

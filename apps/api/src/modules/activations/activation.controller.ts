@@ -33,3 +33,9 @@ export const regeneratePassword = async (req: Request, res: Response) => {
 
   return res.status(200).json(result);
 };
+
+export const assignActivation = async (req: Request, res: Response) => {
+  const result = await activationService.assignActivation(req.body);
+
+  return res.status(200).json(result);
+};

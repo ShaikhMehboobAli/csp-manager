@@ -1,4 +1,4 @@
-import { SubscriptionOwnerType } from "../../../generated/prisma/enums";
+import { Prisma } from "../../../generated/prisma/client";
 
 export interface ActivateMachineInput {
   agentId: string;
@@ -23,3 +23,26 @@ export interface ActivateMachineInput {
     ipAddress?: string;
   };
 }
+
+// export type ActivationWithSubscription = Prisma.ActivationGetPayload<{
+//   include: {
+//     subscription: true;
+//     machine: true;
+//   };
+// }>;
+
+export type ActivationWithSubscription = Prisma.ActivationGetPayload<{
+  include: {
+    subscription: true;
+  };
+}>;
+
+export type MachineWithActivations = Prisma.MachineGetPayload<{
+  include: {
+    activations: {
+      include: {
+        subscription: true;
+      };
+    };
+  };
+}>;

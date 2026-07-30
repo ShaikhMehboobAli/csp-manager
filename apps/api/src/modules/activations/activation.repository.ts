@@ -16,14 +16,14 @@ export default class ActivationRepository {
 
   createActivation(data: {
     activationCode: string;
-    activationPasswordHash: string;
+    // activationPasswordHash: string;
     subscriptionId: string;
     expiresAt: Date;
   }) {
     return this.db.activation.create({
       data: {
         activationCode: data.activationCode,
-        activationPasswordHash: data.activationPasswordHash,
+        // activationPasswordHash: data.activationPasswordHash,
         subscriptionId: data.subscriptionId,
         expiresAt: data.expiresAt,
         status: ActivationStatus.NOT_ACTIVATED,
@@ -130,6 +130,7 @@ export default class ActivationRepository {
       },
       data: {
         activationPasswordHash,
+        passwordRegeneratedAt: new Date(),
       },
     });
   }
@@ -167,7 +168,21 @@ export default class ActivationRepository {
     });
   }
 
-  assignActivation(data: AssignActivationInput) {
+  assignActivation(
+    data: AssignActivationInput,
+    activationPasswordHash: string,
+  ) {
+    // return this.db.activation.update({
+    //   where: {
+    //     id: data.activationId,
+    //   },
+    //   data: {
+    //     assignedAgentId: data.assignedAgentId,
+    //     assignedByOwnerType: data.assignedByOwnerType,
+    //     assignedByOwnerId: data.assignedByOwnerId,
+    //     assignedAt: new Date(),
+    //   },
+    // });
     return this.db.activation.update({
       where: {
         id: data.activationId,
@@ -177,6 +192,9 @@ export default class ActivationRepository {
         assignedByOwnerType: data.assignedByOwnerType,
         assignedByOwnerId: data.assignedByOwnerId,
         assignedAt: new Date(),
+
+        activationPasswordHash,
+        passwordGeneratedAt: new Date(),
       },
     });
   }

@@ -17,6 +17,8 @@ import { NotFoundError } from "../../core/errors/NotFoundError";
 import { BadRequestError } from "../../core/errors/BadRequestError";
 import { ForbiddenError } from "../../core/errors/ForbiddenError";
 
+import bcrypt from "bcrypt";
+
 export default class ActivationService {
   private readonly passwordService = new ActivationPasswordService();
 
@@ -51,18 +53,18 @@ export default class ActivationService {
       for (let index = 0; index < remaining; index++) {
         const activationCode = await codeGenerator.generateActivationCode();
 
-        const credentials = await this.passwordService.generateCredentials();
+        // const credentials = await this.passwordService.generateCredentials();
 
         const activation = await repository.createActivation({
           activationCode,
-          activationPasswordHash: credentials.hash,
+          // activationPasswordHash: credentials.hash,
           subscriptionId: data.subscriptionId,
           expiresAt: data.expiresAt,
         });
 
         generatedActivations.push({
           activation,
-          activationPassword: credentials.password,
+          // activationPassword: credentials.password,
         });
       }
 
@@ -184,6 +186,7 @@ export default class ActivationService {
   async assignActivation(data: AssignActivationInput) {
     return withTransaction(async (tx) => {
       const repository = new ActivationRepository(tx);
+      // const credentials = await this.passwordService.generateCredentials();
 
       /**
        * Step 1
@@ -249,11 +252,21 @@ export default class ActivationService {
         hierarchyAgent,
       );
 
-      await repository.assignActivation(data);
+      const credentials = await this.passwordService.generateCredentials();
 
+      await repository.assignActivation(data, credentials.hash);
+
+      // return {
+      //   success: true,
+      //   message: "Activation assigned successfully.",
+      // };
       return {
         success: true,
         message: "Activation assigned successfully.",
+        data: {
+          activationCode: activation.activationCode,
+          activationPassword: credentials.password,
+        },
       };
     });
   }

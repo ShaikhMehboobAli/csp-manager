@@ -773,7 +773,7 @@ model Activation {
 
   activationCode String @unique
 
-  activationPasswordHash String
+  activationPasswordHash String?
 
   machineId String?
 

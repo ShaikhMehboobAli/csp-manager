@@ -1,25 +1,36 @@
 import { PrismaDb } from "../../../core/database/prisma.types";
+import { withTransaction } from "../../../core/database/transaction";
 
 import MachineRepository from "../machine.repository";
 
-import MachineSecurityService from "./machine-security.service";
-import MachineApiKeyService from "./machine-apikey.service";
+import {
+  ActivateMachineInput,
+  ActivationWithSubscription,
+  MachineWithActivations,
+} from "../types/service.types";
 
-import { ActivateMachineInput } from "../types/service.types";
+import {
+  ActivationStatus,
+  AgentStatus,
+  MachineStatus,
+} from "../../../generated/prisma/enums";
+
 import { NotFoundError } from "../../../core/errors/NotFoundError";
-import { AgentStatus, MachineStatus } from "../../../generated/prisma/enums";
 import { BadRequestError } from "../../../core/errors/BadRequestError";
+
+import bcrypt from "bcrypt";
+import CodeGeneratorService from "../../../core/services/code-generator.service";
+import * as crypto from "node:crypto";
+import { Agent, Machine, Prisma } from "../../../generated/prisma/client";
 import { createCodeGeneratorService } from "../../../core/services/service.factory";
-import { withTransaction } from "../../../core/database/transaction";
 
 export default class MachineActivationService {
+  //   constructor(private readonly codeGeneratorService: CodeGeneratorService) {}
+
   async activate(data: ActivateMachineInput) {
     const execute = async (db: PrismaDb) => {
       const repository = new MachineRepository(db);
-
-      const security = new MachineSecurityService();
-
-      const apiKeyService = new MachineApiKeyService();
+      const codeGeneratorService = createCodeGeneratorService(db);
 
       /**
        * STEP 1
@@ -31,6 +42,10 @@ export default class MachineActivationService {
         throw new NotFoundError("Agent not found.");
       }
 
+      if (agent.isDeleted) {
+        throw new BadRequestError("Agent has been deleted.");
+      }
+
       if (agent.status !== AgentStatus.ACTIVE) {
         throw new BadRequestError("Agent is inactive.");
       }
@@ -39,9 +54,7 @@ export default class MachineActivationService {
        * STEP 2
        * Find Activation
        */
-      const activation = await repository.findActivationByCode(
-        data.activationCode,
-      );
+      const activation = await repository.findActivation(data.activationCode);
 
       if (!activation) {
         throw new NotFoundError("Activation code not found.");
@@ -49,122 +62,225 @@ export default class MachineActivationService {
 
       /**
        * STEP 3
-       * Verify Password
+       * Validate Activation
        */
-      await security.verifyActivationPassword(
-        data.activationPassword,
-        activation.activationPasswordHash,
-      );
+      // if (activation.isDeleted) {
+      //   throw new BadRequestError("Activation has been deleted.");
+      // }
+
+      if (activation.status !== ActivationStatus.NOT_ACTIVATED) {
+        throw new BadRequestError("Activation has already been used.");
+      }
+
+      if (activation.expiresAt.getTime() < Date.now()) {
+        throw new BadRequestError("Activation has expired.");
+      }
 
       /**
        * STEP 4
-       * Verify Subscription
+       * Validate Assignment
        */
-      security.ensureActivationNotExpired(activation.expiresAt);
+      if (!activation.assignedAgentId) {
+        throw new BadRequestError("Activation has not been assigned.");
+      }
 
-      security.ensureActivationIsAvailable(activation.status);
-
-      const existingMachine = await repository.findMachineByFingerprint(
-        data.machine.fingerprint,
-      );
-
-      security.ensureMachineDoesNotExist(existingMachine);
+      if (activation.assignedAgentId !== agent.agentId) {
+        throw new BadRequestError("Activation is not assigned to this agent.");
+      }
 
       /**
        * STEP 5
-       * Validate Activation Assignment
+       * Validate Subscription Ownership
        */
+      switch (activation.subscription.ownerType) {
+        case "BC":
+          if (agent.bcId !== activation.subscription.ownerId) {
+            throw new BadRequestError(
+              "Agent does not belong to this BC subscription.",
+            );
+          }
+          break;
 
-      security.ensureActivationAssignedToAgent(
-        activation.assignedAgentId,
-        data.agentId,
-      );
-      if (
-        activation.subscription.ownerId !== agent.bcId &&
-        activation.subscription.ownerId !== data.agentId
-      ) {
-        throw new BadRequestError(
-          "This activation does not belong to this agent.",
-        );
+        case "CSP":
+          if (
+            agent.agentId !== activation.subscription.ownerId &&
+            agent.parentAgentId !== activation.subscription.ownerId
+          ) {
+            throw new BadRequestError(
+              "Agent does not belong to this CSP subscription.",
+            );
+          }
+          break;
+
+        default:
+          throw new BadRequestError("Invalid subscription owner.");
       }
 
       /**
        * STEP 6
-       * Validate Machine Limit
+       * Verify Password
        */
-      const activeMachines = await repository.countActiveMachines(
-        activation.subscriptionId,
+
+      if (!activation.activationPasswordHash) {
+        throw new BadRequestError("Activation has not been assigned yet.");
+      }
+      const isValid = await bcrypt.compare(
+        data.activationPassword,
+        activation.activationPasswordHash,
       );
 
-      if (activeMachines >= activation.subscription.machineLimit) {
-        throw new BadRequestError(
-          "Machine limit exceeded for this subscription.",
-        );
+      if (!isValid) {
+        throw new BadRequestError("Invalid activation password.");
       }
 
       /**
+       * STEP 5
+       * Validate Assignment
+       */
+      //   if (!activation.assignedAgentId) {
+      //     throw new BadRequestError("Activation has not been assigned.");
+      //   }
+
+      //   if (activation.assignedAgentId !== agent.agentId) {
+      //     throw new BadRequestError("Activation is not assigned to this agent.");
+      //   }
+
+      /**
        * STEP 7
-       * Generate Machine Code & API Key
+       * Find Machine
        */
-      const codeGenerator = createCodeGeneratorService(db);
+      const machine = await repository.findMachineByFingerprint(
+        data.machine.fingerprint,
+      );
 
-      const machineCode = await codeGenerator.generateMachineCode();
+      if (machine) {
+        this.validateExistingMachine(machine, activation);
+      }
 
-      const apiKey = apiKeyService.generateApiKey();
+      const apiKey = crypto.randomBytes(32).toString("hex");
 
-      /**
-       * STEP 8
-       * Create Machine
-       */
-      const machine = await repository.createMachine({
-        machineCode,
+      const apiKeyHash = await bcrypt.hash(apiKey, 10);
 
-        machineName: data.machine.machineName,
-
-        fingerprint: data.machine.fingerprint,
-
-        watcherVersion: data.machine.watcherVersion,
-
-        osName: data.machine.osName,
-
-        osVersion: data.machine.osVersion,
-
-        deviceName: data.machine.deviceName,
-
-        ipAddress: data.machine.ipAddress,
-
-        apiKeyHash: apiKey.apiKeyHash,
-
-        apiKeyIssuedAt: apiKey.issuedAt,
-
-        apiKeyExpiresAt: apiKey.expiresAt,
-
-        status: MachineStatus.ACTIVE,
-
-        agentId: data.agentId,
-        currentAgentId: data.agentId,
-      });
-
-      /**
-       * STEP 9
-       * Update Activation
-       */
-      await repository.activateMachine(activation.id, machine.id, data.agentId);
-
-      /**
-       * STEP 10
-       * Return API Key
-       */
+      const result = await this.completeActivation(
+        repository,
+        codeGeneratorService,
+        machine,
+        activation,
+        data,
+        apiKeyHash,
+        agent,
+      );
 
       return {
         success: true,
-        message: "Machine activated successfully.",
+        message: "Machine registered and activated successfully.",
         data: {
-          machineCode: machine.machineCode,
-          apiKey: apiKey.apiKey,
+          machineCode: result?.machine?.machineCode,
+          apiKey,
         },
       };
     };
+
     return withTransaction(execute);
+  }
+
+  private async registerMachine(
+    repository: MachineRepository,
+    data: ActivateMachineInput,
+    machineCode: string,
+    apiKeyHash: string,
+    agent: Agent,
+  ) {
+    return repository.createMachine({
+      machineCode,
+
+      fingerprint: data.machine.fingerprint,
+
+      machineName: data.machine.machineName,
+
+      watcherVersion: data.machine.watcherVersion,
+
+      osName: data.machine.osName,
+
+      osVersion: data.machine.osVersion,
+
+      deviceName: data.machine.deviceName,
+
+      ipAddress: data.machine.ipAddress,
+
+      apiKeyHash,
+
+      apiKeyIssuedAt: new Date(),
+
+      watcherEnabled: true,
+
+      status: MachineStatus.ACTIVE,
+
+      currentAgentId: agent.agentId,
+
+      agent: {
+        connect: {
+          agentId: agent.agentId,
+        },
+      },
+    });
+  }
+
+  private validateExistingMachine(
+    machine: MachineWithActivations,
+    activation: ActivationWithSubscription,
+  ) {
+    const ownerType = activation.subscription.ownerType;
+
+    const alreadyExists = machine.activations.some(
+      (item) =>
+        item.subscription.ownerType === ownerType &&
+        item.isCurrent &&
+        item.status === ActivationStatus.ACTIVE,
+    );
+
+    if (alreadyExists) {
+      throw new BadRequestError(
+        `Machine already has an active ${ownerType} subscription.`,
+      );
+    }
+  }
+
+  private async completeActivation(
+    repository: MachineRepository,
+    codeGeneratorService: CodeGeneratorService,
+    machine: MachineWithActivations | null,
+    activation: ActivationWithSubscription,
+    data: ActivateMachineInput,
+    apiKeyHash: string,
+    agent: Agent,
+  ) {
+    // We'll implement this next.
+    // let registeredMachine = machine;
+    // let registeredMachine:
+    // Prisma.MachineGetPayload<{}>;
+    let registeredMachine: Machine | null = machine;
+
+    if (!registeredMachine) {
+      const machineCode = await codeGeneratorService.generateMachineCode();
+
+      registeredMachine = await this.registerMachine(
+        repository,
+        data,
+        machineCode,
+        apiKeyHash,
+        agent,
+      );
+    }
+
+    if (!registeredMachine) {
+      throw new Error("Failed to register machine.");
+    }
+
+    await repository.completeActivation(activation.id, registeredMachine?.id);
+
+    return {
+      machine: registeredMachine,
+    };
   }
 }
