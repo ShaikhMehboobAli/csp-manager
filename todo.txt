@@ -1,0 +1,4 @@
+// TODO:
+// Implement MachineSession timeout job.
+// This will periodically close ACTIVE sessions whose
+// lastHeartbeatAt exceeds the configured timeout.

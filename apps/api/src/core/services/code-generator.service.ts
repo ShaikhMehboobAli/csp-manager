@@ -47,4 +47,11 @@ export default class CodeGeneratorService {
   async generateMachineCode() {
     return this.generateSequentialNumber(RunningNumberType.MACHINE, "MAC");
   }
+
+  async generateMachineSessionCode() {
+    return this.generateSequentialNumber(
+      RunningNumberType.MACHINE_SESSION,
+      "MSE",
+    );
+  }
 }

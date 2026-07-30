@@ -5,14 +5,17 @@ import MachineHeartbeatRepository from "./machine-heartbeat.repository";
 
 import { HeartbeatInput, HeartbeatResponse } from "./machine-heartbeat.dto";
 import RuntimeConfig from "../../../config/runtime.config";
+import MachineSessionService from "./machine-session.service";
 
 export default class MachineHeartbeatService {
   private readonly authService: MachineAuthenticationService;
   private readonly repository: MachineHeartbeatRepository;
+  private readonly machineSessionService: MachineSessionService;
 
   constructor(private readonly db: PrismaDb) {
     this.authService = new MachineAuthenticationService(db);
     this.repository = new MachineHeartbeatRepository(db);
+    this.machineSessionService = new MachineSessionService(db);
   }
 
   async heartbeat(input: HeartbeatInput): Promise<HeartbeatResponse> {
@@ -20,6 +23,16 @@ export default class MachineHeartbeatService {
       machineCode: input.machineCode,
       apiKey: input.apiKey,
       fingerprint: input.fingerprint,
+    });
+
+    // await this.sessionService.handleHeartbeat({
+    //   machineId: authenticated.machine.id,
+    //   currentAgentId: authenticated.machine.currentAgentId,
+    // });
+
+    await this.machineSessionService.handleHeartbeat({
+      machineId: authenticated.machine.id,
+      currentAgentId: authenticated.machine.currentAgentId,
     });
 
     await this.repository.updateHeartbeat(authenticated.machine.id, {

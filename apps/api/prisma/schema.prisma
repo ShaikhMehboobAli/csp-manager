@@ -830,6 +830,12 @@ enum SessionEndReason {
   POWER_FAILURE
   WATCHER_CRASH
   UNKNOWN
+  HEARTBEAT_TIMEOUT
+}
+
+enum MachineSessionStatus {
+  ACTIVE
+  CLOSED
 }
 
 model MachineSession {
@@ -856,11 +862,14 @@ model MachineSession {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  status   MachineSessionStatus @default(ACTIVE)
+
   machine Machine @relation(fields: [machineId], references: [id], onDelete: Restrict)
 
   endedReason SessionEndReason?
 
   @@index([machineId])
+  @@index([machineId, status])
   @@index([startedAt])
   @@index([endedAt])
   @@index([lastHeartbeatAt])
@@ -1246,6 +1255,7 @@ enum RunningNumberType {
   INVOICE
   MACHINE
   ACTIVATION
+  MACHINE_SESSION
 }
 
 model RunningNumber {
