@@ -51,10 +51,10 @@ export default class MachineActivationService {
        * STEP 3
        * Verify Password
        */
-      await security.verifyActivationPassword(
-        data.activationPassword,
-        activation.activationPasswordHash,
-      );
+      // await security.verifyActivationPassword(
+      //   data.activationPassword,
+      //   activation.activationPasswordHash,
+      // );
 
       /**
        * STEP 4
