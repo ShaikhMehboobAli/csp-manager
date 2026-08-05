@@ -868,6 +868,8 @@ model MachineSession {
 
   endedReason SessionEndReason?
 
+  receipts Receipt[]
+
   @@index([machineId])
   @@index([machineId, status])
   @@index([startedAt])
@@ -925,7 +927,12 @@ model Receipt {
   agent       Agent         @relation(fields: [agentId], references: [agentId])
   FloatLedger FloatLedger[]
 
+  machineSessionId String?
+
+  machineSession MachineSession?  @relation(fields: [machineSessionId], references: [machineSessionId])
+
   @@index([machineId])
+  @@index([machineSessionId])
   @@index([agentId])
   @@index([transactionAt])
   @@index([status])
@@ -1256,6 +1263,7 @@ enum RunningNumberType {
   MACHINE
   ACTIVATION
   MACHINE_SESSION
+  RECEIPT
 }
 
 model RunningNumber {

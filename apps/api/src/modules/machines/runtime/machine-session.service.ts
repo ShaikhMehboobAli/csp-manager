@@ -35,4 +35,8 @@ export default class MachineSessionService {
       lastAgentId: input.currentAgentId,
     });
   }
+
+  async getActiveSession(machineId: string) {
+    return this.repository.findActiveSession(machineId);
+  }
 }

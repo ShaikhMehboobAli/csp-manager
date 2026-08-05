@@ -32,4 +32,15 @@ export default class MachineHeartbeatRepository {
       },
     });
   }
+
+  async updateLastTransactionAt(machineId: string, lastTransactionAt: Date) {
+    return this.db.machine.update({
+      where: {
+        id: machineId,
+      },
+      data: {
+        lastTransactionAt,
+      },
+    });
+  }
 }

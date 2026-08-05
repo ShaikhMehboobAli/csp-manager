@@ -54,4 +54,8 @@ export default class CodeGeneratorService {
       "MSE",
     );
   }
+
+  async generateReceiptNumber() {
+    return this.generateSequentialNumber(RunningNumberType.RECEIPT, "REC");
+  }
 }
