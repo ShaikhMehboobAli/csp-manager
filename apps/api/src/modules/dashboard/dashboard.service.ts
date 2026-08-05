@@ -4,18 +4,24 @@ import DashboardOverviewRepository from "./repository/dashboard-overview.reposit
 import DashboardFloatRepository from "./repository/dashboard-float.repository";
 import DashboardServiceRepository from "./repository/dashboard-service.repository";
 
-import { DashboardFilter } from "./dashboard.types";
+import { DashboardAnalyticsFilter, DashboardFilter } from "./dashboard.types";
 
 import {
   calculateOverview,
   mapFloatSummary,
+  mapHourlyDistribution,
   mapRecentTransactions,
   mapServiceSummary,
+  mapServiceTrend,
   mapStatusSummary,
+  mapSuccessFailureTrend,
+  mapTransactionTrend,
 } from "./dashboard.mapper";
 import { BadRequestError } from "../../core/errors/BadRequestError";
 import DashboardMachineRepository from "./repository/dashboard-machine.repository";
 import { getMachineStatus } from "./dashboard.helper";
+import DashboardAnalyticsRepository from "./repository/dashboard-analytics.repository";
+import { DashboardAnalyticsQuery } from "./dashboard.validation";
 
 export default class DashboardService {
   private readonly overviewRepository: DashboardOverviewRepository;
@@ -26,6 +32,8 @@ export default class DashboardService {
 
   private readonly machineRepository: DashboardMachineRepository;
 
+  private readonly analyticsRepository: DashboardAnalyticsRepository;
+
   constructor(private readonly db: PrismaDb) {
     this.overviewRepository = new DashboardOverviewRepository(db);
 
@@ -34,6 +42,8 @@ export default class DashboardService {
     this.serviceRepository = new DashboardServiceRepository(db);
 
     this.machineRepository = new DashboardMachineRepository(db);
+
+    this.analyticsRepository = new DashboardAnalyticsRepository(db);
   }
 
   async getSummary(filter: DashboardFilter) {
@@ -106,6 +116,40 @@ export default class DashboardService {
       //   topServices,
 
       recentTransactions,
+    };
+  }
+
+  async getAnalytics(filter: DashboardAnalyticsFilter) {
+    if (!filter.agentId) {
+      throw new BadRequestError("Agent Id is required.");
+    }
+
+    const [
+      transactionTrend,
+      successFailureTrend,
+      serviceTrend,
+      hourlyDistribution,
+    ] = await Promise.all([
+      this.analyticsRepository.getTransactionTrend(filter),
+
+      this.analyticsRepository.getSuccessFailureTrend(filter),
+
+      this.analyticsRepository.getServiceTrend(filter),
+
+      this.analyticsRepository.getHourlyDistribution(filter),
+    ]);
+
+    return {
+      transactionTrend: mapTransactionTrend(transactionTrend, filter.groupBy),
+
+      successFailureTrend: mapSuccessFailureTrend(
+        successFailureTrend,
+        filter.groupBy,
+      ),
+
+      serviceTrend: mapServiceTrend(serviceTrend),
+
+      hourlyDistribution: mapHourlyDistribution(hourlyDistribution),
     };
   }
 }

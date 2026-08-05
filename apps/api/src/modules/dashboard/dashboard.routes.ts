@@ -10,4 +10,10 @@ const controller = new DashboardController();
 
 router.get("/summary", authMiddleware, controller.getSummary.bind(controller));
 
+router.get(
+  "/analytics",
+  authMiddleware,
+  controller.getAnalytics.bind(controller),
+);
+
 export default router;

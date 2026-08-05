@@ -4,6 +4,7 @@ import {
   ReceiptType,
   TransactionCategory,
 } from "../../generated/prisma/enums";
+import { DashboardAnalyticsQuery } from "./dashboard.validation";
 
 export type DashboardGroupBy = "hour" | "day" | "week" | "month" | "year";
 
@@ -77,4 +78,8 @@ export interface DashboardServiceSummary {
   successAmount: number;
 
   failedAmount: number;
+}
+
+export interface DashboardAnalyticsFilter extends DashboardAnalyticsQuery {
+  agentId: string;
 }

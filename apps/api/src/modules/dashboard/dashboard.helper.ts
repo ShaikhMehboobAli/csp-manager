@@ -24,3 +24,31 @@ export function getTodayRange() {
     end,
   };
 }
+
+export function getTrendLabel(
+  date: Date,
+  groupBy: "hour" | "day" | "week" | "month" | "year",
+): string {
+  switch (groupBy) {
+    case "hour":
+      return `${date.getHours()}:00`;
+
+    case "day":
+      return date.toISOString().split("T")[0];
+
+    case "week": {
+      const firstDay = new Date(date);
+      firstDay.setDate(date.getDate() - date.getDay());
+      return firstDay.toISOString().split("T")[0];
+    }
+
+    case "month":
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(
+        2,
+        "0",
+      )}`;
+
+    case "year":
+      return `${date.getFullYear()}`;
+  }
+}

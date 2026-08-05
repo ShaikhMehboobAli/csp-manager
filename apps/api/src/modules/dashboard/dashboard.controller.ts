@@ -3,7 +3,10 @@ import { Request, Response } from "express";
 import { withTransaction } from "../../core/database/transaction";
 
 import DashboardService from "./dashboard.service";
-import { dashboardSummarySchema } from "./dashboard.validation";
+import {
+  dashboardAnalyticsSchema,
+  dashboardSummarySchema,
+} from "./dashboard.validation";
 import { UnauthorizedError } from "../../core/errors/UnauthorizedError";
 
 export default class DashboardController {
@@ -58,6 +61,28 @@ export default class DashboardController {
         success: true,
 
         message: "Dashboard summary fetched successfully.",
+
+        data: result,
+      });
+    });
+  }
+
+  async getAnalytics(req: Request, res: Response) {
+    return withTransaction(async (tx) => {
+      const service = new DashboardService(tx);
+
+      const query = dashboardAnalyticsSchema.parse(req.query);
+
+      const result = await service.getAnalytics({
+        ...query,
+
+        agentId: req.user!.agentId,
+      });
+
+      return res.json({
+        success: true,
+
+        message: "Dashboard analytics fetched successfully.",
 
         data: result,
       });
