@@ -7,6 +7,7 @@ import oldMachineRoutes from "../modules/old-machines/machine.routes";
 import machineRoutes from "../modules/machines/machine.routes";
 import agentRoutes from "../modules/agents/routes/agent.routes";
 import receiptRoutes from "../modules/receipts/receipt.routes";
+import dashboardRoutes from "../modules/dashboard/dashboard.routes";
 
 const router = Router();
 
@@ -18,5 +19,6 @@ router.use("/old-machines", oldMachineRoutes);
 router.use("/machines", machineRoutes);
 router.use("/agents", agentRoutes);
 router.use("/receipts", receiptRoutes);
+router.use("/dashboard", dashboardRoutes);
 
 export default router;
