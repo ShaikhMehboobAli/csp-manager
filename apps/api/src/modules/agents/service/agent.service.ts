@@ -5,11 +5,14 @@ import { CurrentUser } from "../../../core/types/auth.types";
 import {
   Agent,
   AgentType,
+  FloatLedgerType,
   Prisma,
   PrismaClient,
   SubscriptionOwnerType,
 } from "../../../generated/prisma/client";
 import ActivationRepository from "../../activations/activation.repository";
+import FloatLedgerService from "../../float/float-ledger.service";
+import { mapOpeningBalance } from "../../float/opening-balance.mapper";
 import SubscriptionService from "../../subscriptions/subscription.service";
 import { mapAgent } from "../mappers/agent.mapper";
 import { AgentRepository } from "../repository/agent.repository";
@@ -199,6 +202,18 @@ export class AgentService {
         linkedAt: new Date(),
 
         createdBy,
+      });
+
+      const floatLedgerService = new FloatLedgerService(tx);
+
+      await floatLedgerService.record({
+        agentId: csp.agentId,
+
+        ledgerType: FloatLedgerType.OPENING,
+
+        openingBalance: mapOpeningBalance(csp),
+
+        remarks: "Opening balance",
       });
     }
 

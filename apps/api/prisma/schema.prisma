@@ -144,13 +144,31 @@ enum TransactionCategory {
   OTHER
 }
 
+//enum FloatLedgerType {
+ // OPENING
+ // RECEIPT
+ // ADJUSTMENT
+ // LIMIT_TOPUP
+ // LIMIT_REDUCTION
+ // CORRECTION
+ // RENEWAL_ADJUSTMENT
+//}
+
 enum FloatLedgerType {
   OPENING
+
   RECEIPT
+
+  OPENING_ADJUSTMENT
+
   ADJUSTMENT
+
   LIMIT_TOPUP
+
   LIMIT_REDUCTION
+
   CORRECTION
+
   RENEWAL_ADJUSTMENT
 }
 

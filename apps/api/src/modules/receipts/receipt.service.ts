@@ -131,6 +131,9 @@ import MachineHeartbeatRepository from "../machines/runtime/machine-heartbeat.re
 import { UploadReceiptRequest } from "./receipt.dto";
 import { withTransaction } from "../../core/database/transaction";
 
+import { FloatLedgerType, ReceiptStatus } from "../../generated/prisma/enums";
+import FloatLedgerService from "../float/float-ledger.service";
+
 export default class ReceiptService {
   async upload(request: UploadReceiptRequest) {
     return withTransaction(async (tx) => {
@@ -141,6 +144,8 @@ export default class ReceiptService {
       const sessionRepository = new MachineSessionRepository(tx);
 
       const heartbeatRepository = new MachineHeartbeatRepository(tx);
+
+      const floatLedgerService = new FloatLedgerService(tx);
 
       const codeGenerator = createCodeGeneratorService(tx);
 
@@ -365,7 +370,32 @@ export default class ReceiptService {
           location: receipt.location,
         });
 
-        uploadedReceipts.push(savedReceipt);
+        let ledgerCreated = savedReceipt.status === ReceiptStatus.SUCCESS;
+
+        if (ledgerCreated) {
+          await floatLedgerService.record({
+            agentId: authenticated.machine.currentAgentId,
+
+            receiptId: savedReceipt.receiptId,
+
+            ledgerType: FloatLedgerType.RECEIPT,
+
+            transactionCategory: savedReceipt.transactionCategory,
+
+            amount: Number(savedReceipt.amount),
+
+            remarks: "Receipt uploaded from ReceiptWatcher",
+          });
+
+          ledgerCreated = true;
+        }
+
+        // uploadedReceipts.push(savedReceipt);
+        uploadedReceipts.push({
+          receipt: savedReceipt,
+
+          ledgerCreated: ledgerCreated,
+        });
       }
 
       // Update Machine
