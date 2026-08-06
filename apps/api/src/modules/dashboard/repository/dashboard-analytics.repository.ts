@@ -1,15 +1,27 @@
 import { PrismaDb } from "../../../core/database/prisma.types";
 
 import { DashboardFilter } from "../dashboard.types";
+import DashboardCommonRepository from "./dashboard-common.repository";
 
 export default class DashboardAnalyticsRepository {
   constructor(private readonly db: PrismaDb) {}
+  //   constructor(db: PrismaDb) {
+  //     super(db);
+  //   }
 
   private buildWhere(filter: DashboardFilter) {
     return {
-      ...(filter.agentId && {
-        agentId: filter.agentId,
-      }),
+      //   ...(filter.agentId && {
+      //     agentId: filter.agentId,
+      //   }),
+
+      ...(filter.agentIds?.length
+        ? {
+            agentId: {
+              in: filter.agentIds,
+            },
+          }
+        : {}),
 
       ...(filter.machineId && {
         machineId: filter.machineId,

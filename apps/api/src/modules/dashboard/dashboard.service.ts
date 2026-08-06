@@ -47,11 +47,11 @@ export default class DashboardService {
   }
 
   async getSummary(filter: DashboardFilter) {
-    if (!filter.agentId) {
-      throw new BadRequestError("Agent Id is required.");
-    }
+    // if (filter.agentIds.length === 0) {
+    //   throw new BadRequestError("No accessible agents found.");
+    // }
 
-    const agentId = filter.agentId;
+    const agentId = filter.agentIds[0];
 
     const [
       overview,
@@ -64,7 +64,7 @@ export default class DashboardService {
     ] = await Promise.all([
       this.overviewRepository.getOverview(filter),
 
-      this.floatRepository.getFloatSummary(agentId),
+      this.floatRepository.getFloatSummary(filter.currentAgentId),
 
       this.serviceRepository.getServiceSummary(filter),
 
@@ -72,7 +72,11 @@ export default class DashboardService {
 
       this.serviceRepository.getStatusSummary(filter),
 
-      this.machineRepository.getMachineSummary(agentId, filter.from, filter.to),
+      this.machineRepository.getMachineSummary(
+        filter.currentAgentId,
+        filter.from,
+        filter.to,
+      ),
 
       //   this.serviceRepository.getTopServices(filter),
     ]);
@@ -120,9 +124,9 @@ export default class DashboardService {
   }
 
   async getAnalytics(filter: DashboardAnalyticsFilter) {
-    if (!filter.agentId) {
-      throw new BadRequestError("Agent Id is required.");
-    }
+    // if (filter.agentIds.length === 0) {
+    //   throw new BadRequestError("No accessible agents found.");
+    // }
 
     const [
       transactionTrend,

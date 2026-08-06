@@ -8,6 +8,7 @@ import {
   dashboardSummarySchema,
 } from "./dashboard.validation";
 import { UnauthorizedError } from "../../core/errors/UnauthorizedError";
+import AgentScopeService from "../agents/service/agent-scope.service";
 
 export default class DashboardController {
   async getSummary(req: Request, res: Response) {
@@ -51,10 +52,28 @@ export default class DashboardController {
 
       const query = dashboardSummarySchema.parse(req.query);
 
+      //   const result = await service.getSummary({
+      //     ...query,
+
+      //     agentId: currentUser.agentId,
+      //   });
+
+      const scopeService = new AgentScopeService(tx);
+
+      const agentIds = await scopeService.getAgentScope(req.user!);
+
+      console.log("Dashboard Scope:", {
+        role: req.user!.role,
+        currentAgent: req.user!.agentId,
+        agentIds,
+      });
+
       const result = await service.getSummary({
         ...query,
 
-        agentId: currentUser.agentId,
+        currentAgentId: req.user!.agentId,
+
+        agentIds,
       });
 
       return res.status(200).json({
@@ -73,10 +92,22 @@ export default class DashboardController {
 
       const query = dashboardAnalyticsSchema.parse(req.query);
 
+      //   const result = await service.getAnalytics({
+      //     ...query,
+
+      //     agentId: req.user!.agentId,
+      //   });
+
+      const scopeService = new AgentScopeService(tx);
+
+      const agentIds = await scopeService.getAgentScope(req.user!);
+
       const result = await service.getAnalytics({
         ...query,
 
-        agentId: req.user!.agentId,
+        currentAgentId: req.user!.agentId,
+
+        agentIds,
       });
 
       return res.json({

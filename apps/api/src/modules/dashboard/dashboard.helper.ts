@@ -52,3 +52,15 @@ export function getTrendLabel(
       return `${date.getFullYear()}`;
   }
 }
+
+export function buildAgentScope(agentIds?: string[]) {
+  if (!agentIds) {
+    return {};
+  }
+
+  return {
+    agentId: {
+      in: agentIds,
+    },
+  };
+}

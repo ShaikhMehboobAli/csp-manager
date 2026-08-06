@@ -126,6 +126,7 @@
 
 import {
   Agent,
+  AgentStatus,
   AgentType,
   Prisma,
   PrismaClient,
@@ -333,4 +334,67 @@ export class AgentRepository {
       },
     });
   }
+
+  /**
+   * Returns direct child agents.
+   */
+  async getChildAgents(parentAgentIds: string[], type?: AgentType) {
+    return this.db.agent.findMany({
+      where: {
+        parentAgentId: {
+          in: parentAgentIds,
+        },
+
+        ...(type && {
+          type,
+        }),
+
+        status: "ACTIVE",
+
+        isDeleted: false,
+      },
+
+      select: {
+        agentId: true,
+      },
+    });
+  }
+
+  async getCspAgents(bcId: string) {
+    return this.db.agent.findMany({
+      where: {
+        bcId,
+
+        type: AgentType.CSP,
+
+        status: AgentStatus.ACTIVE,
+
+        isDeleted: false,
+      },
+
+      select: {
+        agentId: true,
+      },
+    });
+  }
+
+  //   async getCspAgents(bcIds: string[]) {
+  //   return this.db.agent.findMany({
+  //     where: {
+  //       bcId: {
+  //         in: bcIds,
+  //       },
+
+  //       type: AgentType.CSP,
+
+  //       status: AgentStatus.ACTIVE,
+
+  //       isDeleted: false,
+  //     },
+
+  //     select: {
+  //       agentId: true,
+  //     },
+  //   });
+  // }
 }
