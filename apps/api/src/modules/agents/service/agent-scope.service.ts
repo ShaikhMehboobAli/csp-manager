@@ -1,4 +1,5 @@
 import { PrismaDb } from "../../../core/database/prisma.types";
+import { ForbiddenError } from "../../../core/errors/ForbiddenError";
 import { CurrentUser } from "../../../core/types/auth.types";
 
 import { AgentType, UserRole } from "../../../generated/prisma/enums";
@@ -59,6 +60,19 @@ export default class AgentScopeService {
 
       default:
         return [user.agentId];
+    }
+  }
+
+  ensureAgentAccessible(
+    requestedAgentId: string | undefined,
+    allowedAgentIds: string[],
+  ) {
+    if (!requestedAgentId) {
+      return;
+    }
+
+    if (!allowedAgentIds.includes(requestedAgentId)) {
+      throw new ForbiddenError("You are not allowed to access this CSP.");
     }
   }
 }

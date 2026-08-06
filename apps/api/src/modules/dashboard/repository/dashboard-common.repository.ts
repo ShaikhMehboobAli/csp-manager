@@ -53,7 +53,24 @@ export default abstract class DashboardCommonRepository {
   ): Prisma.ReceiptWhereInput {
     const where: Prisma.ReceiptWhereInput = {};
 
-    if (filter.agentIds.length > 0) {
+    // if (filter.agentIds.length > 0) {
+    //   where.agentId = {
+    //     in: filter.agentIds,
+    //   };
+    // }
+
+    /**
+     * If a specific CSP is selected,
+     * use only that CSP.
+     */
+    if (filter.agentId) {
+      where.agentId = filter.agentId;
+    } else if (filter.agentIds?.length > 0) {
+
+    /**
+     * Otherwise use the entire scope
+     * (BC -> all CSPs, CSP -> self)
+     */
       where.agentId = {
         in: filter.agentIds,
       };

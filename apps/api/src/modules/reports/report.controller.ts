@@ -18,6 +18,7 @@ export default class ReportController {
       const scopeService = new AgentScopeService(tx);
 
       const agentIds = await scopeService.getAgentScope(req.user!);
+      scopeService.ensureAgentAccessible(query.agentId, agentIds);
 
       const result = await this.service.getSummary({
         ...query,
@@ -44,6 +45,7 @@ export default class ReportController {
       const scopeService = new AgentScopeService(tx);
 
       const agentIds = await scopeService.getAgentScope(req.user!);
+      scopeService.ensureAgentAccessible(query.agentId, agentIds);
 
       const workbook = await this.service.exportReport({
         ...query,

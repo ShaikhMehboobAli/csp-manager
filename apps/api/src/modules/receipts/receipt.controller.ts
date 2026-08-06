@@ -26,6 +26,8 @@ export default class ReceiptController {
 
       const agentIds = await scopeService.getAgentScope(req.user!);
 
+      scopeService.ensureAgentAccessible(query.agentId, agentIds);
+
       const result = await this.service.getReceipts({
         ...query,
 
@@ -73,6 +75,8 @@ export default class ReceiptController {
 
       const agentIds = await scopeService.getAgentScope(req.user!);
 
+      scopeService.ensureAgentAccessible(query.agentId, agentIds);
+
       const result = await this.service.getStats({
         ...query,
 
@@ -98,6 +102,7 @@ export default class ReceiptController {
       const scopeService = new AgentScopeService(tx);
 
       const agentIds = await scopeService.getAgentScope(req.user!);
+      scopeService.ensureAgentAccessible(query.agentId, agentIds);
 
       if (query.agentId && !agentIds.includes(query.agentId)) {
         return res.status(403).json({

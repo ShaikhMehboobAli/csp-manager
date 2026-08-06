@@ -9,11 +9,22 @@ export default abstract class ReportCommonRepository {
 
   protected buildReceiptWhere(filter: ReportFilter): Prisma.ReceiptWhereInput {
     return {
-      ...(filter.agentIds.length > 0 && {
-        agentId: {
-          in: filter.agentIds,
-        },
-      }),
+      //   ...(filter.agentIds.length > 0 && {
+      //     agentId: {
+      //       in: filter.agentIds,
+      //     },
+      //   }),
+      ...(filter.agentId
+        ? {
+            agentId: filter.agentId,
+          }
+        : filter.agentIds?.length
+          ? {
+              agentId: {
+                in: filter.agentIds,
+              },
+            }
+          : {}),
 
       ...((filter.from || filter.to) && {
         transactionAt: {

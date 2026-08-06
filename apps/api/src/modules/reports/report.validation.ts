@@ -7,6 +7,8 @@ export const reportSummarySchema = z.object({
 
   cspAgentId: z.string().trim().optional(),
 
+  agentId: z.string().optional(),
+
   period: z
     .enum(["TODAY", "YESTERDAY", "CURRENT_MONTH", "LAST_MONTH", "CUSTOM"])
     .default("TODAY"),

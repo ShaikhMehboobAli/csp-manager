@@ -92,4 +92,5 @@ export interface DashboardAnalyticsFilter extends DashboardAnalyticsQuery {
 export interface DashboardFilter extends DashboardSummaryQuery {
   currentAgentId: string;
   agentIds: string[];
+  agentId?: string;
 }

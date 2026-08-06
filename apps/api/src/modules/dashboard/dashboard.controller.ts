@@ -61,6 +61,7 @@ export default class DashboardController {
       const scopeService = new AgentScopeService(tx);
 
       const agentIds = await scopeService.getAgentScope(req.user!);
+      scopeService.ensureAgentAccessible(query.agentId, agentIds);
 
       console.log("Dashboard Scope:", {
         role: req.user!.role,
@@ -101,6 +102,7 @@ export default class DashboardController {
       const scopeService = new AgentScopeService(tx);
 
       const agentIds = await scopeService.getAgentScope(req.user!);
+      scopeService.ensureAgentAccessible(query.agentId, agentIds);
 
       const result = await service.getAnalytics({
         ...query,

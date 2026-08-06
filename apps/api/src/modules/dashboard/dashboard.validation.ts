@@ -15,6 +15,7 @@ export const dashboardSummarySchema = z
     transactionCategory: z.nativeEnum(TransactionCategory).optional(),
 
     search: z.string().trim().optional(),
+    agentId: z.string().optional(),
   })
   .refine((data) => !data.from || !data.to || data.from <= data.to, {
     message: "'from' date must be before 'to' date.",

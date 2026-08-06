@@ -4,4 +4,5 @@ export interface ReportFilter extends ReportSummaryQuery {
   currentAgentId: string;
 
   agentIds: string[];
+  agentId?: string;
 }
