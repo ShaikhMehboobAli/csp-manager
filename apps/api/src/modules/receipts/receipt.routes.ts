@@ -20,6 +20,10 @@ router.post(
 
 router.get("/", authMiddleware, controller.getReceipts.bind(controller));
 
+router.get("/stats", authMiddleware, controller.getStats.bind(controller));
+
+// Get a specific receipt by ID
+// and this route need to be below the /stats route because /stats will match /:receiptId if it is above it
 router.get(
   "/:receiptId",
   authMiddleware,

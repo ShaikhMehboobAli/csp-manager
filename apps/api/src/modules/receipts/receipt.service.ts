@@ -211,4 +211,12 @@ export default class ReceiptService {
       return mapReceiptDetail(receipt);
     });
   }
+
+  async getStats(filter: ReceiptFilter) {
+    return withTransaction(async (tx) => {
+      const repository = new ReceiptListRepository(tx);
+
+      return repository.getStats(filter);
+    });
+  }
 }

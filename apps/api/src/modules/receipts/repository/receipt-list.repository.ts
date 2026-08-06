@@ -79,4 +79,55 @@ export default class ReceiptListRepository extends ReceiptCommonRepository {
       pagination: buildPagination(page, limit, total),
     };
   }
+
+  /**
+   * Receipt Statistics
+   */
+  async getStats(filter: ReceiptFilter) {
+    const where = this.buildReceiptWhere(filter);
+
+    const [total, success, failed, totalAmount] = await Promise.all([
+      this.db.receipt.count({
+        where,
+      }),
+
+      this.db.receipt.count({
+        where: {
+          ...where,
+
+          status: "SUCCESS",
+        },
+      }),
+
+      this.db.receipt.count({
+        where: {
+          ...where,
+
+          status: "FAILED",
+        },
+      }),
+
+      this.db.receipt.aggregate({
+        where: {
+          ...where,
+
+          status: "SUCCESS",
+        },
+
+        _sum: {
+          amount: true,
+        },
+      }),
+    ]);
+
+    return {
+      total,
+
+      success,
+
+      failed,
+
+      totalAmount: Number(totalAmount._sum.amount ?? 0),
+    };
+  }
 }

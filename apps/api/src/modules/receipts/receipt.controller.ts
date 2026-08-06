@@ -64,4 +64,30 @@ export default class ReceiptController {
       });
     });
   }
+
+  async getStats(req: Request, res: Response) {
+    const query = receiptListSchema.parse(req.query);
+
+    return withTransaction(async (tx) => {
+      const scopeService = new AgentScopeService(tx);
+
+      const agentIds = await scopeService.getAgentScope(req.user!);
+
+      const result = await this.service.getStats({
+        ...query,
+
+        currentAgentId: req.user!.agentId,
+
+        agentIds,
+      });
+
+      return res.json({
+        success: true,
+
+        message: "Receipt statistics fetched successfully.",
+
+        data: result,
+      });
+    });
+  }
 }
