@@ -11,21 +11,21 @@ import {
 
 export type DashboardGroupBy = "hour" | "day" | "week" | "month" | "year";
 
-export interface DashboardFilter {
-  from?: Date;
+// export interface DashboardFilter {
+//   from?: Date;
 
-  to?: Date;
+//   to?: Date;
 
-  agentId?: string;
+//   agentId?: string;
 
-  machineId?: string;
+//   machineId?: string;
 
-  receiptType?: ReceiptType;
+//   receiptType?: ReceiptType;
 
-  transactionCategory?: TransactionCategory;
+//   transactionCategory?: TransactionCategory;
 
-  groupBy?: DashboardGroupBy;
-}
+//   groupBy?: DashboardGroupBy;
+// }
 
 export interface DashboardTransactionSummary {
   transactionCategory: TransactionCategory;

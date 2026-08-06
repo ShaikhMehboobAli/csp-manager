@@ -53,14 +53,32 @@ export function getTrendLabel(
   }
 }
 
-export function buildAgentScope(agentIds?: string[]) {
-  if (!agentIds) {
-    return {};
+// export function buildAgentScope(agentIds?: string[]) {
+//   if (!agentIds) {
+//     return {};
+//   }
+
+//   return {
+//     agentId: {
+//       in: agentIds,
+//     },
+//   };
+// }
+
+export function buildAgentScope(agentIds?: string[], agentId?: string) {
+  if (agentId) {
+    return {
+      agentId,
+    };
   }
 
-  return {
-    agentId: {
-      in: agentIds,
-    },
-  };
+  if (agentIds?.length) {
+    return {
+      agentId: {
+        in: agentIds,
+      },
+    };
+  }
+
+  return {};
 }

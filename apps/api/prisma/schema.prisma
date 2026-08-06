@@ -145,13 +145,13 @@ enum TransactionCategory {
 }
 
 //enum FloatLedgerType {
- // OPENING
- // RECEIPT
- // ADJUSTMENT
- // LIMIT_TOPUP
- // LIMIT_REDUCTION
- // CORRECTION
- // RENEWAL_ADJUSTMENT
+// OPENING
+// RECEIPT
+// ADJUSTMENT
+// LIMIT_TOPUP
+// LIMIT_REDUCTION
+// CORRECTION
+// RENEWAL_ADJUSTMENT
 //}
 
 enum FloatLedgerType {
@@ -461,8 +461,8 @@ model Agent {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  cashLimit Decimal? @db.Decimal(18,2)
-  openingCash Decimal? @db.Decimal(18,2)
+  cashLimit   Decimal? @db.Decimal(18, 2)
+  openingCash Decimal? @db.Decimal(18, 2)
 
   linkedAt DateTime?
 
@@ -475,9 +475,9 @@ model Agent {
   deletedByUserId String?
 
   deletedAt              DateTime?
-  AgentFloat             AgentFloat?
-  FloatLedger            FloatLedger[]
-  FloatAdjustmentRequest FloatAdjustmentRequest[]
+  agentFloat             AgentFloat?
+  floatLedger            FloatLedger[]
+  floatAdjustmentRequest FloatAdjustmentRequest[]
 
   machines Machine[]
 
@@ -774,7 +774,7 @@ model Machine {
   createdBy String?
   updatedBy String?
 
-  AuditLog AuditLog[]
+  auditLog AuditLog[]
   agent    Agent?     @relation(fields: [agentId], references: [agentId])
   agentId  String?
 
@@ -880,7 +880,7 @@ model MachineSession {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  status   MachineSessionStatus @default(ACTIVE)
+  status MachineSessionStatus @default(ACTIVE)
 
   machine Machine @relation(fields: [machineId], references: [id], onDelete: Restrict)
 
@@ -947,7 +947,7 @@ model Receipt {
 
   machineSessionId String?
 
-  machineSession MachineSession?  @relation(fields: [machineSessionId], references: [machineSessionId])
+  machineSession MachineSession? @relation(fields: [machineSessionId], references: [machineSessionId])
 
   @@index([machineId])
   @@index([machineSessionId])

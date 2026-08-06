@@ -1,4 +1,5 @@
 import { ReceiptStatus } from "../../generated/prisma/enums";
+import { getMachineStatus } from "./dashboard.helper";
 import {
   DashboardServiceSummary,
   ServiceSummaryAggregate,
@@ -368,4 +369,38 @@ export function mapHourlyDistribution(
 
       count,
     }));
+}
+
+export function mapMachineSummary(machine: any) {
+  if (!machine) {
+    return null;
+  }
+
+  /**
+   * BC Machine Summary
+   */
+  if ("summary" in machine) {
+    return machine;
+  }
+
+  /**
+   * CSP Machine Summary
+   */
+  return {
+    machineCode: machine.machineCode,
+
+    machineStartedAt: machine.machineStartedAt,
+
+    firstReceiptCapturedAt: machine.firstReceiptCapturedAt,
+
+    lastReceiptCapturedAt: machine.lastReceiptCapturedAt,
+
+    receiptWatcherVersion: machine.watcherVersion,
+
+    lastHeartbeatAt: machine.lastHeartbeatAt,
+
+    connectionStatus: getMachineStatus(machine.lastHeartbeatAt),
+
+    machineStatus: machine.status,
+  };
 }

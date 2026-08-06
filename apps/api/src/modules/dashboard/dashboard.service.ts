@@ -10,6 +10,7 @@ import {
   calculateOverview,
   mapFloatSummary,
   mapHourlyDistribution,
+  mapMachineSummary,
   mapRecentTransactions,
   mapServiceSummary,
   mapServiceTrend,
@@ -22,6 +23,7 @@ import DashboardMachineRepository from "./repository/dashboard-machine.repositor
 import { getMachineStatus } from "./dashboard.helper";
 import DashboardAnalyticsRepository from "./repository/dashboard-analytics.repository";
 import { DashboardAnalyticsQuery } from "./dashboard.validation";
+import DashboardActivationRepository from "./repository/dashboard-activation.repository";
 
 export default class DashboardService {
   private readonly overviewRepository: DashboardOverviewRepository;
@@ -34,6 +36,8 @@ export default class DashboardService {
 
   private readonly analyticsRepository: DashboardAnalyticsRepository;
 
+  private readonly activationRepository: DashboardActivationRepository;
+
   constructor(private readonly db: PrismaDb) {
     this.overviewRepository = new DashboardOverviewRepository(db);
 
@@ -44,14 +48,16 @@ export default class DashboardService {
     this.machineRepository = new DashboardMachineRepository(db);
 
     this.analyticsRepository = new DashboardAnalyticsRepository(db);
+
+    this.activationRepository = new DashboardActivationRepository(db);
   }
 
   async getSummary(filter: DashboardFilter) {
     // if (filter.agentIds.length === 0) {
     //   throw new BadRequestError("No accessible agents found.");
     // }
-
-    const agentId = filter.agentIds[0];
+    const isSingleAgentView =
+      filter.agentId !== undefined || filter.agentIds.length === 1;
 
     const [
       overview,
@@ -60,6 +66,7 @@ export default class DashboardService {
       recentTransactions,
       statusSummary,
       machineSummary,
+      activationSummary,
       //   topServices,
     ] = await Promise.all([
       this.overviewRepository.getOverview(filter),
@@ -72,11 +79,16 @@ export default class DashboardService {
 
       this.serviceRepository.getStatusSummary(filter),
 
-      this.machineRepository.getMachineSummary(
-        filter.currentAgentId,
-        filter.from,
-        filter.to,
-      ),
+      isSingleAgentView
+        ? await this.machineRepository.getCspMachineSummary(filter)
+        : await this.machineRepository.getMachineMonitoring(filter),
+
+      this.activationRepository.getActivationSummary(filter),
+      //   this.machineRepository.getCspMachineSummary(filter),
+      //     filter.currentAgentId,
+      //     filter.from,
+      //     filter.to,
+      //   ),
 
       //   this.serviceRepository.getTopServices(filter),
     ]);
@@ -102,22 +114,11 @@ export default class DashboardService {
 
       statusSummary: mapStatusSummary(statusSummary),
 
-      machine: machineSummary && {
-        machineStartedAt: machineSummary.machineStartedAt,
-
-        firstReceiptCapturedAt: machineSummary.firstReceiptCapturedAt,
-
-        lastReceiptCapturedAt: machineSummary.lastReceiptCapturedAt,
-
-        receiptWatcherVersion: machineSummary.watcherVersion,
-
-        lastHeartbeatAt: machineSummary.lastHeartbeatAt,
-
-        connectionStatus: getMachineStatus(machineSummary.lastHeartbeatAt),
-        machineStatus: machineSummary.status,
-      },
+      machine: mapMachineSummary(machineSummary),
 
       //   topServices,
+
+      activationSummary,
 
       recentTransactions,
     };

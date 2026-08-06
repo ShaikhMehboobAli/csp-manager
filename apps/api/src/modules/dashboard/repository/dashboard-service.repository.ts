@@ -4,6 +4,8 @@ import DashboardCommonRepository from "./dashboard-common.repository";
 
 import { DashboardFilter } from "../dashboard.types";
 
+const DASHBOARD_RECENT_TRANSACTION_LIMIT = 5;
+
 export default class DashboardServiceRepository extends DashboardCommonRepository {
   constructor(db: PrismaDb) {
     super(db);
@@ -58,7 +60,7 @@ export default class DashboardServiceRepository extends DashboardCommonRepositor
         transactionAt: "desc",
       },
 
-      take: 10,
+      take: DASHBOARD_RECENT_TRANSACTION_LIMIT,
 
       select: {
         receiptId: true,
@@ -107,7 +109,7 @@ export default class DashboardServiceRepository extends DashboardCommonRepositor
         },
       },
 
-      take: 10,
+      take: DASHBOARD_RECENT_TRANSACTION_LIMIT,
     });
   }
 
