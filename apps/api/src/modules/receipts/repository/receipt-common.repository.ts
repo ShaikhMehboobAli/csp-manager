@@ -13,8 +13,22 @@ export default abstract class ReceiptCommonRepository {
     /**
      * Agent Scope
      */
-    // if (filter.agentIds.length > 0) {
-    if ((filter.agentIds ?? []).length > 0) {
+    // if ((filter.agentIds ?? []).length > 0) {
+    //   where.agentId = {
+    //     in: filter.agentIds,
+    //   };
+    // }
+
+    /**
+     * Specific CSP selected
+     */
+    if (filter.agentId) {
+      where.agentId = filter.agentId;
+    } else if (filter.agentIds?.length) {
+
+    /**
+     * Otherwise use agent scope
+     */
       where.agentId = {
         in: filter.agentIds,
       };

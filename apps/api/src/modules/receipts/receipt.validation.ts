@@ -63,6 +63,8 @@ export const receiptListSchema = z.object({
 
   search: z.string().trim().optional(),
 
+  agentId: z.string().optional(),
+
   sortBy: z
     .enum(["transactionAt", "createdAt", "amount"])
     .default("transactionAt"),

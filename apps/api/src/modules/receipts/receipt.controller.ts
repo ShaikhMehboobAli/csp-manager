@@ -99,6 +99,13 @@ export default class ReceiptController {
 
       const agentIds = await scopeService.getAgentScope(req.user!);
 
+      if (query.agentId && !agentIds.includes(query.agentId)) {
+        return res.status(403).json({
+          success: false,
+          message: "You are not allowed to access this CSP.",
+        });
+      }
+
       const workbook = await this.service.export({
         ...query,
 

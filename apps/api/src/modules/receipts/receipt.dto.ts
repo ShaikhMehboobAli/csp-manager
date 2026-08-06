@@ -46,6 +46,7 @@ export interface ReceiptFilter extends ReceiptListQuery {
   currentAgentId: string;
 
   agentIds: string[];
+  agentId?: string;
 }
 
 export type ReceiptParams = {
