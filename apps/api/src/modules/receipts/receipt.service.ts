@@ -1,138 +1,20 @@
-// import { PrismaDb } from "../../core/database/prisma.types";
-
-// import ReceiptRepository from "./receipt.repository";
-
-// import MachineAuthenticationService from "../machines/runtime/machine-auth.service";
-// import MachineSessionRepository from "../machines/runtime/machine-session.repository";
-// import MachineHeartbeatRepository from "../machines/runtime/machine-heartbeat.repository";
-
-// import { UploadReceiptRequest } from "./receipt.dto";
-// import { createCodeGeneratorService } from "../../core/services/service.factory";
-
-// export default class ReceiptService {
-//   private readonly repository: ReceiptRepository;
-
-//   private readonly authenticationService: MachineAuthenticationService;
-
-//   private readonly sessionRepository: MachineSessionRepository;
-
-//   private readonly heartbeatRepository: MachineHeartbeatRepository;
-
-//   constructor(private readonly db: PrismaDb) {
-//     this.repository = new ReceiptRepository(db);
-
-//     this.authenticationService = new MachineAuthenticationService(db);
-
-//     this.sessionRepository = new MachineSessionRepository(db);
-
-//     this.heartbeatRepository = new MachineHeartbeatRepository(db);
-//   }
-
-//   async upload(request: UploadReceiptRequest) {
-//     const authenticated = await this.authenticationService.authenticate({
-//       machineCode: request.machineCode,
-//       apiKey: request.apiKey,
-//       fingerprint: request.fingerprint,
-//     });
-
-//     const session = await this.sessionRepository.findActiveSession(
-//       authenticated.machine.id,
-//     );
-
-//     if (!session) {
-//       throw new Error("No active machine session found.");
-//     }
-
-//     if (!authenticated.machine.currentAgentId) {
-//       throw new Error("No agent is currently assigned to this machine.");
-//     }
-
-//     const codeGenerator = createCodeGeneratorService(this.db);
-
-//     const uploadedReceipts = [];
-
-//     for (const receipt of request.receipts) {
-//       const receiptId = await codeGenerator.generateReceiptNumber();
-
-//       const savedReceipt = await this.repository.create({
-//         receiptId,
-
-//         machine: {
-//           connect: {
-//             id: authenticated.machine.id,
-//           },
-//         },
-
-//         machineSession: {
-//           connect: {
-//             machineSessionId: session.machineSessionId,
-//           },
-//         },
-
-//         agent: {
-//           connect: {
-//             agentId: authenticated.machine.currentAgentId!,
-//           },
-//         },
-
-//         receiptType: receipt.receiptType,
-
-//         transactionCategory: receipt.transactionCategory,
-
-//         transactionType: receipt.transactionType,
-
-//         status: receipt.status,
-
-//         transactionAt: receipt.transactionAt,
-
-//         amount: receipt.amount,
-
-//         charges: receipt.charges,
-
-//         stan: receipt.stan,
-
-//         rrn: receipt.rrn,
-
-//         terminalId: receipt.terminalId,
-
-//         customerName: receipt.customerName,
-
-//         customerAccount: receipt.customerAccount,
-
-//         location: receipt.location,
-//       });
-
-//       uploadedReceipts.push(savedReceipt);
-//     }
-
-//     await this.heartbeatRepository.updateHeartbeat(authenticated.machine.id, {
-//       lastTransactionAt: new Date(),
-//     });
-
-//     // return {
-//     //   uploaded: uploadedReceipts.length,
-//     //   receipts: uploadedReceipts,
-//     // };
-//     return {
-//       uploaded: uploadedReceipts.length,
-//       receiptIds: uploadedReceipts.map((r) => r.receiptId),
-//     };
-//   }
-// }
-
 import { createCodeGeneratorService } from "../../core/services/service.factory";
 
-import ReceiptRepository from "./receipt.repository";
+import ReceiptRepository from "./repository/receipt-upload.repository";
 
 import MachineAuthenticationService from "../machines/runtime/machine-auth.service";
 import MachineSessionRepository from "../machines/runtime/machine-session.repository";
 import MachineHeartbeatRepository from "../machines/runtime/machine-heartbeat.repository";
 
-import { UploadReceiptRequest } from "./receipt.dto";
+import { ReceiptFilter, UploadReceiptRequest } from "./receipt.dto";
 import { withTransaction } from "../../core/database/transaction";
 
 import { FloatLedgerType, ReceiptStatus } from "../../generated/prisma/enums";
 import FloatLedgerService from "../float/float-ledger.service";
+import ReceiptListRepository from "./repository/receipt-list.repository";
+import { mapReceiptDetail, mapReceiptList } from "./receipt.mapper";
+import ReceiptDetailRepository from "./repository/receipt-detail.repository";
+import { NotFoundError } from "../../core/errors/NotFoundError";
 
 export default class ReceiptService {
   async upload(request: UploadReceiptRequest) {
@@ -168,125 +50,6 @@ export default class ReceiptService {
       if (!session) {
         throw new Error("No active machine session found.");
       }
-
-      //   const uploadedReceipts = [];
-
-      //   // Save Receipts
-      //   for (const receipt of request.receipts) {
-      //     const savedReceipt = await repository.create({
-      //       receiptId: receipt.receiptId,
-
-      //       machine: {
-      //         connect: {
-      //           id: authenticated.machine.id,
-      //         },
-      //       },
-
-      //       machineSession: {
-      //         connect: {
-      //           machineSessionId: session.machineSessionId,
-      //         },
-      //       },
-
-      //       agent: {
-      //         connect: {
-      //           agentId: authenticated.machine.currentAgentId,
-      //         },
-      //       },
-
-      //       receiptType: receipt.receiptType,
-
-      //       transactionCategory: receipt.transactionCategory,
-
-      //       transactionType: receipt.transactionType,
-
-      //       status: receipt.status,
-
-      //       transactionAt: receipt.transactionAt,
-
-      //       amount: receipt.amount,
-
-      //       charges: receipt.charges,
-
-      //       stan: receipt.stan,
-
-      //       rrn: receipt.rrn,
-
-      //       terminalId: receipt.terminalId,
-
-      //       customerName: receipt.customerName,
-
-      //       customerAccount: receipt.customerAccount,
-
-      //       location: receipt.location,
-      //     });
-
-      //     uploadedReceipts.push(savedReceipt);
-      //   }
-
-      //   const uploadedReceipts = [];
-      //   const skippedReceipts: string[] = [];
-
-      //   for (const receipt of request.receipts) {
-      //     const existingReceipt = await repository.findByReceiptId(
-      //       receipt.receiptId,
-      //     );
-
-      //     if (existingReceipt) {
-      //       skippedReceipts.push(receipt.receiptId);
-      //       continue;
-      //     }
-
-      //     const savedReceipt = await repository.create({
-      //       receiptId: receipt.receiptId,
-
-      //       machine: {
-      //         connect: {
-      //           id: authenticated.machine.id,
-      //         },
-      //       },
-
-      //       machineSession: {
-      //         connect: {
-      //           machineSessionId: session.machineSessionId,
-      //         },
-      //       },
-
-      //       agent: {
-      //         connect: {
-      //           agentId: authenticated.machine.currentAgentId,
-      //         },
-      //       },
-
-      //       receiptType: receipt.receiptType,
-
-      //       transactionCategory: receipt.transactionCategory,
-
-      //       transactionType: receipt.transactionType,
-
-      //       status: receipt.status,
-
-      //       transactionAt: receipt.transactionAt,
-
-      //       amount: receipt.amount,
-
-      //       charges: receipt.charges,
-
-      //       stan: receipt.stan,
-
-      //       rrn: receipt.rrn,
-
-      //       terminalId: receipt.terminalId,
-
-      //       customerName: receipt.customerName,
-
-      //       customerAccount: receipt.customerAccount,
-
-      //       location: receipt.location,
-      //     });
-
-      //     uploadedReceipts.push(savedReceipt);
-      //   }
 
       const uploadedReceipts = [];
 
@@ -415,6 +178,37 @@ export default class ReceiptService {
           skippedReceipts,
         },
       };
+    });
+  }
+
+  /**
+   * Receipt List
+   */
+  async getReceipts(filter: ReceiptFilter) {
+    return withTransaction(async (tx) => {
+      const repository = new ReceiptListRepository(tx);
+
+      const result = await repository.getReceipts(filter);
+
+      return {
+        items: mapReceiptList(result.items),
+
+        pagination: result.pagination,
+      };
+    });
+  }
+
+  async getReceipt(receiptId: string, agentIds: string[]) {
+    return withTransaction(async (tx) => {
+      const repository = new ReceiptDetailRepository(tx);
+
+      const receipt = await repository.getReceipt(receiptId, agentIds);
+
+      if (!receipt) {
+        throw new NotFoundError("Receipt not found.");
+      }
+
+      return mapReceiptDetail(receipt);
     });
   }
 }

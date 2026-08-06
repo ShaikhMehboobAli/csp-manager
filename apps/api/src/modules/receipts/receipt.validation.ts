@@ -43,3 +43,31 @@ export const uploadReceiptSchema = z.object({
 
   receipts: z.array(receiptSchema).min(1),
 });
+
+export const receiptListSchema = z.object({
+  page: z.coerce.number().int().positive().default(1),
+
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+
+  from: z.coerce.date().optional(),
+
+  to: z.coerce.date().optional(),
+
+  machineId: z.string().trim().optional(),
+
+  receiptType: z.nativeEnum(ReceiptType).optional(),
+
+  transactionCategory: z.nativeEnum(TransactionCategory).optional(),
+
+  status: z.nativeEnum(ReceiptStatus).optional(),
+
+  search: z.string().trim().optional(),
+
+  sortBy: z
+    .enum(["transactionAt", "createdAt", "amount"])
+    .default("transactionAt"),
+
+  sortOrder: z.enum(["asc", "desc"]).default("desc"),
+});
+
+export type ReceiptListQuery = z.infer<typeof receiptListSchema>;

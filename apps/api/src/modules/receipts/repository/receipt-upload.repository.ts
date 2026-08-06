@@ -1,5 +1,5 @@
-import { PrismaDb } from "../../core/database/prisma.types";
-import { Prisma } from "../../generated/prisma/client";
+import { PrismaDb } from "../../../core/database/prisma.types";
+import { Prisma } from "../../../generated/prisma/client";
 
 export default class ReceiptRepository {
   constructor(private readonly db: PrismaDb) {}

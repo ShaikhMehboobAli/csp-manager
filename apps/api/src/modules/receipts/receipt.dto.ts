@@ -3,6 +3,7 @@ import {
   ReceiptType,
   TransactionCategory,
 } from "../../generated/prisma/enums";
+import { ReceiptListQuery } from "./receipt.validation";
 
 export interface UploadReceiptRequest {
   machineCode: string;
@@ -40,3 +41,13 @@ export interface ReceiptPayload {
 
   location?: string;
 }
+
+export interface ReceiptFilter extends ReceiptListQuery {
+  currentAgentId: string;
+
+  agentIds: string[];
+}
+
+export type ReceiptParams = {
+  receiptId: string;
+};
