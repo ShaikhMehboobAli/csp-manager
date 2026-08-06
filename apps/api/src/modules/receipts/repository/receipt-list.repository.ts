@@ -130,4 +130,44 @@ export default class ReceiptListRepository extends ReceiptCommonRepository {
       totalAmount: Number(totalAmount._sum.amount ?? 0),
     };
   }
+
+  async exportReceipts(filter: ReceiptFilter) {
+    return this.db.receipt.findMany({
+      where: this.buildReceiptWhere(filter),
+
+      orderBy: {
+        transactionAt: "desc",
+      },
+
+      select: {
+        receiptId: true,
+
+        agentId: true,
+
+        receiptType: true,
+
+        transactionCategory: true,
+
+        status: true,
+
+        amount: true,
+
+        customerName: true,
+
+        customerAccount: true,
+
+        rrn: true,
+
+        stan: true,
+
+        transactionAt: true,
+
+        machine: {
+          select: {
+            machineCode: true,
+          },
+        },
+      },
+    });
+  }
 }

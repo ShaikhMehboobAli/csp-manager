@@ -20,6 +20,8 @@ router.post(
 
 router.get("/", authMiddleware, controller.getReceipts.bind(controller));
 
+router.get("/export", authMiddleware, controller.export.bind(controller));
+
 router.get("/stats", authMiddleware, controller.getStats.bind(controller));
 
 // Get a specific receipt by ID

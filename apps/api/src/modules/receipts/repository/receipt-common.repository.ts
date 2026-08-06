@@ -13,7 +13,8 @@ export default abstract class ReceiptCommonRepository {
     /**
      * Agent Scope
      */
-    if (filter.agentIds.length > 0) {
+    // if (filter.agentIds.length > 0) {
+    if ((filter.agentIds ?? []).length > 0) {
       where.agentId = {
         in: filter.agentIds,
       };

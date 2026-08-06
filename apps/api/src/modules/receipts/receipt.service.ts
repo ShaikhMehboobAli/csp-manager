@@ -15,6 +15,7 @@ import ReceiptListRepository from "./repository/receipt-list.repository";
 import { mapReceiptDetail, mapReceiptList } from "./receipt.mapper";
 import ReceiptDetailRepository from "./repository/receipt-detail.repository";
 import { NotFoundError } from "../../core/errors/NotFoundError";
+import { generateReceiptWorkbook } from "../reports/helper/report-export.helper";
 
 export default class ReceiptService {
   async upload(request: UploadReceiptRequest) {
@@ -217,6 +218,16 @@ export default class ReceiptService {
       const repository = new ReceiptListRepository(tx);
 
       return repository.getStats(filter);
+    });
+  }
+
+  async export(filter: ReceiptFilter) {
+    return withTransaction(async (tx) => {
+      const repository = new ReceiptListRepository(tx);
+
+      const receipts = await repository.exportReceipts(filter);
+
+      return generateReceiptWorkbook(receipts);
     });
   }
 }

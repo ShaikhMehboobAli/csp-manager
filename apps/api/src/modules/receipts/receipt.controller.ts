@@ -90,4 +90,34 @@ export default class ReceiptController {
       });
     });
   }
+
+  async export(req: Request, res: Response) {
+    const query = receiptListSchema.parse(req.query);
+
+    return withTransaction(async (tx) => {
+      const scopeService = new AgentScopeService(tx);
+
+      const agentIds = await scopeService.getAgentScope(req.user!);
+
+      const workbook = await this.service.export({
+        ...query,
+
+        currentAgentId: req.user!.agentId,
+
+        agentIds,
+      });
+
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      );
+
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="receipts-${Date.now()}.xlsx"`,
+      );
+
+      return res.send(Buffer.from(workbook));
+    });
+  }
 }

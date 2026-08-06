@@ -8,6 +8,7 @@ import machineRoutes from "../modules/machines/machine.routes";
 import agentRoutes from "../modules/agents/routes/agent.routes";
 import receiptRoutes from "../modules/receipts/receipt.routes";
 import dashboardRoutes from "../modules/dashboard/dashboard.routes";
+import reportRoutes from "../modules/reports/report.routes";
 
 const router = Router();
 
@@ -20,5 +21,6 @@ router.use("/machines", machineRoutes);
 router.use("/agents", agentRoutes);
 router.use("/receipts", receiptRoutes);
 router.use("/dashboard", dashboardRoutes);
+router.use("/reports", reportRoutes);
 
 export default router;
