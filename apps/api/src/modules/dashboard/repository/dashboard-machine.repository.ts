@@ -1,4 +1,5 @@
 import { PrismaDb } from "../../../core/database/prisma.types";
+import { Prisma } from "../../../generated/prisma/client";
 import {
   buildAgentScope,
   getMachineStatus,
@@ -210,6 +211,183 @@ export default class DashboardMachineRepository {
     };
   }
 
+  // async getMachineMonitoring(filter: DashboardFilter) {
+  //   const machines = await this.db.machine.findMany({
+  //     where: {
+  //       ...buildAgentScope(filter.agentIds, filter.agentId),
+
+  //       isDeleted: false,
+  //     },
+
+  //     include: {
+  //       agent: {
+  //         select: {
+  //           agentId: true,
+
+  //           name: true,
+
+  //           agentFloat: {
+  //             select: {
+  //               openingFloat: true,
+
+  //               currentCashInHand: true,
+
+  //               currentCashInAccount: true,
+
+  //               currentTotalFloat: true,
+
+  //               updatedAt: true,
+
+  //               lastReceiptAt: true,
+
+  //               lastAdjustmentAt: true,
+  //             },
+  //           },
+  //         },
+  //       },
+  //     },
+
+  //     orderBy: {
+  //       updatedAt: "desc",
+  //     },
+  //   });
+
+  //   const today = new Date();
+
+  //   today.setHours(0, 0, 0, 0);
+
+  //   const transactionSummary = await this.db.receipt.groupBy({
+  //     by: ["agentId", "status"],
+
+  //     where: {
+  //       agentId: {
+  //         in: machines
+  //           .map((m) => m.agentId)
+  //           .filter((id): id is string => Boolean(id)),
+  //       },
+
+  //       transactionAt: {
+  //         gte: today,
+  //       },
+  //     },
+
+  //     _count: {
+  //       id: true,
+  //     },
+
+  //     _sum: {
+  //       amount: true,
+  //     },
+  //   });
+
+  //   const transactionMap = new Map<
+  //     string,
+  //     {
+  //       count: number;
+
+  //       amount: number;
+
+  //       success: number;
+
+  //       failed: number;
+  //     }
+  //   >();
+
+  //   for (const row of transactionSummary) {
+  //     const key = row.agentId;
+
+  //     const existing = transactionMap.get(key) ?? {
+  //       count: 0,
+
+  //       amount: 0,
+
+  //       success: 0,
+
+  //       failed: 0,
+  //     };
+
+  //     existing.count += row._count.id;
+
+  //     existing.amount += Number(row._sum.amount ?? 0);
+
+  //     if (row.status === "SUCCESS") {
+  //       existing.success += row._count.id;
+  //     } else {
+  //       existing.failed += row._count.id;
+  //     }
+
+  //     transactionMap.set(key, existing);
+  //   }
+
+  //   const monitoring = machines.map((machine) => ({
+  //     agentId: machine.agent!.agentId,
+
+  //     agentName: machine.agent!.name,
+
+  //     machineCode: machine.machineCode,
+
+  //     watcherVersion: machine.watcherVersion,
+
+  //     machineStatus: machine.status,
+
+  //     connectionStatus: getMachineStatus(machine.lastHeartbeatAt),
+
+  //     lastHeartbeatAt: machine.lastHeartbeatAt,
+
+  //     lastReceiptCapturedAt: machine.lastTransactionAt,
+
+  //     openingFloat: machine.agent!.agentFloat?.openingFloat ?? 0,
+
+  //     currentCashInHand: machine.agent!.agentFloat?.currentCashInHand ?? 0,
+
+  //     currentCashInAccount:
+  //       machine.agent!.agentFloat?.currentCashInAccount ?? 0,
+
+  //     currentTotalFloat: machine.agent!.agentFloat?.currentTotalFloat ?? 0,
+
+  //     floatUpdatedAt: machine.agent!.agentFloat?.updatedAt ?? null,
+
+  //     lastReceiptAt: machine.agent!.agentFloat?.lastReceiptAt ?? null,
+
+  //     lastReceiptUpdatedAt: machine.agent!.agentFloat?.updatedAt ?? null,
+  //   }));
+
+  //   const totalMachines = monitoring.length;
+
+  //   const onlineMachines = monitoring.filter(
+  //     (m) => m.connectionStatus === "ONLINE",
+  //   ).length;
+
+  //   const offlineMachines = totalMachines - onlineMachines;
+
+  //   const activeMachines = monitoring.filter(
+  //     (m) => m.machineStatus === "ACTIVE",
+  //   ).length;
+
+  //   const inactiveMachines = totalMachines - activeMachines;
+
+  //   return {
+  //     summary: {
+  //       totalMachines,
+
+  //       onlineMachines,
+
+  //       offlineMachines,
+
+  //       activeMachines,
+
+  //       inactiveMachines,
+
+  //       onlinePercentage:
+  //         totalMachines === 0
+  //           ? 0
+  //           : Number(((onlineMachines / totalMachines) * 100).toFixed(2)),
+  //     },
+
+  //     monitoring,
+  //   };
+  // }
+
   async getMachineMonitoring(filter: DashboardFilter) {
     const machines = await this.db.machine.findMany({
       where: {
@@ -238,6 +416,8 @@ export default class DashboardMachineRepository {
                 updatedAt: true,
 
                 lastReceiptAt: true,
+
+                lastAdjustmentAt: true,
               },
             },
           },
@@ -249,34 +429,161 @@ export default class DashboardMachineRepository {
       },
     });
 
-    const monitoring = machines.map((machine) => ({
-      agentId: machine.agent!.agentId,
+    console.log(
+      "machine agentIds",
+      machines.map((m) => ({
+        machineId: m.id,
+        machineAgentId: m.agentId,
+        agentCode: m.agent?.agentId,
+      })),
+    );
 
-      agentName: machine.agent!.name,
+    // const today = new Date();
 
-      machineCode: machine.machineCode,
+    // today.setHours(0, 0, 0, 0);
 
-      watcherVersion: machine.watcherVersion,
+    const receiptWhere: Prisma.ReceiptWhereInput = {
+      agentId: {
+        in: machines
+          .map((m) => m.agentId)
+          .filter((id): id is string => Boolean(id)),
+      },
+    };
 
-      machineStatus: machine.status,
+    if (filter.from || filter.to) {
+      receiptWhere.transactionAt = {
+        ...(filter.from && {
+          gte: filter.from,
+        }),
 
-      connectionStatus: getMachineStatus(machine.lastHeartbeatAt),
+        ...(filter.to && {
+          lte: filter.to,
+        }),
+      };
+    }
 
-      lastHeartbeatAt: machine.lastHeartbeatAt,
+    const transactionSummary = await this.db.receipt.groupBy({
+      by: ["agentId", "status"],
 
-      lastReceiptCapturedAt: machine.lastTransactionAt,
+      where: receiptWhere,
 
-      openingFloat: machine.agent!.agentFloat?.openingFloat ?? 0,
+      // where: {
+      //   agentId: {
+      //     in: machines
+      //       .map((m) => m.agentId)
+      //       .filter((id): id is string => Boolean(id)),
+      //   },
 
-      currentCashInHand: machine.agent!.agentFloat?.currentCashInHand ?? 0,
+      // transactionAt: {
+      //   gte: filter.from ?? today,
 
-      currentCashInAccount:
-        machine.agent!.agentFloat?.currentCashInAccount ?? 0,
+      //   ...(filter.to && {
+      //     lte: filter.to,
+      //   }),
+      // },
+      // },
 
-      currentTotalFloat: machine.agent!.agentFloat?.currentTotalFloat ?? 0,
+      _count: {
+        id: true,
+      },
 
-      floatUpdatedAt: machine.agent!.agentFloat?.updatedAt ?? null,
-    }));
+      _sum: {
+        amount: true,
+      },
+    });
+
+    console.log("transactionSummary");
+    console.dir(transactionSummary, { depth: null });
+
+    const transactionMap = new Map<
+      string,
+      {
+        count: number;
+
+        amount: number;
+
+        success: number;
+
+        failed: number;
+      }
+    >();
+
+    for (const row of transactionSummary) {
+      const key = row.agentId;
+
+      const existing = transactionMap.get(key) ?? {
+        count: 0,
+
+        amount: 0,
+
+        success: 0,
+
+        failed: 0,
+      };
+
+      existing.count += row._count.id;
+
+      existing.amount += Number(row._sum.amount ?? 0);
+
+      if (row.status === "SUCCESS") {
+        existing.success += row._count.id;
+      } else {
+        existing.failed += row._count.id;
+      }
+
+      transactionMap.set(key, existing);
+    }
+
+    const monitoring = machines.map((machine) => {
+      const transaction = transactionMap.get(machine.agentId!) ?? {
+        count: 0,
+
+        amount: 0,
+
+        success: 0,
+
+        failed: 0,
+      };
+
+      return {
+        agentId: machine.agent!.agentId,
+
+        agentName: machine.agent!.name,
+
+        machineCode: machine.machineCode,
+
+        watcherVersion: machine.watcherVersion,
+
+        machineStatus: machine.status,
+
+        connectionStatus: getMachineStatus(machine.lastHeartbeatAt),
+
+        lastHeartbeatAt: machine.lastHeartbeatAt,
+
+        lastReceiptCapturedAt: machine.lastTransactionAt,
+
+        openingFloat: machine.agent!.agentFloat?.openingFloat ?? 0,
+
+        currentCashInHand: machine.agent!.agentFloat?.currentCashInHand ?? 0,
+
+        currentCashInAccount:
+          machine.agent!.agentFloat?.currentCashInAccount ?? 0,
+
+        currentTotalFloat: machine.agent!.agentFloat?.currentTotalFloat ?? 0,
+
+        lastReceiptAt: machine.agent!.agentFloat?.lastReceiptAt ?? null,
+
+        lastReceiptUpdatedAt: machine.agent!.agentFloat?.updatedAt ?? null,
+
+        transactionCount: transaction.count, //default current day transaction count
+
+        transactionAmount: transaction.amount, //default current day transaction amount
+
+        successTransactions: transaction.success,
+
+        failedTransactions: transaction.failed,
+      };
+    });
 
     const totalMachines = monitoring.length;
 

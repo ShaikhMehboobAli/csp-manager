@@ -71,7 +71,11 @@ export default class DashboardService {
     ] = await Promise.all([
       this.overviewRepository.getOverview(filter),
 
-      this.floatRepository.getFloatSummary(filter.currentAgentId),
+      isSingleAgentView
+        ? this.floatRepository.getFloatSummary(
+            filter.agentId ?? filter.currentAgentId,
+          )
+        : null,
 
       this.serviceRepository.getServiceSummary(filter),
 
@@ -108,13 +112,22 @@ export default class DashboardService {
     return {
       overview: calculateOverview(overview),
 
-      float: mapFloatSummary(floatSummary),
+      // float: mapFloatSummary(floatSummary),
+      ...(isSingleAgentView
+        ? {
+            float: mapFloatSummary(floatSummary),
+
+            machine: mapMachineSummary(machineSummary),
+          }
+        : {
+            machineMonitoring: machineSummary,
+          }),
 
       services: mapServiceSummary(serviceSummary),
 
       statusSummary: mapStatusSummary(statusSummary),
 
-      machine: mapMachineSummary(machineSummary),
+      // machine: mapMachineSummary(machineSummary),
 
       //   topServices,
 

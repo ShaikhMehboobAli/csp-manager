@@ -9,6 +9,7 @@ import {
 } from "./dashboard.validation";
 import { UnauthorizedError } from "../../core/errors/UnauthorizedError";
 import AgentScopeService from "../agents/service/agent-scope.service";
+import { getTodayRange } from "./dashboard.helper";
 
 export default class DashboardController {
   async getSummary(req: Request, res: Response) {
@@ -52,6 +53,14 @@ export default class DashboardController {
 
       const query = dashboardSummarySchema.parse(req.query);
 
+      const range =
+        query.from || query.to
+          ? {
+              from: query.from,
+              to: query.to,
+            }
+          : getTodayRange();
+
       //   const result = await service.getSummary({
       //     ...query,
 
@@ -71,6 +80,8 @@ export default class DashboardController {
 
       const result = await service.getSummary({
         ...query,
+
+        ...range,
 
         currentAgentId: req.user!.agentId,
 
@@ -93,6 +104,14 @@ export default class DashboardController {
 
       const query = dashboardAnalyticsSchema.parse(req.query);
 
+      const range =
+        query.from || query.to
+          ? {
+              from: query.from,
+              to: query.to,
+            }
+          : getTodayRange();
+
       //   const result = await service.getAnalytics({
       //     ...query,
 
@@ -106,6 +125,8 @@ export default class DashboardController {
 
       const result = await service.getAnalytics({
         ...query,
+
+        ...range,
 
         currentAgentId: req.user!.agentId,
 
