@@ -6,6 +6,7 @@ import MachineHeartbeatRepository from "./machine-heartbeat.repository";
 import { HeartbeatInput, HeartbeatResponse } from "./machine-heartbeat.dto";
 import RuntimeConfig from "../../../config/runtime.config";
 import MachineSessionService from "./machine-session.service";
+import MachineRuntimeValidator from "./machine-runtime-validator";
 
 export default class MachineHeartbeatService {
   private readonly authService: MachineAuthenticationService;
@@ -25,6 +26,7 @@ export default class MachineHeartbeatService {
       fingerprint: input.fingerprint,
     });
 
+    MachineRuntimeValidator.validateHeartbeat(authenticated);
     // await this.sessionService.handleHeartbeat({
     //   machineId: authenticated.machine.id,
     //   currentAgentId: authenticated.machine.currentAgentId,

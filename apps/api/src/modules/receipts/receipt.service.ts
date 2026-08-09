@@ -9,13 +9,21 @@ import MachineHeartbeatRepository from "../machines/runtime/machine-heartbeat.re
 import { ReceiptFilter, UploadReceiptRequest } from "./receipt.dto";
 import { withTransaction } from "../../core/database/transaction";
 
-import { FloatLedgerType, ReceiptStatus } from "../../generated/prisma/enums";
+import {
+  ActivationStatus,
+  FloatLedgerType,
+  MachineStatus,
+  ReceiptStatus,
+  SubscriptionStatus,
+} from "../../generated/prisma/enums";
 import FloatLedgerService from "../float/float-ledger.service";
 import ReceiptListRepository from "./repository/receipt-list.repository";
 import { mapReceiptDetail, mapReceiptList } from "./receipt.mapper";
 import ReceiptDetailRepository from "./repository/receipt-detail.repository";
 import { NotFoundError } from "../../core/errors/NotFoundError";
 import { generateReceiptWorkbook } from "../reports/helper/report-export.helper";
+import { ForbiddenError } from "../../core/errors/ForbiddenError";
+import MachineRuntimeValidator from "../machines/runtime/machine-runtime-validator";
 
 export default class ReceiptService {
   async upload(request: UploadReceiptRequest) {
@@ -38,6 +46,34 @@ export default class ReceiptService {
         apiKey: request.apiKey,
         fingerprint: request.fingerprint,
       });
+
+      MachineRuntimeValidator.validateReceiptUpload(authenticated);
+
+      // const machine = authenticated.machine;
+      // const activation = authenticated.activation;
+      // const subscription = authenticated.subscription;
+
+      // // Machine enabled?
+      // if (!machine.watcherEnabled) {
+      //   throw new ForbiddenError(
+      //     "Receipt Watcher has been disabled for this machine.",
+      //   );
+      // }
+
+      // // Machine active?
+      // if (machine.status !== MachineStatus.ACTIVE) {
+      //   throw new ForbiddenError("Machine is inactive.");
+      // }
+
+      // // Activation active?
+      // if (activation.status !== ActivationStatus.ACTIVE) {
+      //   throw new ForbiddenError("Machine activation is inactive.");
+      // }
+
+      // // Subscription active?
+      // if (subscription.status !== SubscriptionStatus.ACTIVE) {
+      //   throw new ForbiddenError("Subscription is inactive.");
+      // }
 
       if (!authenticated.machine.currentAgentId) {
         throw new Error("No agent is currently assigned to this machine.");
