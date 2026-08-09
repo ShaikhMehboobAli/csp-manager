@@ -191,4 +191,30 @@ export default class SubscriptionRepository {
       },
     });
   }
+
+  async getCurrentSubscription(ownerId: string, ownerType?: "BC" | "CSP") {
+    return this.db.subscription.findFirst({
+      where: {
+        ownerId,
+
+        ...(ownerType && {
+          ownerType,
+        }),
+      },
+
+      orderBy: {
+        createdAt: "desc",
+      },
+
+      include: {
+        plan: true,
+
+        activations: {
+          where: {
+            isCurrent: true,
+          },
+        },
+      },
+    });
+  }
 }

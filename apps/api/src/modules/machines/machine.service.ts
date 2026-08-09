@@ -53,6 +53,9 @@ export default class MachineService {
     return this.listService.updateMachine(machineId, data, user);
   }
 
+  async getHeartbeat(machineId: string, user: CurrentUser) {
+    return this.listService.getHeartbeat(machineId, user);
+  }
   // async getHeartbeat(machineId: string, user: AuthUser) {
   //   return this.heartbeatService.getHeartbeat(machineId, user);
   // }

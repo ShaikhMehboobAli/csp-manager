@@ -23,6 +23,8 @@ import CodeGeneratorService from "../../../core/services/code-generator.service"
 import * as crypto from "node:crypto";
 import { Agent, Machine, Prisma } from "../../../generated/prisma/client";
 import { createCodeGeneratorService } from "../../../core/services/service.factory";
+import SubscriptionResolver from "../../subscriptions/subscription-validator/subscription-resolver.service";
+import SubscriptionAccessValidator from "../../subscriptions/subscription-validator/subscription-access-validator";
 
 export default class MachineActivationService {
   //   constructor(private readonly codeGeneratorService: CodeGeneratorService) {}
@@ -56,9 +58,20 @@ export default class MachineActivationService {
        */
       const activation = await repository.findActivation(data.activationCode);
 
+      // continue with the transaction and fetch machines
+
       if (!activation) {
         throw new NotFoundError("Activation code not found.");
       }
+
+      // check for subscription and access validation
+      const resolver = new SubscriptionResolver(db);
+
+      const subscription = await resolver.getEffectiveSubscription(
+        activation?.subscription?.ownerId,
+      );
+
+      SubscriptionAccessValidator.validate(subscription);
 
       /**
        * STEP 3

@@ -13,6 +13,8 @@ import {
 import ActivationRepository from "../../activations/activation.repository";
 import FloatLedgerService from "../../float/float-ledger.service";
 import { mapOpeningBalance } from "../../float/opening-balance.mapper";
+import SubscriptionAccessValidator from "../../subscriptions/subscription-validator/subscription-access-validator";
+import SubscriptionResolver from "../../subscriptions/subscription-validator/subscription-resolver.service";
 import SubscriptionService from "../../subscriptions/subscription.service";
 import { mapAgent } from "../mappers/agent.mapper";
 import { AgentRepository } from "../repository/agent.repository";
@@ -36,6 +38,17 @@ export class AgentService {
     // this.subscriptionService = new SubscriptionService(this.prisma);
   }
 
+  /*  TODO we will se if we can add the subscription restriction here in fileURLToPathBuffer 
+   // check for subscription and access validation
+  
+        const resolver = new SubscriptionResolver(tx);
+  
+        const subscription = await resolver.resolveForAgent(
+          filter.currentAgentId,
+        );
+  
+        SubscriptionAccessValidator.validate(subscription);
+  */
   async createCSP(
     bcId: string,
     createdBy: string,
@@ -94,6 +107,17 @@ export class AgentService {
     });
   }
 
+  /*  TODO we will se if we can add the subscription restriction here in fileURLToPathBuffer 
+   // check for subscription and access validation
+  
+        const resolver = new SubscriptionResolver(tx);
+  
+        const subscription = await resolver.resolveForAgent(
+          filter.currentAgentId,
+        );
+  
+        SubscriptionAccessValidator.validate(subscription);
+  */
   async createKO(
     cspAgentId: string,
     createdBy: string,
@@ -149,6 +173,15 @@ export class AgentService {
     createdBy: string,
     input: CreateCSPInput,
   ) {
+    // check for subscription and access validation
+    // const resolver = new SubscriptionResolver(tx);
+
+    // const subscription = await resolver.resolveForAgent(bcId);
+
+    // SubscriptionAccessValidator.validate(subscription);
+
+    // then start transaction and create or link CSP
+
     const agentRepository = new AgentRepository(tx);
 
     const existingAgent = await agentRepository.findAgentByAgentId({
@@ -227,6 +260,15 @@ export class AgentService {
     createdBy: string,
     input: CreateKOInput,
   ) {
+    // check for subscription and access validation
+    // const resolver = new SubscriptionResolver(tx);
+
+    // const subscription = await resolver.resolveForAgent(bcId);
+
+    // SubscriptionAccessValidator.validate(subscription);
+
+    //the start transaction and create or link KO
+
     const agentRepository = new AgentRepository(tx);
 
     const existingAgent = await agentRepository.findAgentByAgentId({
@@ -300,18 +342,17 @@ export class AgentService {
     return mapAgent(agent);
   }
 
-  //   async listAgents(filters: {
-  //     type?: AgentType;
-  //     bcId?: string;
-  //     parentAgentId?: string;
-  //   }): Promise<AgentResponse[]> {
-  //     const repository = new AgentRepository(this.prisma);
-
-  //     const agents = await repository.findMany(filters);
-
-  //     return agents.map(mapAgent);
-  //   }
-
+  /*  TODO we will se if we can add the subscription restriction here in fileURLToPathBuffer 
+   // check for subscription and access validation
+  
+        const resolver = new SubscriptionResolver(tx);
+  
+        const subscription = await resolver.resolveForAgent(
+          filter.currentAgentId,
+        );
+  
+        SubscriptionAccessValidator.validate(subscription);
+  */
   async listAgents(filters: ListAgentsDto) {
     console.log("filters =>", filters);
     const repository = new AgentRepository(this.prisma);
@@ -351,6 +392,14 @@ export class AgentService {
     data: UpdateAgentDto,
     currentUser: CurrentUser,
   ) {
+    const resolver = new SubscriptionResolver(this.prisma);
+
+    const subscription = await resolver.getEffectiveSubscription(
+      currentUser.agentId,
+    );
+
+    SubscriptionAccessValidator.validate(subscription);
+
     const repository = new AgentRepository(this.prisma);
     const agent = await repository.findByAgentId(agentId);
 
@@ -372,6 +421,14 @@ export class AgentService {
   }
 
   async deleteAgent(agentId: string, currentUser: CurrentUser) {
+    const resolver = new SubscriptionResolver(this.prisma);
+
+    const subscription = await resolver.getEffectiveSubscription(
+      currentUser.agentId,
+    );
+
+    SubscriptionAccessValidator.validate(subscription);
+
     const repository = new AgentRepository(this.prisma);
     const agent = await repository.findByAgentId(agentId);
 

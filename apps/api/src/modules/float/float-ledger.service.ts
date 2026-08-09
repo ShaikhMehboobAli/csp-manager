@@ -230,6 +230,17 @@ export default class FloatLedgerService {
     return agentFloat;
   }
 
+  /*  TODO we will se if we can add the subscription restriction here in fileURLToPathBuffer 
+   // check for subscription and access validation
+  
+        const resolver = new SubscriptionResolver(tx);
+  
+        const subscription = await resolver.resolveForAgent(
+          filter.currentAgentId,
+        );
+  
+        SubscriptionAccessValidator.validate(subscription);
+  */
   private async updateAgentFloat(
     agentId: string,
     balance: LedgerCalculationResult,
@@ -245,6 +256,17 @@ export default class FloatLedgerService {
     });
   }
 
+  /*  TODO we will se if we can add the subscription restriction here in file
+   // check for subscription and access validation
+  
+        const resolver = new SubscriptionResolver(tx);
+  
+        const subscription = await resolver.resolveForAgent(
+          filter.currentAgentId,
+        );
+  
+        SubscriptionAccessValidator.validate(subscription);
+  */
   private async recordReceipt(input: RecordLedgerInput) {
     if (!input.transactionCategory) {
       throw new BadRequestError("Transaction category is required.");

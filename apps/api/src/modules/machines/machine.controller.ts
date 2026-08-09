@@ -60,3 +60,18 @@ export const updateMachine = async (req: Request, res: Response) => {
     data: result,
   });
 };
+
+export const getHeartbeat = async (req: Request, res: Response) => {
+  const result = await machineService.getHeartbeat(
+    req.params.machineId as string,
+    req.user!,
+  );
+
+  return res.json({
+    success: true,
+
+    message: "Machine heartbeat fetched successfully.",
+
+    data: result,
+  });
+};

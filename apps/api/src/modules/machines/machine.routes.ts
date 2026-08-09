@@ -9,6 +9,11 @@ const router = Router();
 router.post("/activate", MachineController.activateMachine);
 
 router.get("/list", authMiddleware, MachineController.getMachines);
+router.get(
+  "/:machineId/heartbeat",
+  authMiddleware,
+  MachineController.getHeartbeat,
+);
 
 router.get("/:machineId", authMiddleware, MachineController.getMachine);
 

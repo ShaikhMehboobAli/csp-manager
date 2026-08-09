@@ -24,6 +24,8 @@ import { NotFoundError } from "../../core/errors/NotFoundError";
 import { generateReceiptWorkbook } from "../reports/helper/report-export.helper";
 import { ForbiddenError } from "../../core/errors/ForbiddenError";
 import MachineRuntimeValidator from "../machines/runtime/machine-runtime-validator";
+import SubscriptionResolver from "../subscriptions/subscription-validator/subscription-resolver.service";
+import SubscriptionAccessValidator from "../subscriptions/subscription-validator/subscription-access-validator";
 
 export default class ReceiptService {
   async upload(request: UploadReceiptRequest) {
@@ -223,6 +225,16 @@ export default class ReceiptService {
    */
   async getReceipts(filter: ReceiptFilter) {
     return withTransaction(async (tx) => {
+      // check for subscription and access validation
+
+      const resolver = new SubscriptionResolver(tx);
+
+      const subscription = await resolver.getEffectiveSubscription(
+        filter.currentAgentId,
+      );
+
+      SubscriptionAccessValidator.validate(subscription);
+
       const repository = new ReceiptListRepository(tx);
 
       const result = await repository.getReceipts(filter);
@@ -237,6 +249,16 @@ export default class ReceiptService {
 
   async getReceipt(receiptId: string, agentIds: string[]) {
     return withTransaction(async (tx) => {
+      // check for subscription and access validation
+
+      // const resolver = new SubscriptionResolver(tx);
+
+      // const subscription = await resolver.resolveForAgent(
+      //   filter.currentAgentId,
+      // );
+
+      // SubscriptionAccessValidator.validate(subscription);
+
       const repository = new ReceiptDetailRepository(tx);
 
       const receipt = await repository.getReceipt(receiptId, agentIds);
@@ -251,6 +273,16 @@ export default class ReceiptService {
 
   async getStats(filter: ReceiptFilter) {
     return withTransaction(async (tx) => {
+      // check for subscription and access validation
+
+      const resolver = new SubscriptionResolver(tx);
+
+      const subscription = await resolver.getEffectiveSubscription(
+        filter.currentAgentId,
+      );
+
+      SubscriptionAccessValidator.validate(subscription);
+
       const repository = new ReceiptListRepository(tx);
 
       return repository.getStats(filter);
@@ -259,6 +291,16 @@ export default class ReceiptService {
 
   async export(filter: ReceiptFilter) {
     return withTransaction(async (tx) => {
+      // check for subscription and access validation
+
+      const resolver = new SubscriptionResolver(tx);
+
+      const subscription = await resolver.getEffectiveSubscription(
+        filter.currentAgentId,
+      );
+
+      SubscriptionAccessValidator.validate(subscription);
+
       const repository = new ReceiptListRepository(tx);
 
       const receipts = await repository.exportReceipts(filter);

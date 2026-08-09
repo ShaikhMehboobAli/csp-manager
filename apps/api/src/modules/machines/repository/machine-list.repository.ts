@@ -116,4 +116,30 @@ export default class MachineListRepository {
       data,
     });
   }
+
+  async getHeartbeat(machineId: string, agentIds: string[], agentId?: string) {
+    return this.db.machine.findFirst({
+      where: {
+        id: machineId,
+
+        ...buildAgentScope(agentIds, agentId),
+
+        isDeleted: false,
+      },
+
+      include: {
+        activations: {
+          where: {
+            isCurrent: true,
+          },
+
+          include: {
+            subscription: true,
+          },
+
+          take: 1,
+        },
+      },
+    });
+  }
 }

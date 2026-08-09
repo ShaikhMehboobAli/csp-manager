@@ -24,6 +24,8 @@ import { getMachineStatus } from "./dashboard.helper";
 import DashboardAnalyticsRepository from "./repository/dashboard-analytics.repository";
 import { DashboardAnalyticsQuery } from "./dashboard.validation";
 import DashboardActivationRepository from "./repository/dashboard-activation.repository";
+import SubscriptionResolver from "../subscriptions/subscription-validator/subscription-resolver.service";
+import SubscriptionAccessValidator from "../subscriptions/subscription-validator/subscription-access-validator";
 
 export default class DashboardService {
   private readonly overviewRepository: DashboardOverviewRepository;
@@ -38,6 +40,8 @@ export default class DashboardService {
 
   private readonly activationRepository: DashboardActivationRepository;
 
+  private readonly subscriptionResolver: SubscriptionResolver;
+
   constructor(private readonly db: PrismaDb) {
     this.overviewRepository = new DashboardOverviewRepository(db);
 
@@ -50,9 +54,17 @@ export default class DashboardService {
     this.analyticsRepository = new DashboardAnalyticsRepository(db);
 
     this.activationRepository = new DashboardActivationRepository(db);
+
+    this.subscriptionResolver = new SubscriptionResolver(db);
   }
 
   async getSummary(filter: DashboardFilter) {
+    const subscription =
+      await this.subscriptionResolver.getEffectiveSubscription(
+        filter.currentAgentId,
+      );
+
+    SubscriptionAccessValidator.validate(subscription);
     // if (filter.agentIds.length === 0) {
     //   throw new BadRequestError("No accessible agents found.");
     // }
@@ -67,6 +79,7 @@ export default class DashboardService {
       statusSummary,
       machineSummary,
       activationSummary,
+      activeSubscription,
       //   topServices,
     ] = await Promise.all([
       this.overviewRepository.getOverview(filter),
@@ -84,10 +97,11 @@ export default class DashboardService {
       this.serviceRepository.getStatusSummary(filter),
 
       isSingleAgentView
-        ? await this.machineRepository.getCspMachineSummary(filter)
-        : await this.machineRepository.getMachineMonitoring(filter),
+        ? this.machineRepository.getCspMachineSummary(filter)
+        : this.machineRepository.getMachineMonitoring(filter),
 
       this.activationRepository.getActivationSummary(filter),
+      this.subscriptionResolver.getEffectiveSubscription(filter.currentAgentId),
       //   this.machineRepository.getCspMachineSummary(filter),
       //     filter.currentAgentId,
       //     filter.from,
@@ -134,10 +148,37 @@ export default class DashboardService {
       activationSummary,
 
       recentTransactions,
+      subscription: activeSubscription
+        ? {
+            subscriptionNumber: activeSubscription.subscriptionNumber,
+
+            subscriptionType: activeSubscription.subscriptionType,
+
+            status: activeSubscription.status,
+
+            machineLimit: activeSubscription.machineLimit,
+
+            amountPaid: Number(activeSubscription.amountPaid),
+
+            startDate: activeSubscription.startDate,
+
+            endDate: activeSubscription.endDate,
+
+            graceEndsAt: activeSubscription.graceEndsAt,
+
+            createdSource: activeSubscription.createdSource,
+          }
+        : null,
     };
   }
 
   async getAnalytics(filter: DashboardAnalyticsFilter) {
+    const subscription =
+      await this.subscriptionResolver.getEffectiveSubscription(
+        filter.currentAgentId,
+      );
+
+    SubscriptionAccessValidator.validate(subscription);
     // if (filter.agentIds.length === 0) {
     //   throw new BadRequestError("No accessible agents found.");
     // }

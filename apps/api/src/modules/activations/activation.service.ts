@@ -18,6 +18,8 @@ import { BadRequestError } from "../../core/errors/BadRequestError";
 import { ForbiddenError } from "../../core/errors/ForbiddenError";
 
 import bcrypt from "bcrypt";
+import SubscriptionResolver from "../subscriptions/subscription-validator/subscription-resolver.service";
+import SubscriptionAccessValidator from "../subscriptions/subscription-validator/subscription-access-validator";
 
 export default class ActivationService {
   private readonly passwordService = new ActivationPasswordService();
@@ -119,6 +121,12 @@ export default class ActivationService {
   }
   async regeneratePassword(activationId: string, ownerId: string) {
     return withTransaction(async (tx) => {
+      const resolver = new SubscriptionResolver(tx);
+
+      const subscription = await resolver.getEffectiveSubscription(ownerId);
+
+      SubscriptionAccessValidator.validate(subscription);
+
       const repository = new ActivationRepository(tx);
 
       const activation = await repository.findActivationForOwner(
@@ -185,6 +193,14 @@ export default class ActivationService {
 
   async assignActivation(data: AssignActivationInput) {
     return withTransaction(async (tx) => {
+      const resolver = new SubscriptionResolver(tx);
+
+      const subscription = await resolver.getEffectiveSubscription(
+        data.assignedByOwnerId,
+      );
+
+      SubscriptionAccessValidator.validate(subscription);
+
       const repository = new ActivationRepository(tx);
       // const credentials = await this.passwordService.generateCredentials();
 

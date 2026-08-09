@@ -97,12 +97,35 @@ export function canUseReceiptWatcher(subscription: Subscription): boolean {
   }
 
   // TODO: subscription todo: check if subscription has any grace period left
+  //   switch (subscription.subscriptionType) {
+  //     case SubscriptionType.TRIAL:
+  //     case SubscriptionType.PAID:
+  //     case SubscriptionType.PROMOTIONAL:
+  //     case SubscriptionType.LIFETIME:
+  //       break;
+  //   }
   switch (subscription.subscriptionType) {
-    case SubscriptionType.TRIAL:
-    case SubscriptionType.PAID:
-    case SubscriptionType.PROMOTIONAL:
     case SubscriptionType.LIFETIME:
+      // Lifetime subscriptions never expire.
+      return true;
+
+    case SubscriptionType.TRIAL:
+      // Future:
+      // - Restrict machineLimit
+      // - Restrict receipt limit
+      // - Restrict premium features
       break;
+
+    case SubscriptionType.PAID:
+      break;
+
+    case SubscriptionType.PROMOTIONAL:
+      // Future:
+      // - Validate promotion validity if required
+      break;
+
+    default:
+      throw new ForbiddenError("Unsupported subscription type.");
   }
 
   if (subscription.startDate > now) {

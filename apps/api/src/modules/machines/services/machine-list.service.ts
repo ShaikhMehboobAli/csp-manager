@@ -4,12 +4,24 @@ import { CurrentUser } from "../../../core/types/auth.types";
 
 import AgentScopeService from "../../agents/service/agent-scope.service";
 import { getMachineStatus } from "../../dashboard/dashboard.helper";
+import SubscriptionAccessValidator from "../../subscriptions/subscription-validator/subscription-access-validator";
+import SubscriptionResolver from "../../subscriptions/subscription-validator/subscription-resolver.service";
 
 import MachineListRepository from "../repository/machine-list.repository";
 
 export default class MachineListService {
   async getMachines(user: CurrentUser) {
     return withTransaction(async (tx) => {
+      // check for subscription and access validation
+      const resolver = new SubscriptionResolver(tx);
+
+      const subscription = await resolver.getEffectiveSubscription(
+        user.agentId,
+      );
+
+      SubscriptionAccessValidator.validate(subscription);
+
+      // continue with the transaction and fetch machines
       const scopeService = new AgentScopeService(tx);
 
       const agentIds = await scopeService.getAgentScope(user);
@@ -22,6 +34,16 @@ export default class MachineListService {
 
   async getMachine(machineId: string, user: CurrentUser) {
     return withTransaction(async (tx) => {
+      // check for subscription and access validation
+      const resolver = new SubscriptionResolver(tx);
+
+      const subscription = await resolver.getEffectiveSubscription(
+        user.agentId,
+      );
+
+      SubscriptionAccessValidator.validate(subscription);
+
+      // continue with the transaction and fetch machines
       const scopeService = new AgentScopeService(tx);
 
       const agentIds = await scopeService.getAgentScope(user);
@@ -85,6 +107,16 @@ export default class MachineListService {
     user: CurrentUser,
   ) {
     return withTransaction(async (tx) => {
+      // check for subscription and access validation
+      const resolver = new SubscriptionResolver(tx);
+
+      const subscription = await resolver.getEffectiveSubscription(
+        user.agentId,
+      );
+
+      SubscriptionAccessValidator.validate(subscription);
+
+      // continue with the transaction and fetch machines
       const scopeService = new AgentScopeService(tx);
 
       const agentIds = await scopeService.getAgentScope(user);
@@ -98,6 +130,50 @@ export default class MachineListService {
       }
 
       return machine;
+    });
+  }
+
+  async getHeartbeat(machineId: string, user: CurrentUser) {
+    return withTransaction(async (tx) => {
+      const scopeService = new AgentScopeService(tx);
+
+      const agentIds = await scopeService.getAgentScope(user);
+
+      const repository = new MachineListRepository(tx);
+
+      const machine = await repository.getHeartbeat(machineId, agentIds);
+
+      if (!machine) {
+        throw new NotFoundError("Machine not found.");
+      }
+
+      const activation = machine.activations[0];
+
+      return {
+        machineId: machine.id,
+
+        machineCode: machine.machineCode,
+
+        watcherVersion: machine.watcherVersion,
+
+        watcherEnabled: machine.watcherEnabled,
+
+        connectionStatus: getMachineStatus(machine.lastHeartbeatAt),
+
+        lastHeartbeatAt: machine.lastHeartbeatAt,
+
+        lastStartupAt: machine.lastStartupAt,
+
+        lastReceiptCapturedAt: machine.lastTransactionAt,
+
+        heartbeatInterval: 60,
+
+        latestWatcherVersion: "1.0.0",
+
+        receiptUploadEnabled: true,
+
+        subscriptionStatus: activation?.subscription.status ?? null,
+      };
     });
   }
 }
