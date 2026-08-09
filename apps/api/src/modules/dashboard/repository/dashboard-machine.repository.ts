@@ -1,4 +1,5 @@
 import { PrismaDb } from "../../../core/database/prisma.types";
+import { normalizeDateRange } from "../../../core/utils/date-range.helper";
 import { Prisma } from "../../../generated/prisma/client";
 import {
   buildAgentScope,
@@ -102,11 +103,13 @@ export default class DashboardMachineRepository {
           }
         : getTodayRange();
 
+    const { from, to } = normalizeDateRange(range?.start, range?.end);
+
     const receiptWhere = {
       machineId: machine.id,
       transactionAt: {
-        gte: range.start,
-        lte: range.end,
+        gte: from,
+        lte: to,
       },
     };
 

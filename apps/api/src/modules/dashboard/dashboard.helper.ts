@@ -1,4 +1,4 @@
-const HEARTBEAT_TIMEOUT_MS = 360 * 1000;
+export const HEARTBEAT_TIMEOUT_MS = 360 * 1000;
 
 export function getMachineStatus(lastHeartbeatAt: Date | null) {
   if (!lastHeartbeatAt) {

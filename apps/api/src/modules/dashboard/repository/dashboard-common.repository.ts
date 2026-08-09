@@ -1,4 +1,5 @@
 import { PrismaDb } from "../../../core/database/prisma.types";
+import { normalizeDateRange } from "../../../core/utils/date-range.helper";
 import { Prisma } from "../../../generated/prisma/client";
 
 import { DashboardFilter } from "../dashboard.types";
@@ -52,6 +53,7 @@ export default abstract class DashboardCommonRepository {
     filter: DashboardFilter,
   ): Prisma.ReceiptWhereInput {
     const where: Prisma.ReceiptWhereInput = {};
+    const { from, to } = normalizeDateRange(filter?.from, filter?.to);
 
     // if (filter.agentIds.length > 0) {
     //   where.agentId = {
@@ -66,11 +68,10 @@ export default abstract class DashboardCommonRepository {
     if (filter.agentId) {
       where.agentId = filter.agentId;
     } else if (filter.agentIds?.length > 0) {
-
-    /**
-     * Otherwise use the entire scope
-     * (BC -> all CSPs, CSP -> self)
-     */
+      /**
+       * Otherwise use the entire scope
+       * (BC -> all CSPs, CSP -> self)
+       */
       where.agentId = {
         in: filter.agentIds,
       };
@@ -90,8 +91,8 @@ export default abstract class DashboardCommonRepository {
 
     if (filter.from || filter.to) {
       where.transactionAt = {
-        ...(filter.from && { gte: filter.from }),
-        ...(filter.to && { lte: filter.to }),
+        ...(filter.from && { gte: from }),
+        ...(filter.to && { lte: to }),
       };
     }
 

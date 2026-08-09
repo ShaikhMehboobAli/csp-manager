@@ -1,4 +1,5 @@
 import { PrismaDb } from "../../../core/database/prisma.types";
+import { normalizeDateRange } from "../../../core/utils/date-range.helper";
 
 import { DashboardFilter } from "../dashboard.types";
 import DashboardCommonRepository from "./dashboard-common.repository";
@@ -10,6 +11,7 @@ export default class DashboardAnalyticsRepository {
   //   }
 
   private buildWhere(filter: DashboardFilter) {
+    const { from, to } = normalizeDateRange(filter?.from, filter?.to);
     return {
       //   ...(filter.agentId && {
       //     agentId: filter.agentId,
@@ -38,8 +40,8 @@ export default class DashboardAnalyticsRepository {
       ...(filter.from &&
         filter.to && {
           transactionAt: {
-            gte: filter.from,
-            lte: filter.to,
+            gte: from,
+            lte: to,
           },
         }),
     };

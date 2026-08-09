@@ -5,6 +5,7 @@ import MachineService from "./machine.service";
 import { activateMachineSchema } from "./validators/activate-machine.schema";
 import { MachineParams } from "./machine.dto";
 import { updateMachineSchema } from "./validators/update-machine.schema";
+import { machineListQuerySchema } from "./validators/machine.validation";
 
 const machineService = new MachineService();
 
@@ -17,7 +18,9 @@ export const activateMachine = async (req: Request, res: Response) => {
 };
 
 export const getMachines = async (req: Request, res: Response) => {
-  const result = await machineService.getMachines(req.user!);
+  const query = machineListQuerySchema.parse(req.query);
+
+  const result = await machineService.getMachines(req.user!, query);
 
   return res.json({
     success: true,

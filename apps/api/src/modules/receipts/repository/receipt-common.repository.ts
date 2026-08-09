@@ -3,12 +3,15 @@ import { Prisma } from "../../../generated/prisma/client";
 import { PrismaDb } from "../../../core/database/prisma.types";
 
 import { ReceiptFilter } from "../receipt.dto";
+import { normalizeDateRange } from "../../../core/utils/date-range.helper";
 
 export default abstract class ReceiptCommonRepository {
   constructor(protected readonly db: PrismaDb) {}
 
   protected buildReceiptWhere(filter: ReceiptFilter): Prisma.ReceiptWhereInput {
     const where: Prisma.ReceiptWhereInput = {};
+
+    const { from, to } = normalizeDateRange(filter?.from, filter?.to);
 
     /**
      * Agent Scope
@@ -25,10 +28,9 @@ export default abstract class ReceiptCommonRepository {
     if (filter.agentId) {
       where.agentId = filter.agentId;
     } else if (filter.agentIds?.length) {
-
-    /**
-     * Otherwise use agent scope
-     */
+      /**
+       * Otherwise use agent scope
+       */
       where.agentId = {
         in: filter.agentIds,
       };
@@ -68,11 +70,11 @@ export default abstract class ReceiptCommonRepository {
     if (filter.from || filter.to) {
       where.transactionAt = {
         ...(filter.from && {
-          gte: filter.from,
+          gte: from,
         }),
 
         ...(filter.to && {
-          lte: filter.to,
+          lte: to,
         }),
       };
     }
