@@ -1,4 +1,6 @@
-export const HEARTBEAT_TIMEOUT_MS = 360 * 1000;
+// export const HEARTBEAT_TIMEOUT_MS = 360 * 1000;
+
+import { HEARTBEAT_TIMEOUT_MS } from "../machines/runtime/machine-runtime.constants";
 
 export function getMachineStatus(lastHeartbeatAt: Date | null) {
   if (!lastHeartbeatAt) {

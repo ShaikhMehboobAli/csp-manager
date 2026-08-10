@@ -66,16 +66,90 @@ export default class MachineSessionRepository {
     });
   }
 
-  async closeSession(sessionId: string) {
-    return this.db.machineSession.update({
+  async closeSession(
+    sessionId: string,
+    endedAt: Date,
+    reason: SessionEndReason,
+    isUnexpectedStop = true,
+  ) {
+    const session = await this.db.machineSession.findUnique({
       where: {
         id: sessionId,
       },
+
+      select: {
+        startedAt: true,
+      },
+    });
+
+    if (!session) {
+      return null;
+    }
+
+    const durationSeconds = this.calculateDurationSeconds(
+      session.startedAt,
+      endedAt,
+    );
+
+    console.log("Duration:", durationSeconds);
+
+    const updated = await this.db.machineSession.update({
+      where: {
+        id: sessionId,
+      },
+
       data: {
         status: MachineSessionStatus.CLOSED,
-        endedAt: new Date(),
-        isUnexpectedStop: true,
-        endedReason: SessionEndReason.HEARTBEAT_TIMEOUT,
+
+        endedAt,
+
+        durationSeconds,
+
+        isUnexpectedStop,
+
+        endedReason: reason,
+      },
+    });
+
+    console.log(updated);
+
+    return updated;
+  }
+
+  private calculateDurationSeconds(startedAt: Date, endedAt: Date) {
+    return Math.max(
+      0,
+      Math.floor((endedAt.getTime() - startedAt.getTime()) / 1000),
+    );
+  }
+
+  async deleteExpiredSessions(date: Date) {
+    return this.db.machineSession.deleteMany({
+      where: {
+        startedAt: {
+          lt: date,
+        },
+      },
+    });
+  }
+
+  async countExpiredSessions(date: Date) {
+    return this.db.machineSession.count({
+      where: {
+        startedAt: {
+          lt: date,
+        },
+      },
+    });
+  }
+
+  async countExpiredActiveSessions(date: Date) {
+    return this.db.machineSession.count({
+      where: {
+        status: MachineSessionStatus.ACTIVE,
+        startedAt: {
+          lt: date,
+        },
       },
     });
   }

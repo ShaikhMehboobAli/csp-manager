@@ -7,6 +7,7 @@ import { HeartbeatInput, HeartbeatResponse } from "./machine-heartbeat.dto";
 import RuntimeConfig from "../../../config/runtime.config";
 import MachineSessionService from "./machine-session.service";
 import MachineRuntimeValidator from "./machine-runtime-validator";
+import { HEARTBEAT_TIMEOUT_SECONDS } from "./machine-runtime.constants";
 
 export default class MachineHeartbeatService {
   private readonly authService: MachineAuthenticationService;
@@ -50,6 +51,7 @@ export default class MachineHeartbeatService {
     return {
       serverTime: new Date(),
       heartbeatInterval: RuntimeConfig.heartbeatInterval,
+      heartbeatTimeout: HEARTBEAT_TIMEOUT_SECONDS,
       watcherEnabled: authenticated.machine.watcherEnabled,
       receiptUploadEnabled: RuntimeConfig.receiptUploadEnabled,
       subscriptionStatus: authenticated.subscription.status,

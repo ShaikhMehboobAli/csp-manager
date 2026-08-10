@@ -26,4 +26,5 @@ export interface HeartbeatResponse {
   subscriptionStatus: string;
 
   latestWatcherVersion: string;
+  heartbeatTimeout: number;
 }

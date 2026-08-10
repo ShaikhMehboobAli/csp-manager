@@ -1,6 +1,8 @@
 import { PrismaDb } from "../../../core/database/prisma.types";
+import { getDashboardDateRange } from "../../../core/utils/dashboard-date-range";
 import { normalizeDateRange } from "../../../core/utils/date-range.helper";
 import { Prisma } from "../../../generated/prisma/client";
+import { calculateSessionOverlapSeconds } from "../../machines/runtime/machine-runtime.helper";
 import {
   buildAgentScope,
   getMachineStatus,
@@ -392,6 +394,24 @@ export default class DashboardMachineRepository {
   // }
 
   async getMachineMonitoring(filter: DashboardFilter) {
+    /**
+     * Runtime date range:
+     *
+     * No filter:
+     *   today 00:00 -> today 23:59:59.999
+     *
+     * With filter:
+     *   selected from -> selected to
+     */
+    const { from: runtimeFrom, to: runtimeTo } = getDashboardDateRange(
+      filter.from,
+      filter.to,
+    );
+
+    // ============================================================
+    // 1. GET MACHINES
+    // ============================================================
+
     const machines = await this.db.machine.findMany({
       where: {
         ...buildAgentScope(filter.agentIds, filter.agentId),
@@ -432,18 +452,131 @@ export default class DashboardMachineRepository {
       },
     });
 
+    // ============================================================
+    // 2. GET MACHINE IDs
+    // ============================================================
+
+    const machineIds = machines.map((machine) => machine.id);
+
+    // ============================================================
+    // 3. GET MACHINE SESSIONS
+    //
+    // We fetch sessions which overlap the requested
+    // runtime date range.
+    //
+    // Example:
+    //
+    // Session:
+    // July 31 23:00 -> Aug 1 06:00
+    //
+    // Filter:
+    // Aug 1 -> Aug 10
+    //
+    // This session is included because it overlaps
+    // the requested period.
+    // ============================================================
+
+    const sessions =
+      machineIds.length === 0
+        ? []
+        : await this.db.machineSession.findMany({
+            where: {
+              machineId: {
+                in: machineIds,
+              },
+
+              startedAt: {
+                lte: runtimeTo,
+              },
+
+              OR: [
+                {
+                  endedAt: null,
+                },
+                {
+                  endedAt: {
+                    gte: runtimeFrom,
+                  },
+                },
+              ],
+            },
+
+            select: {
+              id: true,
+
+              machineId: true,
+
+              startedAt: true,
+
+              endedAt: true,
+
+              durationSeconds: true,
+
+              status: true,
+
+              isUnexpectedStop: true,
+            },
+          });
+
+    // ============================================================
+    // 4. GROUP SESSIONS BY MACHINE
+    // ============================================================
+
+    const sessionMap = new Map<string, typeof sessions>();
+
+    for (const session of sessions) {
+      const existing = sessionMap.get(session.machineId) ?? [];
+
+      existing.push(session);
+
+      sessionMap.set(session.machineId, existing);
+    }
+
+    // ============================================================
+    // DEBUG
+    // ============================================================
+
     console.log(
       "machine agentIds",
       machines.map((m) => ({
         machineId: m.id,
+
         machineAgentId: m.agentId,
+
         agentCode: m.agent?.agentId,
       })),
     );
 
-    // const today = new Date();
+    console.log("runtime range", {
+      from: runtimeFrom.toISOString(),
 
-    // today.setHours(0, 0, 0, 0);
+      to: runtimeTo.toISOString(),
+    });
+
+    console.log(
+      "machine sessions",
+      sessions.map((session) => ({
+        machineId: session.machineId,
+
+        startedAt: session.startedAt,
+
+        endedAt: session.endedAt,
+
+        status: session.status,
+      })),
+    );
+
+    // ============================================================
+    // 5. RECEIPT / TRANSACTION SUMMARY
+    // ============================================================
+
+    // const receiptWhere: Prisma.ReceiptWhereInput = {
+    //   agentId: {
+    //     in: machines
+    //       .map((m) => m.agentId)
+    //       .filter((id): id is string => Boolean(id)),
+    //   },
+    // };
 
     const receiptWhere: Prisma.ReceiptWhereInput = {
       agentId: {
@@ -451,40 +584,30 @@ export default class DashboardMachineRepository {
           .map((m) => m.agentId)
           .filter((id): id is string => Boolean(id)),
       },
+
+      transactionAt: {
+        gte: runtimeFrom,
+
+        lte: runtimeTo,
+      },
     };
 
-    if (filter.from || filter.to) {
-      receiptWhere.transactionAt = {
-        ...(filter.from && {
-          gte: filter.from,
-        }),
+    // if (filter.from || filter.to) {
+    //   receiptWhere.transactionAt = {
+    //     ...(filter.from && {
+    //       gte: runtimeFrom,
+    //     }),
 
-        ...(filter.to && {
-          lte: filter.to,
-        }),
-      };
-    }
+    //     ...(filter.to && {
+    //       lte: runtimeTo,
+    //     }),
+    //   };
+    // }
 
     const transactionSummary = await this.db.receipt.groupBy({
       by: ["agentId", "status"],
 
       where: receiptWhere,
-
-      // where: {
-      //   agentId: {
-      //     in: machines
-      //       .map((m) => m.agentId)
-      //       .filter((id): id is string => Boolean(id)),
-      //   },
-
-      // transactionAt: {
-      //   gte: filter.from ?? today,
-
-      //   ...(filter.to && {
-      //     lte: filter.to,
-      //   }),
-      // },
-      // },
 
       _count: {
         id: true,
@@ -496,7 +619,22 @@ export default class DashboardMachineRepository {
     });
 
     console.log("transactionSummary");
-    console.dir(transactionSummary, { depth: null });
+
+    console.dir(transactionSummary, {
+      depth: null,
+    });
+
+    console.log("Dashboard Receipt Filter:");
+    console.dir(receiptWhere, { depth: null });
+
+    console.log("Dashboard Runtime Range:", {
+      from: runtimeFrom.toISOString(),
+      to: runtimeTo.toISOString(),
+    });
+
+    // ============================================================
+    // 6. CREATE TRANSACTION MAP
+    // ============================================================
 
     const transactionMap = new Map<
       string,
@@ -537,7 +675,15 @@ export default class DashboardMachineRepository {
       transactionMap.set(key, existing);
     }
 
+    // ============================================================
+    // 7. BUILD MACHINE MONITORING
+    // ============================================================
+
     const monitoring = machines.map((machine) => {
+      // --------------------------------------------------------
+      // Transaction data
+      // --------------------------------------------------------
+
       const transaction = transactionMap.get(machine.agentId!) ?? {
         count: 0,
 
@@ -547,6 +693,75 @@ export default class DashboardMachineRepository {
 
         failed: 0,
       };
+
+      // --------------------------------------------------------
+      // Machine sessions
+      // --------------------------------------------------------
+
+      const machineSessions = sessionMap.get(machine.id) ?? [];
+
+      // --------------------------------------------------------
+      // Calculate total online seconds
+      //
+      // Handles:
+      // - multiple sessions
+      // - sessions spanning midnight
+      // - sessions spanning date range
+      // - active session
+      // --------------------------------------------------------
+
+      const totalRuntimeSeconds = machineSessions.reduce(
+        (total, session) =>
+          total +
+          calculateSessionOverlapSeconds(session, runtimeFrom, runtimeTo),
+        0,
+      );
+
+      // --------------------------------------------------------
+      // Total online hours
+      // --------------------------------------------------------
+
+      const onlineHours = Number((totalRuntimeSeconds / 3600).toFixed(2));
+
+      // --------------------------------------------------------
+      // Number of days in selected range
+      //
+      // Aug 1 -> Aug 1 = 1 day
+      // Aug 1 -> Aug 10 = 10 days
+      // --------------------------------------------------------
+
+      const millisecondsPerDay = 24 * 60 * 60 * 1000;
+
+      const numberOfDays =
+        Math.floor(
+          (runtimeTo.getTime() - runtimeFrom.getTime()) / millisecondsPerDay,
+        ) + 1;
+
+      // --------------------------------------------------------
+      // Average online hours per day
+      // --------------------------------------------------------
+
+      const averageOnlineHours =
+        numberOfDays <= 0 ? 0 : Number((onlineHours / numberOfDays).toFixed(2));
+
+      // --------------------------------------------------------
+      // Session count
+      // --------------------------------------------------------
+
+      const sessionCount = machineSessions.length;
+
+      // --------------------------------------------------------
+      // Unexpected stops
+      // --------------------------------------------------------
+
+      const unexpectedStops = machineSessions.filter(
+        (session) => session.isUnexpectedStop,
+      ).length;
+
+      // --------------------------------------------------------
+      // Return existing machine monitoring
+      // fields + runtime information
+      // --------------------------------------------------------
 
       return {
         agentId: machine.agent!.agentId,
@@ -578,29 +793,53 @@ export default class DashboardMachineRepository {
 
         lastReceiptUpdatedAt: machine.agent!.agentFloat?.updatedAt ?? null,
 
-        transactionCount: transaction.count, //default current day transaction count
+        // ------------------------------------------------------
+        // Existing transaction information
+        // ------------------------------------------------------
 
-        transactionAmount: transaction.amount, //default current day transaction amount
+        transactionCount: transaction.count,
+
+        transactionAmount: transaction.amount,
 
         successTransactions: transaction.success,
 
         failedTransactions: transaction.failed,
+
+        // ------------------------------------------------------
+        // Runtime information
+        // ------------------------------------------------------
+
+        onlineHours,
+
+        averageOnlineHours,
+
+        sessionCount,
+
+        unexpectedStops,
       };
     });
+
+    // ============================================================
+    // 8. MACHINE SUMMARY
+    // ============================================================
 
     const totalMachines = monitoring.length;
 
     const onlineMachines = monitoring.filter(
-      (m) => m.connectionStatus === "ONLINE",
+      (machine) => machine.connectionStatus === "ONLINE",
     ).length;
 
     const offlineMachines = totalMachines - onlineMachines;
 
     const activeMachines = monitoring.filter(
-      (m) => m.machineStatus === "ACTIVE",
+      (machine) => machine.machineStatus === "ACTIVE",
     ).length;
 
     const inactiveMachines = totalMachines - activeMachines;
+
+    // ============================================================
+    // 9. FINAL RESPONSE
+    // ============================================================
 
     return {
       summary: {

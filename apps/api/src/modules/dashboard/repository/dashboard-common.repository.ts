@@ -89,12 +89,10 @@ export default abstract class DashboardCommonRepository {
       where.transactionCategory = filter.transactionCategory;
     }
 
-    if (filter.from || filter.to) {
-      where.transactionAt = {
-        ...(filter.from && { gte: from }),
-        ...(filter.to && { lte: to }),
-      };
-    }
+    where.transactionAt = {
+      gte: from,
+      lte: to,
+    };
 
     return where;
   }

@@ -867,6 +867,8 @@ model MachineSession {
 
   endedAt DateTime?
 
+  durationSeconds Int?
+
   lastHeartbeatAt DateTime?
 
   firstAgentId String?
@@ -893,6 +895,7 @@ model MachineSession {
   @@index([startedAt])
   @@index([endedAt])
   @@index([lastHeartbeatAt])
+  @@index([machineId, startedAt])
 }
 
 ///////////////////////////

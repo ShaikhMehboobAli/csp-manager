@@ -37,13 +37,10 @@ export default class DashboardAnalyticsRepository {
         transactionCategory: filter.transactionCategory,
       }),
 
-      ...(filter.from &&
-        filter.to && {
-          transactionAt: {
-            gte: from,
-            lte: to,
-          },
-        }),
+      transactionAt: {
+        gte: from,
+        lte: to,
+      },
     };
   }
 

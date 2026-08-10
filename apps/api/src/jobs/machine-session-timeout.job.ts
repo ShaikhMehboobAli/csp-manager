@@ -1,33 +1,51 @@
-// import MachineSessionRepository from "../modules/machines/runtime/machine-session.repository";
-// import runtimeConfig from "../config/runtime.config";
-// import prisma from "../config/prisma";
+import cron from "node-cron";
 
-// export default class MachineSessionTimeoutJob {
-//   private readonly repository =
-//     new MachineSessionRepository(prisma);
+import prisma from "../config/prisma";
 
-//   async execute() {
-//     const timeoutDate = new Date(
-//       Date.now() - runtimeConfig.HEARTBEAT_TIMEOUT,
-//     );
+import { Logger } from "../core/utils/logger";
 
-//     const sessions =
-//       await this.repository.findTimedOutSessions(timeoutDate);
+import MachineSessionRepository from "../modules/machines/runtime/machine-session.repository";
 
-//     for (const session of sessions) {
-//       await this.repository.closeSession(session.id);
+import { HEARTBEAT_TIMEOUT_MS } from "../modules/machines/runtime/machine-runtime.constants";
 
-//       await this.repository.markMachineOffline(
-//         session.machineId,
-//       );
+import { SessionEndReason } from "../generated/prisma/enums";
 
-//       console.log(
-//         `Machine session ${session.machineSessionId} closed.`,
-//       );
-//     }
-//   }
-// }
-// TODO:
-// Implement MachineSession timeout job.
-// This will periodically close ACTIVE sessions whose
-// lastHeartbeatAt exceeds the configured timeout.
+export default class MachineSessionTimeoutJob {
+  static start() {
+    cron.schedule("* * * * *", async () => {
+      try {
+        const repository = new MachineSessionRepository(prisma);
+
+        const timeoutDate = new Date(Date.now() - HEARTBEAT_TIMEOUT_MS);
+
+        const sessions = await repository.findTimedOutSessions(timeoutDate);
+
+        if (sessions.length === 0) {
+          return;
+        }
+
+        for (const session of sessions) {
+          const endedAt = new Date();
+
+          Logger.info(
+            `[MachineSessionTimeoutJob] Closing session ${session.machineSessionId} for machine ${session.machineId}`,
+          );
+
+          await repository.closeSession(
+            session.id,
+            // session.lastHeartbeatAt!,
+            endedAt,
+            SessionEndReason.HEARTBEAT_TIMEOUT,
+          );
+        }
+
+        Logger.success(
+          `[MachineSessionTimeoutJob] Closed ${sessions.length} timed-out session(s).`,
+        );
+      } catch (error) {
+        Logger.error("[MachineSessionTimeoutJob]");
+        console.error(error);
+      }
+    });
+  }
+}

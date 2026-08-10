@@ -1,11 +1,9 @@
 import { PrismaDb } from "../../../core/database/prisma.types";
 import { normalizeDateRange } from "../../../core/utils/date-range.helper";
 import { Prisma } from "../../../generated/prisma/client";
-import {
-  buildAgentScope,
-  HEARTBEAT_TIMEOUT_MS,
-} from "../../dashboard/dashboard.helper";
+import { buildAgentScope } from "../../dashboard/dashboard.helper";
 import { getMachineStatus } from "../../dashboard/dashboard.helper";
+import { HEARTBEAT_TIMEOUT_MS } from "../runtime/machine-runtime.constants";
 import { MachineListFilter } from "../types/machine.types";
 
 export default class MachineListRepository {

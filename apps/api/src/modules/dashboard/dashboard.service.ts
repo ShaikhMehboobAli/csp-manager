@@ -26,6 +26,7 @@ import { DashboardAnalyticsQuery } from "./dashboard.validation";
 import DashboardActivationRepository from "./repository/dashboard-activation.repository";
 import SubscriptionResolver from "../subscriptions/subscription-validator/subscription-resolver.service";
 import SubscriptionAccessValidator from "../subscriptions/subscription-validator/subscription-access-validator";
+import { getDashboardDateRange } from "../../core/utils/dashboard-date-range";
 
 export default class DashboardService {
   private readonly overviewRepository: DashboardOverviewRepository;
@@ -59,9 +60,16 @@ export default class DashboardService {
   }
 
   async getSummary(filter: DashboardFilter) {
+    const { from, to } = getDashboardDateRange(filter.from, filter.to);
+
+    const dashboardFilter: DashboardFilter = {
+      ...filter,
+      from,
+      to,
+    };
     const subscription =
       await this.subscriptionResolver.getEffectiveSubscription(
-        filter.currentAgentId,
+        dashboardFilter.currentAgentId,
       );
 
     SubscriptionAccessValidator.validate(subscription);
@@ -82,7 +90,7 @@ export default class DashboardService {
       activeSubscription,
       //   topServices,
     ] = await Promise.all([
-      this.overviewRepository.getOverview(filter),
+      this.overviewRepository.getOverview(dashboardFilter),
 
       isSingleAgentView
         ? this.floatRepository.getFloatSummary(
@@ -90,17 +98,17 @@ export default class DashboardService {
           )
         : null,
 
-      this.serviceRepository.getServiceSummary(filter),
+      this.serviceRepository.getServiceSummary(dashboardFilter),
 
-      this.serviceRepository.getRecentTransactions(filter),
+      this.serviceRepository.getRecentTransactions(dashboardFilter),
 
-      this.serviceRepository.getStatusSummary(filter),
+      this.serviceRepository.getStatusSummary(dashboardFilter),
 
       isSingleAgentView
-        ? this.machineRepository.getCspMachineSummary(filter)
-        : this.machineRepository.getMachineMonitoring(filter),
+        ? this.machineRepository.getCspMachineSummary(dashboardFilter)
+        : this.machineRepository.getMachineMonitoring(dashboardFilter),
 
-      this.activationRepository.getActivationSummary(filter),
+      this.activationRepository.getActivationSummary(dashboardFilter),
       this.subscriptionResolver.getEffectiveSubscription(filter.currentAgentId),
       //   this.machineRepository.getCspMachineSummary(filter),
       //     filter.currentAgentId,

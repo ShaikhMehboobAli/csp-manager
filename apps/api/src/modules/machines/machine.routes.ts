@@ -1,6 +1,7 @@
 import { Router } from "express";
 
 import * as MachineController from "./machine.controller";
+import machineAnalyticsRoutes from "./analytics/machine-analytics.routes";
 import machineRuntimeRoute from "./runtime/machine-runtime.routes";
 import { authMiddleware } from "../../core/middlewares/auth.middleware";
 
@@ -18,6 +19,7 @@ router.get(
 router.get("/:machineId", authMiddleware, MachineController.getMachine);
 
 router.patch("/:machineId", authMiddleware, MachineController.updateMachine);
+router.use(machineAnalyticsRoutes);
 
 router.use("/runtime", machineRuntimeRoute);
 
