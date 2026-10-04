@@ -19,4 +19,4 @@ class BcryptService {
         return bcrypt_1.default.compare(password, hash);
     }
 }
-exports.default = new BcryptService();
+exports.default = BcryptService;

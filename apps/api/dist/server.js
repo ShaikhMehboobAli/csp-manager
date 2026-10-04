@@ -7,9 +7,15 @@ const app_1 = __importDefault(require("./app"));
 const env_1 = require("./config/env");
 const database_1 = require("./config/database");
 const logger_1 = require("./core/utils/logger");
+const machine_session_timeout_job_1 = __importDefault(require("./jobs/machine-session-timeout.job"));
+const machine_session_cleanup_job_1 = __importDefault(require("./jobs/machine-session-cleanup.job"));
+require("./core/utils/event-loop-monitor");
 async function bootstrap() {
     try {
         await (0, database_1.connectDatabase)();
+        // Start background jobs
+        machine_session_timeout_job_1.default.start();
+        machine_session_cleanup_job_1.default.start();
         app_1.default.listen(env_1.env.port, "0.0.0.0", () => {
             logger_1.Logger.success(`🚀 CSP Manager API running on port ${env_1.env.port}`);
         });

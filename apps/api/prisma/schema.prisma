@@ -199,7 +199,24 @@ enum TransactionCategory {
   OTHER
 }
 
-//
+enum MetricCategory {
+  SOCIAL_SECURITY
+  TRANSACTION
+  VISIT
+  MANUAL
+  OTHER
+}
+
+enum MetricSource {
+  RECEIPT
+  MANUAL
+}
+
+enum MetricInputType {
+  COUNT
+  NUMBER
+  BOOLEAN
+}
 
 //enum FloatLedgerType {
 // OPENING
@@ -527,6 +544,10 @@ model Agent {
 
   users User?
 
+  cspVisits CspVisit[] @relation("CspVisits")
+
+conductedCspVisits CspVisit[] @relation("CspVisitsByAgent")
+
   isDeleted Boolean @default(false)
 
   deletedByUserId String?
@@ -535,6 +556,7 @@ model Agent {
   agentFloat             AgentFloat?
   floatLedger            FloatLedger[]
   floatAdjustmentRequest FloatAdjustmentRequest[]
+  metricValues           MetricValue[]
 
   machines Machine[]
 
@@ -544,6 +566,8 @@ model Agent {
 
   createdBy String?
   updatedBy String?
+
+  
 
   @@index([bcId])
   @@index([parentAgentId])
@@ -770,6 +794,67 @@ model SystemSetting {
   group     String?
 
   @@index([group])
+}
+
+///////////////////////////
+//Metric defination Model for custom fields
+///////////////////////////
+
+model MetricDefinition {
+  id String @id @default(cuid())
+
+  code String @unique
+  name String
+
+  category  MetricCategory
+  source    MetricSource
+  inputType MetricInputType @default(COUNT)
+
+  description String?
+
+  isActive Boolean @default(true)
+
+  createdBy String?
+  updatedBy String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  values MetricValue[]
+
+  @@index([category])
+  @@index([source])
+  @@index([isActive])
+}
+
+///////////////////////////
+//Metric value Model to store different custom values
+///////////////////////////
+
+model MetricValue {
+  id String @id @default(cuid())
+
+  metricId String
+  agentId  String
+
+  date DateTime
+
+  value Decimal @db.Decimal(12, 2)
+
+  createdBy String?
+  updatedBy String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  metric MetricDefinition @relation(fields: [metricId], references: [id], onDelete: Cascade)
+
+  agent Agent @relation(fields: [agentId], references: [agentId], onDelete: Cascade)
+
+  @@unique([metricId, agentId, date])
+  @@index([metricId])
+  @@index([agentId])
+  @@index([date])
 }
 
 ///////////////////////////
@@ -1342,6 +1427,7 @@ enum RunningNumberType {
   ACTIVATION
   MACHINE_SESSION
   RECEIPT
+  CSP_VISIT
 }
 
 model RunningNumber {
@@ -1353,4 +1439,67 @@ model RunningNumber {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+///////////////////////////
+//CSP VISIT Model
+///////////////////////////
+
+
+model CspVisit {
+  id String @id @default(cuid())
+
+  visitId String @unique
+
+  cspAgentId String
+  visitedByAgentId String
+
+  visitDate DateTime
+
+  latitude Decimal? @db.Decimal(10, 7)
+  longitude Decimal? @db.Decimal(10, 7)
+
+  photoUrl String?
+
+  remarks String?
+
+  points Decimal? @db.Decimal(10, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  csp Agent @relation("CspVisits", fields: [cspAgentId], references: [agentId], onDelete: Restrict)
+
+  visitedBy Agent @relation("CspVisitsByAgent", fields: [visitedByAgentId], references: [agentId], onDelete: Restrict)
+
+  customerReviews CspVisitCustomerReview[]
+
+  @@index([cspAgentId])
+  @@index([visitedByAgentId])
+  @@index([visitDate])
+  @@index([cspAgentId, visitDate])
+}
+
+///////////////////////////
+//CUSTOMER REVIEW MODEL for CSP VISIT
+///////////////////////////
+
+
+
+model CspVisitCustomerReview {
+  id String @id @default(cuid())
+
+  visitId String
+
+  customerName String?
+  customerAccount String?
+
+  review String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  visit CspVisit @relation(fields: [visitId], references: [id], onDelete: Cascade)
+
+  @@index([visitId])
 }

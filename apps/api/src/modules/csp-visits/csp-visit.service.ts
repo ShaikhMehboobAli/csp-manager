@@ -1,0 +1,129 @@
+import CspVisitRepository from "./csp-visit.repository";
+import { CreateCspVisitInput } from "./csp-visit.dto";
+import CodeGeneratorService from "../../core/services/code-generator.service";
+import RunningNumberRepository from "../../core/repositories/running-number.repository";
+// import { AgentScopeService } from "../agents/services/agent-scope.service";
+import { BadRequestError } from "../../core/errors/BadRequestError";
+import { PrismaDb } from "../../core/database/prisma.types";
+import AgentScopeService from "../agents/service/agent-scope.service";
+
+export default class CspVisitService {
+  private readonly visitRepository: CspVisitRepository;
+
+  private readonly codeGeneratorService: CodeGeneratorService;
+
+  private readonly scopeService: AgentScopeService;
+
+  constructor(private readonly db: PrismaDb) {
+    const runningNumberRepository = new RunningNumberRepository(db);
+
+    this.visitRepository = new CspVisitRepository(db);
+
+    this.codeGeneratorService = new CodeGeneratorService(
+      runningNumberRepository,
+    );
+
+    this.scopeService = new AgentScopeService(db);
+  }
+
+  async createVisit(
+    input: CreateCspVisitInput,
+    visitedByAgentId: string,
+    accessibleAgentIds: string[],
+  ) {
+    if (input.customerReviews.length < 5) {
+      throw new BadRequestError("At least 5 customer reviews are required.");
+    }
+
+    this.scopeService.ensureAgentAccessible(
+      input.cspAgentId,
+      accessibleAgentIds,
+    );
+
+    const csp = await this.db.agent.findUnique({
+      where: {
+        agentId: input.cspAgentId,
+      },
+      select: {
+        agentId: true,
+        name: true,
+        type: true,
+        isDeleted: true,
+      },
+    });
+
+    if (!csp || csp.isDeleted || csp.type !== "CSP") {
+      throw new BadRequestError("Invalid CSP agent.");
+    }
+
+    const visitDate = new Date(input.visitDate);
+
+    const monthStart = new Date(
+      Date.UTC(
+        visitDate.getUTCFullYear(),
+        visitDate.getUTCMonth(),
+        1,
+        0,
+        0,
+        0,
+        0,
+      ),
+    );
+
+    const monthEnd = new Date(
+      Date.UTC(
+        visitDate.getUTCFullYear(),
+        visitDate.getUTCMonth() + 1,
+        0,
+        23,
+        59,
+        59,
+        999,
+      ),
+    );
+
+    const existingVisit = await this.visitRepository.findByCspAndDateRange(
+      input.cspAgentId,
+      monthStart,
+      monthEnd,
+    );
+
+    if (existingVisit) {
+      throw new BadRequestError(
+        "A CSP visit has already been recorded for this month.",
+      );
+    }
+
+    const visitId = await this.codeGeneratorService.generateCspVisitNumber();
+
+    return this.visitRepository.create({
+      ...input,
+      visitedByAgentId,
+      visitId,
+    });
+  }
+
+  async getVisit(id: string) {
+    const visit = await this.visitRepository.findById(id);
+
+    if (!visit) {
+      throw new BadRequestError("CSP visit not found.");
+    }
+
+    return visit;
+  }
+
+  async getVisitByVisitId(visitId: string) {
+    const visit = await this.visitRepository.findByVisitId(visitId);
+
+    if (!visit) {
+      throw new BadRequestError("CSP visit not found.");
+    }
+
+    return visit;
+  }
+
+  async getCspVisits(cspAgentId: string, from?: Date, to?: Date) {
+    return this.visitRepository.findManyByCsp(cspAgentId, from, to);
+  }
+}

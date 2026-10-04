@@ -9,6 +9,7 @@ export async function seedRunningNumbers() {
     RunningNumberType.SUBSCRIPTION,
     RunningNumberType.PAYMENT,
     RunningNumberType.INVOICE,
+    RunningNumberType.CSP_VISIT,
   ]) {
     await prisma.runningNumber.upsert({
       where: {

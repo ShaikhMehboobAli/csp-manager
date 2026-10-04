@@ -8,7 +8,7 @@
 * 🟢 You can import this file directly.
 */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CommunicationStatus = exports.CommunicationChannel = exports.SessionEndReason = exports.OTPChannel = exports.OtpPurpose = exports.UserStatus = exports.NotificationType = exports.PaymentProvider = exports.PaymentMethod = exports.PaymentStatus = exports.AuditEntity = exports.AuditAction = exports.FloatAdjustmentReason = exports.FloatAdjustmentStatus = exports.FloatLedgerType = exports.TransactionCategory = exports.SettingType = exports.FeatureCategory = exports.MachineStatus = exports.SubscriptionType = exports.SubscriptionEventType = exports.SubscriptionOwnerType = exports.BusinessCorrespondentStatus = exports.ReceiptType = exports.ReceiptStatus = exports.ActivationStatus = exports.SubscriptionStatus = exports.BillingCycle = exports.PlanOwnerType = exports.AgentStatus = exports.AgentType = exports.UserRole = void 0;
+exports.RunningNumberType = exports.CommunicationStatus = exports.CommunicationChannel = exports.ApprovalStatus = exports.MachineSessionStatus = exports.SessionEndReason = exports.SubscriptionCreatedSource = exports.OTPChannel = exports.OtpPurpose = exports.UserStatus = exports.NotificationType = exports.PaymentProvider = exports.PaymentMethod = exports.PaymentStatus = exports.AuditEntity = exports.AuditAction = exports.FloatAdjustmentReason = exports.FloatAdjustmentStatus = exports.FloatLedgerType = exports.MetricInputType = exports.MetricSource = exports.MetricCategory = exports.TransactionCategory = exports.SettingType = exports.FeatureCategory = exports.MachineStatus = exports.SubscriptionType = exports.SubscriptionEventType = exports.SubscriptionOwnerType = exports.BusinessCorrespondentStatus = exports.ReceiptType = exports.ReceiptStatus = exports.ActivationStatus = exports.SubscriptionStatus = exports.BillingCycle = exports.PlanOwnerType = exports.AgentStatus = exports.AgentType = exports.UserRole = void 0;
 exports.UserRole = {
     SUPER_ADMIN: 'SUPER_ADMIN',
     BC_ADMIN: 'BC_ADMIN',
@@ -34,6 +34,7 @@ exports.BillingCycle = {
     YEARLY: 'YEARLY'
 };
 exports.SubscriptionStatus = {
+    PENDING: 'PENDING',
     ACTIVE: 'ACTIVE',
     EXPIRED: 'EXPIRED',
     CANCELLED: 'CANCELLED',
@@ -56,6 +57,10 @@ exports.ReceiptType = {
     BBPS: 'BBPS',
     MICRO_ATM: 'MICRO_ATM',
     ACCOUNT_OPENING: 'ACCOUNT_OPENING',
+    APY: 'APY',
+    PMJJBY: 'PMJJBY',
+    PMSBY: 'PMSBY',
+    MUDRA_LOAN: 'MUDRA_LOAN',
     UNKNOWN: 'UNKNOWN'
 };
 exports.BusinessCorrespondentStatus = {
@@ -110,11 +115,30 @@ exports.TransactionCategory = {
     ACCOUNT_OPENING: 'ACCOUNT_OPENING',
     BBPS: 'BBPS',
     MICRO_ATM: 'MICRO_ATM',
+    SOCIAL_SECURITY: 'SOCIAL_SECURITY',
+    LOAN: 'LOAN',
     OTHER: 'OTHER'
+};
+exports.MetricCategory = {
+    SOCIAL_SECURITY: 'SOCIAL_SECURITY',
+    TRANSACTION: 'TRANSACTION',
+    VISIT: 'VISIT',
+    MANUAL: 'MANUAL',
+    OTHER: 'OTHER'
+};
+exports.MetricSource = {
+    RECEIPT: 'RECEIPT',
+    MANUAL: 'MANUAL'
+};
+exports.MetricInputType = {
+    COUNT: 'COUNT',
+    NUMBER: 'NUMBER',
+    BOOLEAN: 'BOOLEAN'
 };
 exports.FloatLedgerType = {
     OPENING: 'OPENING',
     RECEIPT: 'RECEIPT',
+    OPENING_ADJUSTMENT: 'OPENING_ADJUSTMENT',
     ADJUSTMENT: 'ADJUSTMENT',
     LIMIT_TOPUP: 'LIMIT_TOPUP',
     LIMIT_REDUCTION: 'LIMIT_REDUCTION',
@@ -213,12 +237,27 @@ exports.OTPChannel = {
     EMAIL: 'EMAIL',
     SMS: 'SMS'
 };
+exports.SubscriptionCreatedSource = {
+    SELF: 'SELF',
+    ADMIN: 'ADMIN',
+    MIGRATION: 'MIGRATION'
+};
 exports.SessionEndReason = {
     NORMAL_SHUTDOWN: 'NORMAL_SHUTDOWN',
     SYSTEM_CRASH: 'SYSTEM_CRASH',
     POWER_FAILURE: 'POWER_FAILURE',
     WATCHER_CRASH: 'WATCHER_CRASH',
-    UNKNOWN: 'UNKNOWN'
+    UNKNOWN: 'UNKNOWN',
+    HEARTBEAT_TIMEOUT: 'HEARTBEAT_TIMEOUT'
+};
+exports.MachineSessionStatus = {
+    ACTIVE: 'ACTIVE',
+    CLOSED: 'CLOSED'
+};
+exports.ApprovalStatus = {
+    PENDING: 'PENDING',
+    APPROVED: 'APPROVED',
+    REJECTED: 'REJECTED'
 };
 exports.CommunicationChannel = {
     EMAIL: 'EMAIL',
@@ -229,4 +268,14 @@ exports.CommunicationStatus = {
     PENDING: 'PENDING',
     SENT: 'SENT',
     FAILED: 'FAILED'
+};
+exports.RunningNumberType = {
+    SUBSCRIPTION: 'SUBSCRIPTION',
+    PAYMENT: 'PAYMENT',
+    INVOICE: 'INVOICE',
+    MACHINE: 'MACHINE',
+    ACTIVATION: 'ACTIVATION',
+    MACHINE_SESSION: 'MACHINE_SESSION',
+    RECEIPT: 'RECEIPT',
+    CSP_VISIT: 'CSP_VISIT'
 };

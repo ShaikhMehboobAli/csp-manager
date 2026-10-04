@@ -47,7 +47,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.JsonNullValueFilter = exports.NullsOrder = exports.QueryMode = exports.NullableJsonNullValueInput = exports.JsonNullValueInput = exports.SortOrder = exports.CommunicationScalarFieldEnum = exports.NotificationScalarFieldEnum = exports.PaymentScalarFieldEnum = exports.AuditLogScalarFieldEnum = exports.FloatAdjustmentRequestScalarFieldEnum = exports.FloatLedgerScalarFieldEnum = exports.AgentFloatScalarFieldEnum = exports.ReceiptScalarFieldEnum = exports.MachineSessionScalarFieldEnum = exports.ActivationScalarFieldEnum = exports.MachineScalarFieldEnum = exports.SystemSettingScalarFieldEnum = exports.PlanFeatureScalarFieldEnum = exports.FeatureScalarFieldEnum = exports.SubscriptionHistoryScalarFieldEnum = exports.SubscriptionScalarFieldEnum = exports.PlanPricingScalarFieldEnum = exports.PlanScalarFieldEnum = exports.AgentScalarFieldEnum = exports.BusinessCorrespondentScalarFieldEnum = exports.OtpScalarFieldEnum = exports.UserSessionScalarFieldEnum = exports.UserScalarFieldEnum = exports.TransactionIsolationLevel = exports.ModelName = exports.Decimal = void 0;
+exports.JsonNullValueFilter = exports.NullsOrder = exports.QueryMode = exports.NullableJsonNullValueInput = exports.JsonNullValueInput = exports.SortOrder = exports.CspVisitCustomerReviewScalarFieldEnum = exports.CspVisitScalarFieldEnum = exports.RunningNumberScalarFieldEnum = exports.CommunicationScalarFieldEnum = exports.NotificationScalarFieldEnum = exports.PaymentScalarFieldEnum = exports.AuditLogScalarFieldEnum = exports.FloatAdjustmentRequestScalarFieldEnum = exports.FloatLedgerScalarFieldEnum = exports.AgentFloatScalarFieldEnum = exports.ReceiptScalarFieldEnum = exports.MachineSessionScalarFieldEnum = exports.ActivationScalarFieldEnum = exports.MachineScalarFieldEnum = exports.MetricValueScalarFieldEnum = exports.MetricDefinitionScalarFieldEnum = exports.SystemSettingScalarFieldEnum = exports.PlanFeatureScalarFieldEnum = exports.FeatureScalarFieldEnum = exports.SubscriptionHistoryScalarFieldEnum = exports.SubscriptionScalarFieldEnum = exports.PlanPricingScalarFieldEnum = exports.PlanScalarFieldEnum = exports.AgentScalarFieldEnum = exports.BusinessCorrespondentScalarFieldEnum = exports.OtpScalarFieldEnum = exports.UserSessionScalarFieldEnum = exports.UserScalarFieldEnum = exports.TransactionIsolationLevel = exports.ModelName = exports.Decimal = void 0;
 const runtime = __importStar(require("@prisma/client/runtime/index-browser"));
 exports.Decimal = runtime.Decimal;
 exports.ModelName = {
@@ -63,6 +63,8 @@ exports.ModelName = {
     Feature: 'Feature',
     PlanFeature: 'PlanFeature',
     SystemSetting: 'SystemSetting',
+    MetricDefinition: 'MetricDefinition',
+    MetricValue: 'MetricValue',
     Machine: 'Machine',
     Activation: 'Activation',
     MachineSession: 'MachineSession',
@@ -73,7 +75,10 @@ exports.ModelName = {
     AuditLog: 'AuditLog',
     Payment: 'Payment',
     Notification: 'Notification',
-    Communication: 'Communication'
+    Communication: 'Communication',
+    RunningNumber: 'RunningNumber',
+    CspVisit: 'CspVisit',
+    CspVisitCustomerReview: 'CspVisitCustomerReview'
 };
 /**
  * Enums
@@ -96,6 +101,8 @@ exports.UserScalarFieldEnum = {
     signupCompleted: 'signupCompleted',
     createdAt: 'createdAt',
     updatedAt: 'updatedAt',
+    createdBy: 'createdBy',
+    updatedBy: 'updatedBy',
     lastLoginAt: 'lastLoginAt',
     passwordChangedAt: 'passwordChangedAt'
 };
@@ -118,15 +125,13 @@ exports.OtpScalarFieldEnum = {
     email: 'email',
     phone: 'phone',
     expiresAt: 'expiresAt',
-    verifiedAt: 'verifiedAt',
-    isUsed: 'isUsed',
     attempts: 'attempts',
     resendCount: 'resendCount',
     createdAt: 'createdAt'
 };
 exports.BusinessCorrespondentScalarFieldEnum = {
     id: 'id',
-    code: 'code',
+    bcId: 'bcId',
     name: 'name',
     mobile: 'mobile',
     email: 'email',
@@ -152,9 +157,16 @@ exports.AgentScalarFieldEnum = {
     parentAgentId: 'parentAgentId',
     createdAt: 'createdAt',
     updatedAt: 'updatedAt',
+    cashLimit: 'cashLimit',
+    openingCash: 'openingCash',
+    linkedAt: 'linkedAt',
     isDeleted: 'isDeleted',
     deletedByUserId: 'deletedByUserId',
-    deletedAt: 'deletedAt'
+    deletedAt: 'deletedAt',
+    isProfileCompleted: 'isProfileCompleted',
+    createdByAgentId: 'createdByAgentId',
+    createdBy: 'createdBy',
+    updatedBy: 'updatedBy'
 };
 exports.PlanScalarFieldEnum = {
     id: 'id',
@@ -184,10 +196,7 @@ exports.PlanPricingScalarFieldEnum = {
 exports.SubscriptionScalarFieldEnum = {
     id: 'id',
     subscriptionNumber: 'subscriptionNumber',
-    bcId: 'bcId',
-    agentId: 'agentId',
     planId: 'planId',
-    machineLimit: 'machineLimit',
     amountPaid: 'amountPaid',
     startDate: 'startDate',
     endDate: 'endDate',
@@ -195,7 +204,13 @@ exports.SubscriptionScalarFieldEnum = {
     graceEndsAt: 'graceEndsAt',
     subscriptionType: 'subscriptionType',
     createdAt: 'createdAt',
-    updatedAt: 'updatedAt'
+    updatedAt: 'updatedAt',
+    ownerType: 'ownerType',
+    ownerId: 'ownerId',
+    createdSource: 'createdSource',
+    createdBy: 'createdBy',
+    updatedBy: 'updatedBy',
+    machineLimit: 'machineLimit'
 };
 exports.SubscriptionHistoryScalarFieldEnum = {
     id: 'id',
@@ -237,6 +252,31 @@ exports.SystemSettingScalarFieldEnum = {
     updatedAt: 'updatedAt',
     group: 'group'
 };
+exports.MetricDefinitionScalarFieldEnum = {
+    id: 'id',
+    code: 'code',
+    name: 'name',
+    category: 'category',
+    source: 'source',
+    inputType: 'inputType',
+    description: 'description',
+    isActive: 'isActive',
+    createdBy: 'createdBy',
+    updatedBy: 'updatedBy',
+    createdAt: 'createdAt',
+    updatedAt: 'updatedAt'
+};
+exports.MetricValueScalarFieldEnum = {
+    id: 'id',
+    metricId: 'metricId',
+    agentId: 'agentId',
+    date: 'date',
+    value: 'value',
+    createdBy: 'createdBy',
+    updatedBy: 'updatedBy',
+    createdAt: 'createdAt',
+    updatedAt: 'updatedAt'
+};
 exports.MachineScalarFieldEnum = {
     id: 'id',
     machineCode: 'machineCode',
@@ -263,11 +303,14 @@ exports.MachineScalarFieldEnum = {
     deletedByUserId: 'deletedByUserId',
     deletedAt: 'deletedAt',
     version: 'version',
+    createdBy: 'createdBy',
+    updatedBy: 'updatedBy',
     agentId: 'agentId'
 };
 exports.ActivationScalarFieldEnum = {
     id: 'id',
     activationCode: 'activationCode',
+    activationPasswordHash: 'activationPasswordHash',
     machineId: 'machineId',
     subscriptionId: 'subscriptionId',
     status: 'status',
@@ -277,9 +320,15 @@ exports.ActivationScalarFieldEnum = {
     activatedBy: 'activatedBy',
     remarks: 'remarks',
     expiresAt: 'expiresAt',
+    assignedAgentId: 'assignedAgentId',
+    assignedByOwnerType: 'assignedByOwnerType',
+    assignedByOwnerId: 'assignedByOwnerId',
+    assignedAt: 'assignedAt',
     createdAt: 'createdAt',
     updatedAt: 'updatedAt',
-    isCurrent: 'isCurrent'
+    isCurrent: 'isCurrent',
+    passwordGeneratedAt: 'passwordGeneratedAt',
+    passwordRegeneratedAt: 'passwordRegeneratedAt'
 };
 exports.MachineSessionScalarFieldEnum = {
     id: 'id',
@@ -287,12 +336,14 @@ exports.MachineSessionScalarFieldEnum = {
     machineId: 'machineId',
     startedAt: 'startedAt',
     endedAt: 'endedAt',
+    durationSeconds: 'durationSeconds',
     lastHeartbeatAt: 'lastHeartbeatAt',
     firstAgentId: 'firstAgentId',
     lastAgentId: 'lastAgentId',
     isUnexpectedStop: 'isUnexpectedStop',
     createdAt: 'createdAt',
     updatedAt: 'updatedAt',
+    status: 'status',
     endedReason: 'endedReason'
 };
 exports.ReceiptScalarFieldEnum = {
@@ -314,7 +365,10 @@ exports.ReceiptScalarFieldEnum = {
     customerAccount: 'customerAccount',
     location: 'location',
     createdAt: 'createdAt',
-    updatedAt: 'updatedAt'
+    updatedAt: 'updatedAt',
+    createdBy: 'createdBy',
+    updatedBy: 'updatedBy',
+    machineSessionId: 'machineSessionId'
 };
 exports.AgentFloatScalarFieldEnum = {
     id: 'id',
@@ -326,8 +380,11 @@ exports.AgentFloatScalarFieldEnum = {
     isLocked: 'isLocked',
     lastAdjustmentAt: 'lastAdjustmentAt',
     lastReceiptAt: 'lastReceiptAt',
+    approvalStatus: 'approvalStatus',
     createdAt: 'createdAt',
-    updatedAt: 'updatedAt'
+    updatedAt: 'updatedAt',
+    createdBy: 'createdBy',
+    updatedBy: 'updatedBy'
 };
 exports.FloatLedgerScalarFieldEnum = {
     id: 'id',
@@ -379,6 +436,9 @@ exports.PaymentScalarFieldEnum = {
     id: 'id',
     paymentNumber: 'paymentNumber',
     subscriptionId: 'subscriptionId',
+    ownerType: 'ownerType',
+    ownerId: 'ownerId',
+    bcId: 'bcId',
     amount: 'amount',
     taxAmount: 'taxAmount',
     totalAmount: 'totalAmount',
@@ -388,8 +448,12 @@ exports.PaymentScalarFieldEnum = {
     transactionReference: 'transactionReference',
     gatewayTransactionId: 'gatewayTransactionId',
     gatewayResponse: 'gatewayResponse',
+    receiptUrl: 'receiptUrl',
+    failureReason: 'failureReason',
     remarks: 'remarks',
     paidAt: 'paidAt',
+    planId: 'planId',
+    billingCycle: 'billingCycle',
     createdAt: 'createdAt',
     updatedAt: 'updatedAt',
     currency: 'currency',
@@ -423,6 +487,36 @@ exports.CommunicationScalarFieldEnum = {
     referenceType: 'referenceType',
     referenceId: 'referenceId',
     retryCount: 'retryCount'
+};
+exports.RunningNumberScalarFieldEnum = {
+    id: 'id',
+    type: 'type',
+    currentValue: 'currentValue',
+    createdAt: 'createdAt',
+    updatedAt: 'updatedAt'
+};
+exports.CspVisitScalarFieldEnum = {
+    id: 'id',
+    visitId: 'visitId',
+    cspAgentId: 'cspAgentId',
+    visitedByAgentId: 'visitedByAgentId',
+    visitDate: 'visitDate',
+    latitude: 'latitude',
+    longitude: 'longitude',
+    photoUrl: 'photoUrl',
+    remarks: 'remarks',
+    points: 'points',
+    createdAt: 'createdAt',
+    updatedAt: 'updatedAt'
+};
+exports.CspVisitCustomerReviewScalarFieldEnum = {
+    id: 'id',
+    visitId: 'visitId',
+    customerName: 'customerName',
+    customerAccount: 'customerAccount',
+    review: 'review',
+    createdAt: 'createdAt',
+    updatedAt: 'updatedAt'
 };
 exports.SortOrder = {
     asc: 'asc',

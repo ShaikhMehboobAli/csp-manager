@@ -16,4 +16,10 @@ router.get(
   controller.getAnalytics.bind(controller),
 );
 
+router.get(
+  "/csp/:agentId/detail",
+  authMiddleware,
+  controller.getCspDetail.bind(controller),
+);
+
 export default router;

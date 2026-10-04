@@ -45,6 +45,19 @@ class AuthRepository {
             },
         });
     }
+    createAgent(data) {
+        return this.db.agent.create({
+            data,
+        });
+    }
+    updateAgent(agentId, data) {
+        return this.db.agent.update({
+            where: {
+                agentId,
+            },
+            data,
+        });
+    }
     createOtp(data) {
         return this.db.otp.create({
             data,
@@ -54,7 +67,92 @@ class AuthRepository {
         return this.db.otp.deleteMany({
             where: {
                 userId,
-                isUsed: false,
+                purpose: enums_1.OtpPurpose.SIGNUP,
+            },
+        });
+    }
+    async findBusinessCorrespondentByBcId(bcId) {
+        return this.db.businessCorrespondent.findUnique({
+            where: {
+                bcId,
+            },
+        });
+    }
+    async createBusinessCorrespondent(data) {
+        return this.db.businessCorrespondent.create({
+            data: {
+                bcId: data.bcId,
+                name: data.name,
+                email: data.email,
+                mobile: data.phone,
+                address: data.address,
+            },
+        });
+    }
+    findLatestSignupOtp(userId) {
+        return this.db.otp.findFirst({
+            where: {
+                userId,
+                purpose: enums_1.OtpPurpose.SIGNUP,
+            },
+            orderBy: {
+                createdAt: "desc",
+            },
+        });
+    }
+    incrementOtpAttempts(id, attempts) {
+        return this.db.otp.update({
+            where: {
+                id,
+            },
+            data: {
+                attempts,
+            },
+        });
+    }
+    activateUser(userId) {
+        return this.db.user.update({
+            where: {
+                id: userId,
+            },
+            data: {
+                status: enums_1.UserStatus.ACTIVE,
+                isEmailVerified: true,
+                signupCompleted: true,
+            },
+        });
+    }
+    deleteOtp(id) {
+        return this.db.otp.delete({
+            where: {
+                id,
+            },
+        });
+    }
+    updateOtpAttempts(id, attempts) {
+        return this.db.otp.update({
+            where: {
+                id,
+            },
+            data: {
+                attempts,
+            },
+        });
+    }
+    findLoginUser(agentId) {
+        return this.db.user.findUnique({
+            where: {
+                agentId,
+            },
+        });
+    }
+    updateLastLogin(userId) {
+        return this.db.user.update({
+            where: {
+                id: userId,
+            },
+            data: {
+                lastLoginAt: new Date(),
             },
         });
     }

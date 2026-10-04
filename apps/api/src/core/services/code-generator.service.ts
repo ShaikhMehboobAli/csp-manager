@@ -58,4 +58,8 @@ export default class CodeGeneratorService {
   async generateReceiptNumber() {
     return this.generateSequentialNumber(RunningNumberType.RECEIPT, "REC");
   }
+
+  async generateCspVisitNumber() {
+    return this.generateSequentialNumber(RunningNumberType.CSP_VISIT, "VIS");
+  }
 }

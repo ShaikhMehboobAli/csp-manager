@@ -28,6 +28,7 @@ import SubscriptionResolver from "../subscriptions/subscription-validator/subscr
 import SubscriptionAccessValidator from "../subscriptions/subscription-validator/subscription-access-validator";
 import { getDashboardDateRange } from "../../core/utils/dashboard-date-range";
 import DashboardCspSummaryRepository from "./repository/dashboard-csp-summary.repository";
+import { DashboardCspDetailRepository } from "./repository/dashboard-csp-detail.repository";
 
 export default class DashboardService {
   private readonly overviewRepository: DashboardOverviewRepository;
@@ -46,6 +47,8 @@ export default class DashboardService {
 
   private readonly cspSummaryRepository: DashboardCspSummaryRepository;
 
+  private readonly cspDetailRepository: DashboardCspDetailRepository;
+
   constructor(private readonly db: PrismaDb) {
     this.overviewRepository = new DashboardOverviewRepository(db);
 
@@ -62,6 +65,8 @@ export default class DashboardService {
     this.subscriptionResolver = new SubscriptionResolver(db);
 
     this.cspSummaryRepository = new DashboardCspSummaryRepository(db);
+
+    this.cspDetailRepository = new DashboardCspDetailRepository(db);
   }
 
   async getSummary(filter: DashboardFilter) {
@@ -250,5 +255,184 @@ export default class DashboardService {
 
       hourlyDistribution: mapHourlyDistribution(hourlyDistribution),
     };
+  }
+
+  async getCspDetail({
+    currentAgentId,
+    agentId,
+    from,
+    to,
+    section,
+  }: {
+    currentAgentId: string;
+    agentId: string;
+    from: Date;
+    to: Date;
+    section: "socialSecurity" | "transaction";
+  }) {
+    const subscription =
+      await this.subscriptionResolver.getEffectiveSubscription(currentAgentId);
+
+    SubscriptionAccessValidator.validate(subscription);
+
+    const result = await this.cspDetailRepository.getCspDetail(
+      currentAgentId,
+      agentId,
+      from,
+      to,
+    );
+
+    if (!result) {
+      throw new BadRequestError("CSP not found.");
+    }
+
+    if (section === "socialSecurity") {
+      return {
+        agentId: result.csp.agentId,
+        cspName: result.csp.name,
+        month: from.toISOString().slice(0, 7),
+        section,
+        socialSecurity: this.buildSocialSecurityDailyData(result, from, to),
+      };
+    }
+
+    return {
+      agentId: result.csp.agentId,
+      cspName: result.csp.name,
+      month: from.toISOString().slice(0, 7),
+      section,
+      transaction: this.buildTransactionDailyData(result, from, to),
+    };
+  }
+
+  private buildSocialSecurityDailyData(
+    result: Awaited<
+      ReturnType<DashboardCspDetailRepository["getCspDetail"]>
+    > extends infer T
+      ? T extends null
+        ? never
+        : T
+      : never,
+    from: Date,
+    to: Date,
+  ) {
+    const rows = [];
+
+    const manualMap = new Map<string, number>();
+
+    for (const value of result.manualMetricValues) {
+      const dateKey = value.date.toISOString().slice(0, 10);
+
+      const key = `${dateKey}:${value.metricId}`;
+
+      manualMap.set(key, (manualMap.get(key) ?? 0) + Number(value.value));
+    }
+
+    const receiptMap = new Map<string, number>();
+
+    for (const receipt of result.receipts) {
+      const dateKey = receipt.transactionAt.toISOString().slice(0, 10);
+
+      const keys = [receipt.receiptType, receipt.transactionCategory];
+
+      for (const key of keys) {
+        const mapKey = `${dateKey}:${key}`;
+
+        receiptMap.set(mapKey, (receiptMap.get(mapKey) ?? 0) + 1);
+      }
+    }
+
+    for (
+      let current = new Date(from);
+      current <= to;
+      current.setUTCDate(current.getUTCDate() + 1)
+    ) {
+      const dateKey = current.toISOString().slice(0, 10);
+
+      const metrics = result.metricDefinitions.map((metric) => {
+        let value = 0;
+
+        if (metric.source === "MANUAL") {
+          value = manualMap.get(`${dateKey}:${metric.id}`) ?? 0;
+        } else {
+          value = receiptMap.get(`${dateKey}:${metric.code}`) ?? 0;
+        }
+
+        return {
+          code: metric.code,
+          name: metric.name,
+          value,
+          source: metric.source,
+        };
+      });
+
+      rows.push({
+        date: dateKey,
+        metrics,
+      });
+    }
+
+    return rows;
+  }
+
+  private buildTransactionDailyData(
+    result: Awaited<
+      ReturnType<DashboardCspDetailRepository["getCspDetail"]>
+    > extends infer T
+      ? T extends null
+        ? never
+        : T
+      : never,
+    from: Date,
+    to: Date,
+  ) {
+    const rows = [];
+
+    for (
+      let current = new Date(from);
+      current <= to;
+      current.setUTCDate(current.getUTCDate() + 1)
+    ) {
+      const dateKey = current.toISOString().slice(0, 10);
+
+      const dayReceipts = result.receipts.filter(
+        (receipt) =>
+          receipt.transactionAt.toISOString().slice(0, 10) === dateKey,
+      );
+
+      rows.push({
+        date: dateKey,
+
+        totalTxn: dayReceipts.length,
+
+        passbookPrinter: 0,
+
+        cashWithdrawal: dayReceipts.filter(
+          (receipt) => receipt.transactionCategory === "CASH_WITHDRAWAL",
+        ).length,
+
+        cashDeposit: dayReceipts.filter(
+          (receipt) => receipt.transactionCategory === "CASH_DEPOSIT",
+        ).length,
+
+        microAtmTxn: dayReceipts.filter(
+          (receipt) => receipt.transactionCategory === "MICRO_ATM",
+        ).length,
+
+        accountOpening: dayReceipts.filter(
+          (receipt) => receipt.transactionCategory === "ACCOUNT_OPENING",
+        ).length,
+
+        miniStatement: dayReceipts.filter(
+          (receipt) => receipt.transactionCategory === "MINI_STATEMENT",
+        ).length,
+
+        balanceInquiry: dayReceipts.filter(
+          (receipt) => receipt.transactionCategory === "BALANCE_ENQUIRY",
+        ).length,
+      });
+    }
+
+    return rows;
   }
 }

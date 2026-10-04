@@ -51,22 +51,37 @@ export interface DashboardBcMachineSummary {
 /**
  * BC Dashboard → CSP Social Security tab
  */
+// export interface DashboardCspSocialSecuritySummary {
+//   agentId: string;
+
+//   cspName: string;
+
+//   location: string | null;
+
+//   bcName: string | null;
+
+//   mudra: number;
+
+//   apy: number;
+
+//   pmjjby: number;
+
+//   pmsby: number;
+// }
+
+export interface DashboardCspMetricSummary {
+  code: string;
+  name: string;
+  value: number;
+  source: "RECEIPT" | "MANUAL";
+}
+
 export interface DashboardCspSocialSecuritySummary {
   agentId: string;
-
   cspName: string;
-
   location: string | null;
-
   bcName: string | null;
-
-  mudra: number;
-
-  apy: number;
-
-  pmjjby: number;
-
-  pmsby: number;
+  metrics: DashboardCspMetricSummary[];
 }
 
 /**
@@ -102,4 +117,52 @@ export interface DashboardCspSummary {
   socialSecurity: DashboardCspSocialSecuritySummary[];
 
   transactions: DashboardCspTransactionSummary[];
+}
+
+export type DashboardCspDetailSection = "socialSecurity" | "transaction";
+
+export interface DashboardCspSocialSecurityDailyDetail {
+  date: string;
+
+  mudra: number;
+
+  apy: number;
+
+  pmjjby: number;
+
+  pmsby: number;
+}
+
+export interface DashboardCspTransactionDailyDetail {
+  date: string;
+
+  totalTxn: number;
+
+  passbookPrinter: number;
+
+  cashWithdrawal: number;
+
+  cashDeposit: number;
+
+  microAtmTxn: number;
+
+  accountOpening: number;
+
+  miniStatement: number;
+
+  balanceInquiry: number;
+}
+
+export interface DashboardCspDetailResponse {
+  agentId: string;
+
+  cspName: string;
+
+  month: string;
+
+  section: DashboardCspDetailSection;
+
+  data:
+    | DashboardCspSocialSecurityDailyDetail[]
+    | DashboardCspTransactionDailyDetail[];
 }

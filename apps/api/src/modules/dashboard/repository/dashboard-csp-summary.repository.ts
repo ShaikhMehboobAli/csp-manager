@@ -61,6 +61,16 @@ export default class DashboardCspSummaryRepository {
       };
     }
 
+    const metricDefinitions = await this.db.metricDefinition.findMany({
+      where: {
+        category: "SOCIAL_SECURITY",
+        isActive: true,
+      },
+      orderBy: {
+        name: "asc",
+      },
+    });
+
     /**
      * 2. Build:
      *
@@ -162,10 +172,47 @@ export default class DashboardCspSummaryRepository {
       },
     });
 
+    const manualMetricValues = await this.db.metricValue.findMany({
+      where: {
+        agentId: {
+          in: csps.map((csp) => csp.agentId),
+        },
+
+        metricId: {
+          in: metricDefinitions
+            .filter((metric) => metric.source === "MANUAL")
+            .map((metric) => metric.id),
+        },
+
+        date: {
+          gte: from,
+          lte: to,
+        },
+      },
+
+      select: {
+        metricId: true,
+        agentId: true,
+        date: true,
+        value: true,
+      },
+    });
+
     const totalReceiptMap = new Map<string, number>();
 
     for (const row of totalReceiptCounts) {
       totalReceiptMap.set(row.agentId, row._count.id);
+    }
+
+    const manualMetricMap = new Map<string, number>();
+
+    for (const value of manualMetricValues) {
+      const key = `${value.agentId}:${value.metricId}`;
+
+      manualMetricMap.set(
+        key,
+        (manualMetricMap.get(key) ?? 0) + Number(value.value),
+      );
     }
 
     /**
@@ -217,12 +264,23 @@ export default class DashboardCspSummaryRepository {
     for (const csp of csps) {
       const hierarchy = cspAgentMap.get(csp.agentId)!;
 
-      const counts = {
-        mudra: 0,
-        apy: 0,
-        pmjjby: 0,
-        pmsby: 0,
+      //   const counts = {
+      //     mudra: 0,
+      //     apy: 0,
+      //     pmjjby: 0,
+      //     pmsby: 0,
 
+      //     totalTxn: 0,
+
+      //     cashWithdrawal: 0,
+      //     cashDeposit: 0,
+      //     microAtmTxn: 0,
+      //     accountOpening: 0,
+      //     miniStatement: 0,
+      //     balanceInquiry: 0,
+      //   };
+
+      const counts = {
         totalTxn: 0,
 
         cashWithdrawal: 0,
@@ -243,13 +301,13 @@ export default class DashboardCspSummaryRepository {
           continue;
         }
 
-        counts.mudra += agentReceipts.get("MUDRA_LOAN") ?? 0;
+        // counts.mudra += agentReceipts.get("MUDRA_LOAN") ?? 0;
 
-        counts.apy += agentReceipts.get("APY") ?? 0;
+        // counts.apy += agentReceipts.get("APY") ?? 0;
 
-        counts.pmjjby += agentReceipts.get("PMJJBY") ?? 0;
+        // counts.pmjjby += agentReceipts.get("PMJJBY") ?? 0;
 
-        counts.pmsby += agentReceipts.get("PMSBY") ?? 0;
+        // counts.pmsby += agentReceipts.get("PMSBY") ?? 0;
 
         counts.cashWithdrawal +=
           agentReceipts.get("CATEGORY:CASH_WITHDRAWAL") ?? 0;
@@ -268,6 +326,31 @@ export default class DashboardCspSummaryRepository {
           agentReceipts.get("CATEGORY:BALANCE_ENQUIRY") ?? 0;
       }
 
+      const metrics = metricDefinitions.map((metric) => {
+        let value = 0;
+
+        if (metric.source === "MANUAL") {
+          value = manualMetricMap.get(`${csp.agentId}:${metric.id}`) ?? 0;
+        } else {
+          for (const agentId of hierarchy.agentIds) {
+            const agentReceipts = receiptMap.get(agentId);
+
+            if (!agentReceipts) {
+              continue;
+            }
+
+            value += agentReceipts.get(metric.code) ?? 0;
+          }
+        }
+
+        return {
+          code: metric.code,
+          name: metric.name,
+          value,
+          source: metric.source,
+        };
+      });
+
       counts.totalTxn = hierarchy.agentIds.reduce(
         (total, agentId) => total + (totalReceiptMap.get(agentId) ?? 0),
         0,
@@ -284,6 +367,25 @@ export default class DashboardCspSummaryRepository {
       /**
        * Social Security row.
        */
+
+      //   socialSecurity.push({
+      //     agentId: csp.agentId,
+
+      //     cspName: csp.name,
+
+      //     location: csp.address,
+
+      //     bcName,
+
+      //     mudra: counts.mudra,
+
+      //     apy: counts.apy,
+
+      //     pmjjby: counts.pmjjby,
+
+      //     pmsby: counts.pmsby,
+      //   });
+
       socialSecurity.push({
         agentId: csp.agentId,
 
@@ -293,13 +395,7 @@ export default class DashboardCspSummaryRepository {
 
         bcName,
 
-        mudra: counts.mudra,
-
-        apy: counts.apy,
-
-        pmjjby: counts.pmjjby,
-
-        pmsby: counts.pmsby,
+        metrics,
       });
 
       /**

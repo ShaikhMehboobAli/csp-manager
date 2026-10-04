@@ -10,6 +10,9 @@ import {
 import { UnauthorizedError } from "../../core/errors/UnauthorizedError";
 import AgentScopeService from "../agents/service/agent-scope.service";
 import { getTodayRange } from "./dashboard.helper";
+import { AppError } from "../../core/errors/AppError";
+import { DashboardCspDetailRepository } from "./repository/dashboard-csp-detail.repository";
+import { BadRequestError } from "../../core/errors/BadRequestError";
 
 export default class DashboardController {
   async getSummary(req: Request, res: Response) {
@@ -138,6 +141,91 @@ export default class DashboardController {
 
         message: "Dashboard analytics fetched successfully.",
 
+        data: result,
+      });
+    });
+  }
+
+  async getCspDetail(req: Request, res: Response) {
+    return withTransaction(async (tx) => {
+      const currentUser = req.user!;
+
+      if (!currentUser) {
+        throw new UnauthorizedError("Unauthorized.");
+      }
+
+      const agentIdParam = req.params.agentId;
+
+      if (typeof agentIdParam !== "string") {
+        throw new Error("Invalid CSP agentId.");
+      }
+
+      const agentId = agentIdParam;
+
+      const section = req.query.section as string;
+      const month = req.query.month as string;
+
+      if (section !== "socialSecurity" && section !== "transaction") {
+        throw new BadRequestError(
+          "section must be socialSecurity or transaction.",
+        );
+      }
+
+      if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+        throw new BadRequestError("month must be in YYYY-MM format.");
+      }
+
+      const [year, monthNumber] = month.split("-").map(Number);
+
+      // const from = new Date(Date.UTC(year, monthNumber - 1, 1));
+
+      // const to = new Date(Date.UTC(year, monthNumber, 0, 23, 59, 59, 999));
+
+      const from = new Date(Date.UTC(year, monthNumber - 1, 1));
+
+      const monthEnd = new Date(
+        Date.UTC(year, monthNumber, 0, 23, 59, 59, 999),
+      );
+
+      const now = new Date();
+
+      const today = new Date(
+        Date.UTC(
+          now.getUTCFullYear(),
+          now.getUTCMonth(),
+          now.getUTCDate(),
+          23,
+          59,
+          59,
+          999,
+        ),
+      );
+
+      if (from > today) {
+        throw new BadRequestError("Future month is not allowed.");
+      }
+
+      const to = monthEnd < today ? monthEnd : today;
+
+      const scopeService = new AgentScopeService(tx);
+
+      const agentIds = await scopeService.getAgentScope(currentUser);
+
+      scopeService.ensureAgentAccessible(agentId, agentIds);
+
+      const service = new DashboardService(tx);
+
+      const result = await service.getCspDetail({
+        currentAgentId: currentUser.agentId,
+        agentId,
+        from,
+        to,
+        section: section as "socialSecurity" | "transaction",
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: "CSP detail fetched successfully.",
         data: result,
       });
     });

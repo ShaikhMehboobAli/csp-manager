@@ -20,4 +20,4 @@ class JwtService {
         return jsonwebtoken_1.default.verify(token, env_1.env.jwtSecret);
     }
 }
-exports.default = new JwtService();
+exports.default = JwtService;
