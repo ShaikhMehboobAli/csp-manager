@@ -27,6 +27,7 @@ import DashboardActivationRepository from "./repository/dashboard-activation.rep
 import SubscriptionResolver from "../subscriptions/subscription-validator/subscription-resolver.service";
 import SubscriptionAccessValidator from "../subscriptions/subscription-validator/subscription-access-validator";
 import { getDashboardDateRange } from "../../core/utils/dashboard-date-range";
+import DashboardCspSummaryRepository from "./repository/dashboard-csp-summary.repository";
 
 export default class DashboardService {
   private readonly overviewRepository: DashboardOverviewRepository;
@@ -43,6 +44,8 @@ export default class DashboardService {
 
   private readonly subscriptionResolver: SubscriptionResolver;
 
+  private readonly cspSummaryRepository: DashboardCspSummaryRepository;
+
   constructor(private readonly db: PrismaDb) {
     this.overviewRepository = new DashboardOverviewRepository(db);
 
@@ -57,6 +60,8 @@ export default class DashboardService {
     this.activationRepository = new DashboardActivationRepository(db);
 
     this.subscriptionResolver = new SubscriptionResolver(db);
+
+    this.cspSummaryRepository = new DashboardCspSummaryRepository(db);
   }
 
   async getSummary(filter: DashboardFilter) {
@@ -67,6 +72,18 @@ export default class DashboardService {
       from,
       to,
     };
+
+    const currentAgent = await this.db.agent.findUnique({
+      where: {
+        agentId: dashboardFilter.currentAgentId,
+      },
+      select: {
+        type: true,
+      },
+    });
+
+    const isBc = currentAgent?.type === "BC";
+
     const subscription =
       await this.subscriptionResolver.getEffectiveSubscription(
         dashboardFilter.currentAgentId,
@@ -88,6 +105,7 @@ export default class DashboardService {
       machineSummary,
       activationSummary,
       activeSubscription,
+      cspSummary,
       //   topServices,
     ] = await Promise.all([
       this.overviewRepository.getOverview(dashboardFilter),
@@ -110,6 +128,14 @@ export default class DashboardService {
 
       this.activationRepository.getActivationSummary(dashboardFilter),
       this.subscriptionResolver.getEffectiveSubscription(filter.currentAgentId),
+
+      isBc
+        ? this.cspSummaryRepository.getCspSummary(
+            dashboardFilter.currentAgentId,
+            dashboardFilter.from!,
+            dashboardFilter.to!,
+          )
+        : null,
       //   this.machineRepository.getCspMachineSummary(filter),
       //     filter.currentAgentId,
       //     filter.from,
@@ -177,6 +203,12 @@ export default class DashboardService {
             createdSource: activeSubscription.createdSource,
           }
         : null,
+
+      ...(isBc
+        ? {
+            cspSummary,
+          }
+        : {}),
     };
   }
 

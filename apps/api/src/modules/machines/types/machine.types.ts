@@ -12,8 +12,26 @@ export interface ServiceSummary {
   count: number;
 }
 
+// export interface MachineSummary {
+//   lastHeartbeatAt: Date | null;
+//   lastReceiptCapturedAt: Date | null;
+// }
+
 export interface MachineSummary {
+  machineId: string;
+
+  machineCode: string;
+
+  machineName: string | null;
+
+  machineStatus: string;
+
+  connectionStatus: string;
+
   lastHeartbeatAt: Date | null;
+
+  lastStartupAt: Date | null;
+
   lastReceiptCapturedAt: Date | null;
 }
 
@@ -40,7 +58,7 @@ export interface ChildAgentOverview {
   createdAt: Date;
   updatedAt: Date;
 
-  machine: MachineSummary;
+  machine: MachineSummary | null;
 
   transaction: TransactionSummary;
 
@@ -135,5 +153,10 @@ export interface MachineListFilter {
 
   from?: Date;
 
+  to?: Date;
+}
+
+export interface MachineDetailFilter {
+  from?: Date;
   to?: Date;
 }

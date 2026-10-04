@@ -13,7 +13,7 @@
 import { CurrentUser } from "../../core/types/auth.types";
 import MachineActivationService from "./services/machine-activation.service";
 import MachineListService from "./services/machine-list.service";
-import { MachineListFilter } from "./types/machine.types";
+import { MachineDetailFilter, MachineListFilter } from "./types/machine.types";
 // import MachineUpdateService from "./services/machine-update.service";
 // import MachineHeartbeatService from "./services/machine-heartbeat.service";
 
@@ -39,8 +39,12 @@ export default class MachineService {
     return this.listService.getMachines(user, filter);
   }
 
-  async getMachine(machineId: string, user: CurrentUser) {
-    return this.listService.getMachine(machineId, user);
+  async getMachine(
+    machineId: string,
+    user: CurrentUser,
+    filter: MachineDetailFilter,
+  ) {
+    return this.listService.getMachine(machineId, user, filter);
   }
 
   async updateMachine(

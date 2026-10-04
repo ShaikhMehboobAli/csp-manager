@@ -1,3 +1,4 @@
+import { getMachineStatus } from "../dashboard/dashboard.helper";
 import {
   MachineSummary,
   ServiceSummary,
@@ -69,8 +70,13 @@ export function buildServiceMap(
 
 export function buildMachineMap(
   machines: Array<{
+    id: string;
     agentId: string | null;
+    machineCode: string;
+    machineName: string | null;
+    status: string;
     lastHeartbeatAt: Date | null;
+    lastStartupAt: Date | null;
     lastTransactionAt: Date | null;
   }>,
 ) {
@@ -82,7 +88,19 @@ export function buildMachineMap(
     }
 
     machineMap.set(machine.agentId, {
+      machineId: machine.id,
+
+      machineCode: machine.machineCode,
+
+      machineName: machine.machineName,
+
+      machineStatus: machine.status,
+
+      connectionStatus: getMachineStatus(machine.lastHeartbeatAt),
+
       lastHeartbeatAt: machine.lastHeartbeatAt,
+
+      lastStartupAt: machine.lastStartupAt,
 
       lastReceiptCapturedAt: machine.lastTransactionAt,
     });

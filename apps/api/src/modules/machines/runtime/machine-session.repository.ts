@@ -21,6 +21,42 @@ export default class MachineSessionRepository {
     });
   }
 
+  async findSessionsForRange(machineId: string, from: Date, to: Date) {
+    return this.db.machineSession.findMany({
+      where: {
+        machineId,
+
+        startedAt: {
+          lte: to,
+        },
+
+        OR: [
+          {
+            endedAt: null,
+          },
+          {
+            endedAt: {
+              gte: from,
+            },
+          },
+        ],
+      },
+
+      select: {
+        id: true,
+        machineSessionId: true,
+        startedAt: true,
+        endedAt: true,
+        durationSeconds: true,
+        status: true,
+      },
+
+      orderBy: {
+        startedAt: "asc",
+      },
+    });
+  }
+
   async createSession(data: CreateMachineSessionInput) {
     const now = new Date();
 

@@ -47,3 +47,59 @@ export interface DashboardBcMachineSummary {
 
   latestReceiptCapturedAt: Date | null;
 }
+
+/**
+ * BC Dashboard → CSP Social Security tab
+ */
+export interface DashboardCspSocialSecuritySummary {
+  agentId: string;
+
+  cspName: string;
+
+  location: string | null;
+
+  bcName: string | null;
+
+  mudra: number;
+
+  apy: number;
+
+  pmjjby: number;
+
+  pmsby: number;
+}
+
+/**
+ * BC Dashboard → CSP Transaction tab
+ */
+export interface DashboardCspTransactionSummary {
+  agentId: string;
+
+  cspName: string;
+
+  totalTxn: number;
+
+  // Passbook Printer is not implemented yet.
+  passbookPrinter: number;
+
+  cashWithdrawal: number;
+
+  cashDeposit: number;
+
+  microAtmTxn: number;
+
+  accountOpening: number;
+
+  miniStatement: number;
+
+  balanceInquiry: number;
+}
+
+/**
+ * Complete CSP-wise section of BC Dashboard
+ */
+export interface DashboardCspSummary {
+  socialSecurity: DashboardCspSocialSecuritySummary[];
+
+  transactions: DashboardCspTransactionSummary[];
+}

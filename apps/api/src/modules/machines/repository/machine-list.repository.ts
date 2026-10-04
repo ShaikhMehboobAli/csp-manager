@@ -476,10 +476,6 @@ export default class MachineListRepository {
   }
 
   async getMachineSummary(agentIds: string[]) {
-    const today = new Date();
-
-    today.setHours(0, 0, 0, 0);
-
     return this.db.machine.findMany({
       where: {
         agentId: {
@@ -490,9 +486,19 @@ export default class MachineListRepository {
       },
 
       select: {
+        id: true,
+
         agentId: true,
 
+        machineCode: true,
+
+        machineName: true,
+
+        status: true,
+
         lastHeartbeatAt: true,
+
+        lastStartupAt: true,
 
         lastTransactionAt: true,
       },

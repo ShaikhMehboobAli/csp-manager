@@ -82,6 +82,20 @@ export const LEDGER_RULES: Record<TransactionCategory, LedgerRule> = {
     showInDashboard: true,
   },
 
+  SOCIAL_SECURITY: {
+    cashEffect: CashEffect.NONE,
+    createLedger: false,
+    updateAgentFloat: false,
+    showInDashboard: true,
+  },
+
+  LOAN: {
+    cashEffect: CashEffect.NONE,
+    createLedger: false,
+    updateAgentFloat: false,
+    showInDashboard: true,
+  },
+
   OTHER: {
     cashEffect: CashEffect.NONE,
     createLedger: false,

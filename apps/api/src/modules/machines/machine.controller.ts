@@ -35,13 +35,16 @@ export const getMachine = async (req: Request, res: Response) => {
   const result = await machineService.getMachine(
     req.params.machineId as string,
     req.user!,
+    {
+      from: req.query.from ? new Date(req.query.from as string) : undefined,
+
+      to: req.query.to ? new Date(req.query.to as string) : undefined,
+    },
   );
 
   return res.json({
     success: true,
-
     message: "Machine fetched successfully.",
-
     data: result,
   });
 };

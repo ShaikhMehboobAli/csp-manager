@@ -74,11 +74,38 @@ enum ReceiptStatus {
   PENDING
 }
 
+//enum ReceiptType {
+// AEPS
+// BBPS
+// MICRO_ATM
+// ACCOUNT_OPENING
+// UNKNOWN
+//}
+
+//enum ReceiptType {
+//  AEPS,
+//  BBPS,
+//  MICRO_ATM,
+//   ACCOUNT_OPENING,
+
+//   APY,
+//   PMJJBY,
+//    PMSBY,
+
+//   MUDRA_LOAN,
+
+//   UNKNOWN
+//}
+
 enum ReceiptType {
   AEPS
   BBPS
   MICRO_ATM
   ACCOUNT_OPENING
+  APY
+  PMJJBY
+  PMSBY
+  MUDRA_LOAN
   UNKNOWN
 }
 
@@ -133,6 +160,32 @@ enum SettingType {
   JSON
 }
 
+//enum TransactionCategory {
+// CASH_DEPOSIT
+// CASH_WITHDRAWAL
+// BALANCE_ENQUIRY
+// MINI_STATEMENT
+// ACCOUNT_OPENING
+// BBPS
+// MICRO_ATM
+// OTHER
+//}
+
+//enum TransactionCategory {
+//CASH_DEPOSIT,
+//CASH_WITHDRAWAL,
+// BALANCE_ENQUIRY,
+// MINI_STATEMENT,
+// ACCOUNT_OPENING,
+// BBPS,
+// MICRO_ATM,
+
+// SOCIAL_SECURITY,
+// LOAN,
+
+// OTHER
+//}
+
 enum TransactionCategory {
   CASH_DEPOSIT
   CASH_WITHDRAWAL
@@ -141,8 +194,12 @@ enum TransactionCategory {
   ACCOUNT_OPENING
   BBPS
   MICRO_ATM
+  SOCIAL_SECURITY
+  LOAN
   OTHER
 }
+
+//
 
 //enum FloatLedgerType {
 // OPENING
