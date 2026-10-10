@@ -12,6 +12,7 @@ import reportRoutes from "../modules/reports/report.routes";
 import metricRoutes from "../modules/metrics/metric.routes";
 import metricValueRoutes from "../modules/metrics/metric-value.routes";
 import cspVisitRoutes from "../modules/csp-visits/csp-visit.routes";
+import uploadRoutes from "../modules/uploads/upload.routes";
 
 const router = Router();
 
@@ -29,5 +30,6 @@ router.use("/metrics", metricRoutes);
 router.use("/metrics/values", metricValueRoutes);
 console.log("CSP VISIT ROUTES REGISTERED");
 router.use("/csp-visits", cspVisitRoutes);
+router.use("/uploads", uploadRoutes);
 
 export default router;

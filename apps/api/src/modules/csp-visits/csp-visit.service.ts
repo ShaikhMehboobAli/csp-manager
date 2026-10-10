@@ -6,6 +6,7 @@ import RunningNumberRepository from "../../core/repositories/running-number.repo
 import { BadRequestError } from "../../core/errors/BadRequestError";
 import { PrismaDb } from "../../core/database/prisma.types";
 import AgentScopeService from "../agents/service/agent-scope.service";
+import S3StorageService from "../uploads/storage/s3.storage";
 
 export default class CspVisitService {
   private readonly visitRepository: CspVisitRepository;
@@ -13,6 +14,8 @@ export default class CspVisitService {
   private readonly codeGeneratorService: CodeGeneratorService;
 
   private readonly scopeService: AgentScopeService;
+
+  private readonly storageService: S3StorageService;
 
   constructor(private readonly db: PrismaDb) {
     const runningNumberRepository = new RunningNumberRepository(db);
@@ -24,6 +27,7 @@ export default class CspVisitService {
     );
 
     this.scopeService = new AgentScopeService(db);
+    this.storageService = new S3StorageService();
   }
 
   async createVisit(
@@ -94,6 +98,16 @@ export default class CspVisitService {
       );
     }
 
+    if (input.photoUrl) {
+      const photoExists = await this.storageService.objectExists(
+        input.photoUrl,
+      );
+
+      if (!photoExists) {
+        throw new BadRequestError("CSP visit photo was not found in storage.");
+      }
+    }
+
     const visitId = await this.codeGeneratorService.generateCspVisitNumber();
 
     return this.visitRepository.create({
@@ -110,7 +124,18 @@ export default class CspVisitService {
       throw new BadRequestError("CSP visit not found.");
     }
 
-    return visit;
+    let photoUrl = visit.photoUrl;
+
+    if (visit.photoUrl) {
+      photoUrl = await this.storageService.createPresignedDownloadUrl(
+        visit.photoUrl,
+      );
+    }
+
+    return {
+      ...visit,
+      photoUrl,
+    };
   }
 
   async getVisitByVisitId(visitId: string) {
