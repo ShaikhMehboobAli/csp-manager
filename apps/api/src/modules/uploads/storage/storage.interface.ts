@@ -4,25 +4,27 @@ export interface UploadFileInput {
   expiresIn?: number;
 }
 
-export interface StorageUploadResult {
-  key: string;
-  url: string;
-}
-
-// export interface StorageService {
-//   createPresignedUploadUrl(
-//     input: UploadFileInput,
-//   ): Promise<StorageUploadResult>;
-
-//   createPresignedDownloadUrl(key: string, expiresIn?: number): Promise<string>;
-
-//   deleteObject(key: string): Promise<void>;
+// export interface StorageUploadResult {
+//   key: string;
+//   url: string;
 // }
 
+export interface StoragePresignedPostResult {
+  key: string;
+  url: string;
+  fields: Record<string, string>;
+}
+
 export interface StorageService {
-  createPresignedUploadUrl(
-    input: UploadFileInput,
-  ): Promise<StorageUploadResult>;
+  //   createPresignedUploadUrl(
+  //     input: UploadFileInput,
+  //   ): Promise<StorageUploadResult>;
+
+  createPresignedUploadPost(
+    input: UploadFileInput & {
+      maxSizeBytes: number;
+    },
+  ): Promise<StoragePresignedPostResult>;
 
   createPresignedDownloadUrl(key: string, expiresIn?: number): Promise<string>;
 

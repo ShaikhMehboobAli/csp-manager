@@ -42,11 +42,7 @@ export default class UploadService {
   //   async createPresignedUploadUrl(
   //     input: CreatePresignedUploadUrlInput,
   //   ): Promise<PresignedUploadUrlResponse> {
-  //     const folder = this.sanitizeFolder(input.folder ?? "general");
-
-  //     if (folder !== "csp-visits") {
-  //       throw new BadRequestError("Only csp-visits folder is allowed.");
-  //     }
+  //     const folder = "csp-visits";
 
   //     this.validateImageType(input.fileName, input.contentType);
 
@@ -85,15 +81,17 @@ export default class UploadService {
 
     const key = `${folder}/${year}/${month}/${randomUUID()}${extension}`;
 
-    const result = await this.storageService.createPresignedUploadUrl({
+    const result = await this.storageService.createPresignedUploadPost({
       key,
       contentType: input.contentType,
       expiresIn: 300,
+      maxSizeBytes: 5 * 1024 * 1024,
     });
 
     return {
       key: result.key,
       uploadUrl: result.url,
+      fields: result.fields,
     };
   }
 

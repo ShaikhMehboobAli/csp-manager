@@ -2,14 +2,16 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
-  PutObjectCommand,
+  //   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
 
 import {
+  StoragePresignedPostResult,
   StorageService,
-  StorageUploadResult,
+  //   StorageUploadResult,
   UploadFileInput,
 } from "./storage.interface";
 
@@ -46,24 +48,24 @@ export default class S3StorageService implements StorageService {
     });
   }
 
-  async createPresignedUploadUrl(
-    input: UploadFileInput,
-  ): Promise<StorageUploadResult> {
-    const command = new PutObjectCommand({
-      Bucket: this.bucketName,
-      Key: input.key,
-      ContentType: input.contentType,
-    });
+  //   async createPresignedUploadUrl(
+  //     input: UploadFileInput,
+  //   ): Promise<StorageUploadResult> {
+  //     const command = new PutObjectCommand({
+  //       Bucket: this.bucketName,
+  //       Key: input.key,
+  //       ContentType: input.contentType,
+  //     });
 
-    const url = await getSignedUrl(this.client, command, {
-      expiresIn: input.expiresIn ?? 300,
-    });
+  //     const url = await getSignedUrl(this.client, command, {
+  //       expiresIn: input.expiresIn ?? 300,
+  //     });
 
-    return {
-      key: input.key,
-      url,
-    };
-  }
+  //     return {
+  //       key: input.key,
+  //       url,
+  //     };
+  //   }
 
   async createPresignedDownloadUrl(
     key: string,
@@ -107,5 +109,30 @@ export default class S3StorageService implements StorageService {
 
       throw error;
     }
+  }
+
+  async createPresignedUploadPost(
+    input: UploadFileInput & {
+      maxSizeBytes: number;
+    },
+  ): Promise<StoragePresignedPostResult> {
+    const { url, fields } = await createPresignedPost(this.client, {
+      Bucket: this.bucketName,
+      Key: input.key,
+      Expires: input.expiresIn ?? 300,
+      Fields: {
+        "Content-Type": input.contentType,
+      },
+      Conditions: [
+        ["content-length-range", 1, input.maxSizeBytes],
+        ["eq", "$Content-Type", input.contentType],
+      ],
+    });
+
+    return {
+      key: input.key,
+      url,
+      fields,
+    };
   }
 }
