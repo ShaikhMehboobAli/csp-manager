@@ -1,6 +1,7 @@
 import { PrismaDb } from "../../core/database/prisma.types";
 import { ForbiddenError } from "../../core/errors/ForbiddenError";
 import { NotFoundError } from "../../core/errors/NotFoundError";
+import { SubscriptionOwnerType } from "../../generated/prisma/enums";
 
 export const DesktopFeature = {
   AUTOMATION: "DESKTOP_AUTOMATION",
@@ -42,13 +43,34 @@ export default class SubscriptionEntitlementService {
     };
   }
 
-  async requireFeature(planId: string, featureCode: string) {
+  async hasFeature(planId: string, featureCode: string) {
     const { features } = await this.getPlanEntitlements(planId);
 
-    if (!features.some((feature) => feature.code === featureCode)) {
+    return features.some((feature) => feature.code === featureCode);
+  }
+
+  async requireFeature(planId: string, featureCode: string) {
+    if (!(await this.hasFeature(planId, featureCode))) {
       throw new ForbiddenError(
         "Your subscription does not include this feature.",
       );
     }
+  }
+
+  /**
+   * Float / cash figures belong to CASH_MANAGEMENT on CSP plans.
+   * BC subscriptions and viewers without one (SUPER_ADMIN) are not restricted.
+   */
+  async canViewCashManagement(
+    subscription:
+      | { ownerType: SubscriptionOwnerType; planId: string }
+      | null
+      | undefined,
+  ) {
+    if (!subscription || subscription.ownerType !== SubscriptionOwnerType.CSP) {
+      return true;
+    }
+
+    return this.hasFeature(subscription.planId, DesktopFeature.CASH_MANAGEMENT);
   }
 }

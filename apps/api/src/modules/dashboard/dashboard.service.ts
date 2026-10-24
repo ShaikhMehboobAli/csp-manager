@@ -28,6 +28,34 @@ import SubscriptionResolver from "../subscriptions/subscription-validator/subscr
 import SubscriptionAccessValidator from "../subscriptions/subscription-validator/subscription-access-validator";
 import { getDashboardDateRange } from "../../core/utils/dashboard-date-range";
 import DashboardCspSummaryRepository from "./repository/dashboard-csp-summary.repository";
+import SubscriptionEntitlementService from "../subscriptions/subscription-entitlement.service";
+
+/**
+ * Nulls the per-machine float figures in machine monitoring.
+ */
+function hideMonitoringFloat<T>(summary: T): T {
+  if (
+    !summary ||
+    typeof summary !== "object" ||
+    !("monitoring" in summary) ||
+    !Array.isArray(summary.monitoring)
+  ) {
+    return summary;
+  }
+
+  return {
+    ...summary,
+    monitoring: summary.monitoring.map((item: Record<string, unknown>) => ({
+      ...item,
+      openingFloat: null,
+      currentCashInHand: null,
+      currentCashInAccount: null,
+      currentTotalFloat: null,
+      lastReceiptAt: null,
+      lastReceiptUpdatedAt: null,
+    })),
+  };
+}
 import { DashboardCspDetailRepository } from "./repository/dashboard-csp-detail.repository";
 
 export default class DashboardService {
@@ -95,6 +123,10 @@ export default class DashboardService {
       );
 
     SubscriptionAccessValidator.validate(subscription);
+
+    const canViewFloat = await new SubscriptionEntitlementService(
+      this.db,
+    ).canViewCashManagement(subscription);
     // if (filter.agentIds.length === 0) {
     //   throw new BadRequestError("No accessible agents found.");
     // }
@@ -166,14 +198,17 @@ export default class DashboardService {
       overview: calculateOverview(overview),
 
       // float: mapFloatSummary(floatSummary),
+      // Float figures are null for CSP plans without CASH_MANAGEMENT.
       ...(isSingleAgentView
         ? {
-            float: mapFloatSummary(floatSummary),
+            float: canViewFloat ? mapFloatSummary(floatSummary) : null,
 
             machine: mapMachineSummary(machineSummary),
           }
         : {
-            machineMonitoring: machineSummary,
+            machineMonitoring: canViewFloat
+              ? machineSummary
+              : hideMonitoringFloat(machineSummary),
           }),
 
       services: mapServiceSummary(serviceSummary),

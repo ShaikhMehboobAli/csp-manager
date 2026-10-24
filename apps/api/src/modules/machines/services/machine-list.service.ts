@@ -13,6 +13,7 @@ import {
   buildTransactionMap,
 } from "../machine.helper";
 import { mapMachineList } from "../machine.mapper";
+import SubscriptionEntitlementService from "../../subscriptions/subscription-entitlement.service";
 
 import MachineListRepository from "../repository/machine-list.repository";
 import MachineSessionRepository from "../runtime/machine-session.repository";
@@ -59,8 +60,15 @@ export default class MachineListService {
         buildMachineMap(machineSummary),
       );
 
+      // Float figures are null for CSP plans without CASH_MANAGEMENT.
+      const canViewFloat = await new SubscriptionEntitlementService(
+        tx,
+      ).canViewCashManagement(subscription);
+
       return {
-        items,
+        items: canViewFloat
+          ? items
+          : items.map((item) => ({ ...item, float: null })),
 
         pagination: machineResult.pagination,
       };
@@ -514,6 +522,11 @@ export default class MachineListService {
       );
 
       SubscriptionAccessValidator.validate(subscription);
+
+      // Float figures are null for CSP plans without CASH_MANAGEMENT.
+      const canViewFloat = await new SubscriptionEntitlementService(
+        tx,
+      ).canViewCashManagement(subscription);
 
       // ============================================================
       // 2. Date range
@@ -1224,20 +1237,24 @@ export default class MachineListService {
         // CSP float
         // ----------------------------------------------------------
 
-        float: {
-          openingFloat: machine.agent?.agentFloat?.openingFloat ?? 0,
+        float: canViewFloat
+          ? {
+              openingFloat: machine.agent?.agentFloat?.openingFloat ?? 0,
 
-          currentCashInHand: machine.agent?.agentFloat?.currentCashInHand ?? 0,
+              currentCashInHand:
+                machine.agent?.agentFloat?.currentCashInHand ?? 0,
 
-          currentCashInAccount:
-            machine.agent?.agentFloat?.currentCashInAccount ?? 0,
+              currentCashInAccount:
+                machine.agent?.agentFloat?.currentCashInAccount ?? 0,
 
-          currentTotalFloat: machine.agent?.agentFloat?.currentTotalFloat ?? 0,
+              currentTotalFloat:
+                machine.agent?.agentFloat?.currentTotalFloat ?? 0,
 
-          lastReceiptAt: machine.agent?.agentFloat?.lastReceiptAt ?? null,
+              lastReceiptAt: machine.agent?.agentFloat?.lastReceiptAt ?? null,
 
-          updatedAt: machine.agent?.agentFloat?.updatedAt ?? null,
-        },
+              updatedAt: machine.agent?.agentFloat?.updatedAt ?? null,
+            }
+          : null,
 
         // ----------------------------------------------------------
         // Requested machine watcher
