@@ -5,6 +5,7 @@ import { Logger } from "./core/utils/logger";
 import MachineSessionTimeoutJob from "./jobs/machine-session-timeout.job";
 import MachineSessionCleanupJob from "./jobs/machine-session-cleanup.job";
 import SubscriptionExpiryJob from "./jobs/subscription-expiry.job";
+import CspActivityTimeoutJob from "./jobs/csp-activity-timeout.job";
 import "./core/utils/event-loop-monitor";
 
 async function bootstrap() {
@@ -17,6 +18,8 @@ async function bootstrap() {
     MachineSessionCleanupJob.start();
 
     SubscriptionExpiryJob.start();
+
+    CspActivityTimeoutJob.start();
 
     app.listen(env.port, "0.0.0.0", () => {
       Logger.success(`🚀 CSP Manager API running on port ${env.port}`);

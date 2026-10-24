@@ -562,7 +562,8 @@ model Agent {
   floatAdjustmentRequest FloatAdjustmentRequest[]
   metricValues           MetricValue[]
 
-  machines Machine[]
+  machines            Machine[]
+  cspActivitySessions CspActivitySession[]
 
   isProfileCompleted Boolean @default(false)
 
@@ -899,9 +900,10 @@ model Machine {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  activations Activation[]
-  sessions    MachineSession[]
-  receipts    Receipt[]
+  activations         Activation[]
+  sessions            MachineSession[]
+  cspActivitySessions CspActivitySession[]
+  receipts            Receipt[]
 
   apiKeyHash      String?
   apiKeyIssuedAt  DateTime?
@@ -998,6 +1000,39 @@ enum SessionEndReason {
 enum MachineSessionStatus {
   ACTIVE
   CLOSED
+}
+
+/// Why a CSP activity (SBI login) session ended.
+enum ActivityEndReason {
+  LOGOUT
+  AUTO_LOGOUT
+  APP_CLOSE
+  HEARTBEAT_TIMEOUT
+  REPLACED
+}
+
+/// A CSP's SBI login session on a machine, driven by the desktop UI
+/// heartbeat. Separate from MachineSession (machine/service liveness).
+model CspActivitySession {
+  id                String               @id @default(cuid())
+  activitySessionId String               @unique
+  machineId         String
+  agentId           String
+  status            MachineSessionStatus @default(ACTIVE)
+  startedAt         DateTime             @default(now())
+  lastHeartbeatAt   DateTime             @default(now())
+  endedAt           DateTime?
+  durationSeconds   Int?
+  endedReason       ActivityEndReason?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  machine Machine @relation(fields: [machineId], references: [id], onDelete: Restrict)
+  agent   Agent   @relation(fields: [agentId], references: [agentId], onDelete: Restrict)
+
+  @@index([machineId, status])
+  @@index([agentId, startedAt])
+  @@index([status, lastHeartbeatAt])
 }
 
 model MachineSession {
@@ -1458,6 +1493,7 @@ enum RunningNumberType {
   MACHINE_SESSION
   RECEIPT
   CSP_VISIT
+  CSP_ACTIVITY_SESSION
 }
 
 model RunningNumber {

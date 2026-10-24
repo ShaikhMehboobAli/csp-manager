@@ -33,6 +33,22 @@ export default class MachineHeartbeatRepository {
     });
   }
 
+  /**
+   * Liveness only (used by the CSP activity heartbeat, which has no
+   * watcher/OS details).
+   */
+  async markOnline(machineId: string) {
+    return this.db.machine.update({
+      where: {
+        id: machineId,
+      },
+      data: {
+        lastHeartbeatAt: new Date(),
+        isOnline: true,
+      },
+    });
+  }
+
   async updateLastTransactionAt(machineId: string, lastTransactionAt: Date) {
     return this.db.machine.update({
       where: {

@@ -58,6 +58,14 @@ export default class MachineService {
     return this.listService.updateMachine(machineId, data, user);
   }
 
+  async getActivitySessions(
+    machineId: string,
+    user: CurrentUser,
+    filter: MachineDetailFilter,
+  ) {
+    return this.listService.getActivitySessions(machineId, user, filter);
+  }
+
   async getHeartbeat(machineId: string, user: CurrentUser) {
     return this.listService.getHeartbeat(machineId, user);
   }
