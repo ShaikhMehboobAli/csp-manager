@@ -289,6 +289,8 @@ export default class DashboardCspSummaryRepository {
         accountOpening: 0,
         miniStatement: 0,
         balanceInquiry: 0,
+        moneyTransfer: 0,
+        fundTransfer: 0,
       };
 
       /**
@@ -324,6 +326,11 @@ export default class DashboardCspSummaryRepository {
 
         counts.balanceInquiry +=
           agentReceipts.get("CATEGORY:BALANCE_ENQUIRY") ?? 0;
+
+        counts.moneyTransfer +=
+          agentReceipts.get("CATEGORY:MONEY_TRANSFER") ?? 0;
+
+        counts.fundTransfer += agentReceipts.get("CATEGORY:FUND_TRANSFER") ?? 0;
       }
 
       const metrics = metricDefinitions.map((metric) => {
@@ -424,6 +431,10 @@ export default class DashboardCspSummaryRepository {
         miniStatement: counts.miniStatement,
 
         balanceInquiry: counts.balanceInquiry,
+
+        moneyTransfer: counts.moneyTransfer,
+
+        fundTransfer: counts.fundTransfer,
       });
     }
 

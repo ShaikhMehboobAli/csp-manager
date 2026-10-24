@@ -38,6 +38,28 @@ export async function generateReportWorkbook(rows: ReportSummaryRow[]) {
     },
 
     {
+      header: "Money Transfer Count",
+      key: "moneyTransferCount",
+      width: 22,
+    },
+    {
+      header: "Money Transfer Amount",
+      key: "moneyTransferAmount",
+      width: 24,
+    },
+
+    {
+      header: "Fund Transfer Count",
+      key: "fundTransferCount",
+      width: 20,
+    },
+    {
+      header: "Fund Transfer Amount",
+      key: "fundTransferAmount",
+      width: 22,
+    },
+
+    {
       header: "Mini Statement",
       key: "miniStatement",
       width: 18,
@@ -181,6 +203,18 @@ export async function generateReportWorkbook(rows: ReportSummaryRow[]) {
       cashWithdrawalAmount:
         row.services[TransactionCategory.CASH_WITHDRAWAL]?.amount ?? 0,
 
+      moneyTransferCount:
+        row.services[TransactionCategory.MONEY_TRANSFER]?.count ?? 0,
+
+      moneyTransferAmount:
+        row.services[TransactionCategory.MONEY_TRANSFER]?.amount ?? 0,
+
+      fundTransferCount:
+        row.services[TransactionCategory.FUND_TRANSFER]?.count ?? 0,
+
+      fundTransferAmount:
+        row.services[TransactionCategory.FUND_TRANSFER]?.amount ?? 0,
+
       miniStatement:
         row.services[TransactionCategory.MINI_STATEMENT]?.count ?? 0,
 
@@ -258,6 +292,10 @@ export async function generateReportWorkbook(rows: ReportSummaryRow[]) {
     "cashDepositAmount",
     "cashWithdrawalCount",
     "cashWithdrawalAmount",
+    "moneyTransferCount",
+    "moneyTransferAmount",
+    "fundTransferCount",
+    "fundTransferAmount",
     "miniStatement",
     "balanceEnquiry",
     "passbookPrint",

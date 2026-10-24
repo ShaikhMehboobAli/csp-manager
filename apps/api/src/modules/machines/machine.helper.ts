@@ -8,7 +8,7 @@ import {
 export function buildTransactionMap(
   transactionSummary: Array<{
     agentId: string;
-    status: string;
+    status: string | null;
     _count: {
       id: number;
     };
@@ -33,7 +33,7 @@ export function buildTransactionMap(
 
     if (row.status === "SUCCESS") {
       existing.success += row._count.id;
-    } else {
+    } else if (row.status === "FAILED") {
       existing.failed += row._count.id;
     }
 

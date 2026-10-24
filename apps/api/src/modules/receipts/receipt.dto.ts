@@ -3,7 +3,10 @@ import {
   ReceiptType,
   TransactionCategory,
 } from "../../generated/prisma/enums";
-import { ReceiptListQuery } from "./receipt.validation";
+import {
+  ReceiptListQuery,
+  UploadReceiptCountsRequest,
+} from "./receipt.validation";
 
 export interface UploadReceiptRequest {
   machineCode: string;
@@ -41,6 +44,8 @@ export interface ReceiptPayload {
 
   location?: string;
 }
+
+export type UploadReceiptCountsPayload = UploadReceiptCountsRequest;
 
 export interface ReceiptFilter extends ReceiptListQuery {
   currentAgentId: string;

@@ -22,6 +22,18 @@ export function mapReportSummary(rows: ReportSummaryRow[]) {
     cashWithdrawalAmount:
       row.services[TransactionCategory.CASH_WITHDRAWAL]?.amount ?? 0,
 
+    moneyTransferCount:
+      row.services[TransactionCategory.MONEY_TRANSFER]?.count ?? 0,
+
+    moneyTransferAmount:
+      row.services[TransactionCategory.MONEY_TRANSFER]?.amount ?? 0,
+
+    fundTransferCount:
+      row.services[TransactionCategory.FUND_TRANSFER]?.count ?? 0,
+
+    fundTransferAmount:
+      row.services[TransactionCategory.FUND_TRANSFER]?.amount ?? 0,
+
     miniStatement: row.services[TransactionCategory.MINI_STATEMENT]?.count ?? 0,
 
     balanceEnquiry:

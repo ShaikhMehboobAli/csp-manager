@@ -52,6 +52,24 @@ export function mapReceiptDetail(receipt: any) {
 
     stan: receipt.stan,
 
+    // Per-transaction note/coin counts; null when the receipt has no cash.
+    cashDenomination: receipt.cashDenomination
+      ? {
+          notes500: receipt.cashDenomination.notes500,
+          notes200: receipt.cashDenomination.notes200,
+          notes100: receipt.cashDenomination.notes100,
+          notes50: receipt.cashDenomination.notes50,
+          notes20: receipt.cashDenomination.notes20,
+          notes10: receipt.cashDenomination.notes10,
+          notes5: receipt.cashDenomination.notes5,
+          coins20: receipt.cashDenomination.coins20,
+          coins10: receipt.cashDenomination.coins10,
+          coins5: receipt.cashDenomination.coins5,
+          coins2: receipt.cashDenomination.coins2,
+          coins1: receipt.cashDenomination.coins1,
+        }
+      : null,
+
     machine: {
       machineCode: receipt.machine?.machineCode ?? null,
 
