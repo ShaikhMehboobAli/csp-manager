@@ -1,4 +1,5 @@
 import { createCodeGeneratorService } from "../../core/services/service.factory";
+import prisma from "../../config/prisma";
 
 import ReceiptRepository from "./repository/receipt-upload.repository";
 
@@ -234,7 +235,7 @@ export default class ReceiptService {
    * separate contract from the legacy receipt upload route.
    */
   async uploadCounts(request: UploadReceiptCountsPayload) {
-    return withTransaction(async (tx) => {
+    const result = await withTransaction(async (tx) => {
       const repository = new ReceiptRepository(tx);
       const authenticationService = new MachineAuthenticationService(tx);
       const sessionRepository = new MachineSessionRepository(tx);
@@ -251,14 +252,9 @@ export default class ReceiptService {
 
       const entitlementService = new SubscriptionEntitlementService(tx);
 
-      await entitlementService.requireFeature(
+      await entitlementService.requireFeatures(
         authenticated.subscription.planId,
-        DesktopFeature.AUTOMATION,
-      );
-
-      await entitlementService.requireFeature(
-        authenticated.subscription.planId,
-        DesktopFeature.RECEIPT_SYNC,
+        [DesktopFeature.AUTOMATION, DesktopFeature.RECEIPT_SYNC],
       );
 
       if (authenticated.machine.currentAgentId !== request.agentId) {
@@ -360,21 +356,30 @@ export default class ReceiptService {
         );
       }
 
-      const totalCount = await repository.getCumulativeCounts(request.agentId);
-
       return {
-        success: true,
-        message: "Receipt upload completed successfully.",
-        data: {
-          acceptedCount: acceptedReceipts.length,
-          acceptedRecords: acceptedReceipts.length,
-          skipped: skippedReceipts.length,
-          totalCount,
-          acceptedReceipts,
-          skippedReceipts,
-        },
+        acceptedReceipts,
+        skippedReceipts,
       };
     });
+
+    // Read-only totals run after commit, outside the transaction, so they
+    // include this upload and don't count against the transaction timeout.
+    const totalCount = await new ReceiptRepository(prisma).getCumulativeCounts(
+      request.agentId,
+    );
+
+    return {
+      success: true,
+      message: "Receipt upload completed successfully.",
+      data: {
+        acceptedCount: result.acceptedReceipts.length,
+        acceptedRecords: result.acceptedReceipts.length,
+        skipped: result.skippedReceipts.length,
+        totalCount,
+        acceptedReceipts: result.acceptedReceipts,
+        skippedReceipts: result.skippedReceipts,
+      },
+    };
   }
 
   /**

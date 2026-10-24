@@ -42,6 +42,8 @@ Status: `OPEN` (must do), `DECIDE` (needs an owner decision), `DONE`.
 | 3.3 | Non-monthly (half-yearly / yearly) CSP prices and the BC ₹799 plan rules are not defined yet. | DECIDE | `prisma/seeds/data/plans.ts` |
 | 3.4 | No automated tests exist. Add at least: receipt upload (both endpoints), ledger effect, subscription renew/upgrade/expiry, activation assign/activate. | OPEN | — |
 | 3.5 | `apps/api/dist` was untracked from git; production builds should come from `npm run build` in CI, not a committed `dist/`. | DONE | `.gitignore` |
+| 3.7 | Host the API in the same region as the Neon database (ap-southeast-1). From a remote location each query is ~75 ms and a 5-receipt `upload-counts` takes ~5 s; in-region it's a few ms. Transactions now allow 15 s and `upload-counts` is capped at 20 receipts. | OPEN | deployment |
+| 3.8 | `upload-counts` makes ~8 sequential queries per receipt (insert, re-read, denomination, ledger reads/writes). Batch these if larger uploads are ever needed. | DECIDE | `receipt.service.ts`, `float-ledger.service.ts` |
 | 3.6 | Subscription expiry runs hourly in-process (`node-cron`). If the API runs as multiple instances, make sure only one runs jobs (or the jobs are safe to run concurrently — current ones are idempotent). | DECIDE | `src/jobs/*`, `src/server.ts` |
 
 ## 4. Product rules to confirm
@@ -60,4 +62,5 @@ Status: `OPEN` (must do), `DECIDE` (needs an owner decision), `DONE`.
 
 - 2026-10-25 — Initial version.
 - 2026-10-25 — 4.3 DONE: money/fund transfer columns added.
+- 2026-10-25 — Added 3.7 (co-locate API with DB) and 3.8 (per-receipt query count) after a P2028 transaction timeout on `upload-counts`.
 - 2026-10-25 — Added 4.4 (no RM role) and 4.5 (legacy upload keys) after the authorization pass.

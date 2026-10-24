@@ -50,7 +50,16 @@ export default class SubscriptionEntitlementService {
   }
 
   async requireFeature(planId: string, featureCode: string) {
-    if (!(await this.hasFeature(planId, featureCode))) {
+    return this.requireFeatures(planId, [featureCode]);
+  }
+
+  // One plan lookup for several required features.
+  async requireFeatures(planId: string, featureCodes: string[]) {
+    const { features } = await this.getPlanEntitlements(planId);
+
+    const codes = new Set(features.map((feature) => feature.code));
+
+    if (!featureCodes.every((code) => codes.has(code))) {
       throw new ForbiddenError(
         "Your subscription does not include this feature.",
       );

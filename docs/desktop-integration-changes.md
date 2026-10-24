@@ -44,6 +44,7 @@ UI-mode receipts must go to the **minimal** endpoint. The legacy `/receipts/uplo
 | `timestamp` | sent | remove (ignored) |
 | `transactionAt` | sent | keep sending (bank transaction time, ISO-8601 UTC). If omitted, the server uses receive time |
 | `count` | sent | must be exactly `1` |
+| `receipts` array | — | 1–20 receipts per request; split larger outbox batches into chunks of 20 (21+ → 400 "At most 20 receipts per upload.") |
 | `amount` | sent | **required** for `CASH_DEPOSIT`, `CASH_WITHDRAWAL`, `MONEY_TRANSFER`; optional otherwise (omit, do not send 0) |
 | `cashDenomination` | sent with desktop keys | see #2 |
 | customer name / account / raw receipt text | not sent | keep not sending |
@@ -281,5 +282,6 @@ Desktop impact:
 ## Changelog
 
 - 2026-10-25 — Initial version: items 1–12.
+- 2026-10-25 (rev 3b) — #1: `upload-counts` accepts at most 20 receipts per request.
 - 2026-10-25 (rev 3) — Added #13: renewal/upgrade keep the machine activated; no re-activation prompt.
 - 2026-10-25 (rev 2) — #2 now READY: backend added `notes200`; desktop must rename all keys to the backend names and add ₹5 note, ₹20/₹2/₹1 coin inputs.

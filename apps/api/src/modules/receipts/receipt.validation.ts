@@ -7,6 +7,7 @@ import {
 import { LEDGER_RULES } from "../float/config/ledger-rule.config";
 
 const MAX_DENOMINATION_COUNT = 10_000;
+const MAX_RECEIPTS_PER_UPLOAD = 20;
 
 const cashDenominationSchema = z
   .object({
@@ -102,7 +103,11 @@ export const uploadReceiptCountsSchema = z.object({
   apiKey: z.string().trim().min(1),
   fingerprint: z.string().trim().min(1),
   agentId: z.string().trim().min(1),
-  receipts: z.array(minimalReceiptSchema).min(1),
+  // Bounded so one upload stays well inside the DB transaction timeout.
+  receipts: z
+    .array(minimalReceiptSchema)
+    .min(1)
+    .max(MAX_RECEIPTS_PER_UPLOAD, `At most ${MAX_RECEIPTS_PER_UPLOAD} receipts per upload.`),
 });
 
 export const receiptListSchema = z.object({
