@@ -50,7 +50,7 @@ export const getAgent = async (
   req: Request<{ agentId: string }>,
   res: Response,
 ) => {
-  const result = await agentService.getAgent(req.params.agentId);
+  const result = await agentService.getAgent(req.params.agentId, req.user!);
 
   return res.status(200).json({
     success: true,
@@ -64,6 +64,7 @@ export const listAgents = async (req: Request, res: Response) => {
   const result = await agentService.listAgents(
     // req.query as unknown as ListAgentsDto,
     filters,
+    req.user!,
   );
 
   return res.status(200).json({

@@ -26,6 +26,7 @@ import {
   CreateKOResponse,
 } from "../types/service.types";
 import { canManageAgent } from "../utils/agent-authorization";
+import AgentScopeService from "./agent-scope.service";
 import { ListAgentsDto } from "../validations/list-agents.validation";
 import { UpdateAgentDto } from "../validations/update-agent.validation";
 
@@ -330,10 +331,23 @@ export class AgentService {
     return ko;
   }
 
-  async getAgent(agentId: string): Promise<AgentResponse> {
+  async getAgent(
+    agentId: string,
+    currentUser: CurrentUser,
+  ): Promise<AgentResponse> {
     const repository = new AgentRepository(this.prisma);
 
-    const agent = await repository.findByAgentId(agentId);
+    const scope = await new AgentScopeService(this.prisma).getAgentScope(
+      currentUser,
+    );
+
+    // Users can read themselves and agents in their scope.
+    const inScope =
+      agentId === currentUser.agentId ||
+      scope.length === 0 ||
+      scope.includes(agentId);
+
+    const agent = inScope ? await repository.findByAgentId(agentId) : null;
 
     if (!agent) {
       throw new NotFoundError("Agent not found.");
@@ -353,9 +367,14 @@ export class AgentService {
   
         SubscriptionAccessValidator.validate(subscription);
   */
-  async listAgents(filters: ListAgentsDto) {
+  async listAgents(filters: ListAgentsDto, currentUser: CurrentUser) {
     console.log("filters =>", filters);
     const repository = new AgentRepository(this.prisma);
+
+    // Only agents in the caller's scope (empty scope = SUPER_ADMIN, all).
+    const agentIds = await new AgentScopeService(this.prisma).getAgentScope(
+      currentUser,
+    );
 
     const skip = (filters.page - 1) * filters.limit;
 
@@ -364,6 +383,7 @@ export class AgentService {
         type: filters.type,
         bcId: filters.bcId,
         parentAgentId: filters.parentAgentId,
+        agentIds,
         skip,
         take: filters.limit,
       }),
@@ -372,6 +392,7 @@ export class AgentService {
         type: filters.type,
         bcId: filters.bcId,
         parentAgentId: filters.parentAgentId,
+        agentIds,
       }),
     ]);
 

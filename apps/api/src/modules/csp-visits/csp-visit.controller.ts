@@ -57,9 +57,13 @@ export default class CspVisitController {
         throw new BadRequestError("Visit ID is required.");
       }
 
+      const agentIds = await new AgentScopeService(tx).getAgentScope(
+        currentUser,
+      );
+
       const service = new CspVisitService(tx);
 
-      const result = await service.getVisit(idParam);
+      const result = await service.getVisit(idParam, agentIds);
 
       return res.status(200).json({
         success: true,

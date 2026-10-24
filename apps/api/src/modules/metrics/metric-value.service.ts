@@ -5,6 +5,7 @@ import { NotFoundError } from "../../core/errors/NotFoundError";
 
 import MetricRepository from "./metric.repository";
 import MetricValueRepository from "./metric-value.repository";
+import AgentScopeService from "../agents/service/agent-scope.service";
 
 import {
   CreateMetricValueInput,
@@ -16,6 +17,13 @@ export default class MetricValueService {
     return withTransaction(async (tx) => {
       const metricRepository = new MetricRepository(tx);
       const valueRepository = new MetricValueRepository(tx);
+
+      const scopeService = new AgentScopeService(tx);
+
+      scopeService.ensureAgentAccessible(
+        data.agentId,
+        await scopeService.getAgentScope(user),
+      );
 
       const metric = await metricRepository.findById(data.metricId);
 
@@ -93,7 +101,12 @@ export default class MetricValueService {
 
       const existing = await repository.findById(valueId);
 
-      if (!existing) {
+      const scope = await new AgentScopeService(tx).getAgentScope(user);
+
+      if (
+        !existing ||
+        (scope.length > 0 && !scope.includes(existing.agentId))
+      ) {
         throw new NotFoundError("Metric value not found.");
       }
 
@@ -114,10 +127,22 @@ export default class MetricValueService {
     return withTransaction(async (tx) => {
       const repository = new MetricValueRepository(tx);
 
+      const scopeService = new AgentScopeService(tx);
+
+      const scope = await scopeService.getAgentScope(user);
+
+      scopeService.ensureAgentAccessible(agentId, scope);
+
       return repository.findMany({
-        ...(agentId && {
-          agentId,
-        }),
+        ...(agentId
+          ? {
+              agentId,
+            }
+          : scope.length > 0 && {
+              agentId: {
+                in: scope,
+              },
+            }),
 
         ...(metricId && {
           metricId,

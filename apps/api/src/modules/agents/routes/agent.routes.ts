@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { authorize } from "../../../core/middlewares/authorize.middleware";
+import { UserRole } from "../../../generated/prisma/enums";
 
 import * as AgentController from "../controller/agent.controller";
 import { authMiddleware } from "../../../core/middlewares/auth.middleware";
@@ -7,9 +9,19 @@ import { listAgentsSchema } from "../validations/list-agents.validation";
 
 const router = Router();
 
-router.post("/csp", authMiddleware, AgentController.createCSP);
+router.post(
+  "/csp",
+  authMiddleware,
+  authorize(UserRole.SUPER_ADMIN, UserRole.BC_ADMIN),
+  AgentController.createCSP,
+);
 
-router.post("/ko", authMiddleware, AgentController.createKO);
+router.post(
+  "/ko",
+  authMiddleware,
+  authorize(UserRole.SUPER_ADMIN, UserRole.CSP_ADMIN),
+  AgentController.createKO,
+);
 
 router.get(
   "/",
