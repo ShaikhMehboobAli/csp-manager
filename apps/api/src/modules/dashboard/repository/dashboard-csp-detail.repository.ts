@@ -13,7 +13,8 @@ export class DashboardCspDetailRepository {
       where: {
         agentId: cspAgentId,
         type: "CSP",
-        bcId: bcAgentId,
+        // Access is enforced by the caller's agent scope (BC: its CSPs,
+        // CSP: itself, SUPER_ADMIN: all), so no bcId filter here.
         isDeleted: false,
       },
       select: {
