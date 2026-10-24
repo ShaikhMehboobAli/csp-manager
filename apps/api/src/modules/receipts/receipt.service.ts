@@ -409,7 +409,11 @@ export default class ReceiptService {
     });
   }
 
-  async getReceipt(receiptId: string, agentIds: string[]) {
+  async getReceipt(
+    receiptId: string,
+    agentIds: string[],
+    currentAgentId: string,
+  ) {
     return withTransaction(async (tx) => {
       // check for subscription and access validation
 
@@ -429,7 +433,18 @@ export default class ReceiptService {
         throw new NotFoundError("Receipt not found.");
       }
 
-      return mapReceiptDetail(receipt);
+      const subscription = await new SubscriptionResolver(
+        tx,
+      ).getEffectiveSubscription(currentAgentId);
+
+      const canViewCash = await new SubscriptionEntitlementService(
+        tx,
+      ).canViewCashManagement(subscription);
+
+      const detail = mapReceiptDetail(receipt);
+
+      // Cash denomination is part of CASH_MANAGEMENT on CSP plans.
+      return canViewCash ? detail : { ...detail, cashDenomination: null };
     });
   }
 

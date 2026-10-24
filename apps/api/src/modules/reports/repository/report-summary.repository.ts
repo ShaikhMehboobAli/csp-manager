@@ -29,9 +29,10 @@ export interface ReportSummaryRow {
 
   total: number;
 
-  openingBalance: number;
+  // null when the viewer's plan has no CASH_MANAGEMENT.
+  openingBalance: number | null;
 
-  closingBalance: number;
+  closingBalance: number | null;
 }
 
 export default class ReportSummaryRepository extends ReportCommonRepository {

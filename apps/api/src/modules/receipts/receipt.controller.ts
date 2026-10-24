@@ -61,6 +61,7 @@ export default class ReceiptController {
       const result = await this.service.getReceipt(
         req.params.receiptId,
         agentIds,
+        req.user!.agentId,
       );
 
       return res.json({
