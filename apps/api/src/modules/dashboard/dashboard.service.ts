@@ -331,6 +331,10 @@ export default class DashboardService {
     const receiptMap = new Map<string, number>();
 
     for (const receipt of result.receipts) {
+      if (!receipt.transactionAt) {
+        continue;
+      }
+
       const dateKey = receipt.transactionAt.toISOString().slice(0, 10);
 
       const keys = [receipt.receiptType, receipt.transactionCategory];
@@ -397,7 +401,7 @@ export default class DashboardService {
 
       const dayReceipts = result.receipts.filter(
         (receipt) =>
-          receipt.transactionAt.toISOString().slice(0, 10) === dateKey,
+          receipt.transactionAt?.toISOString().slice(0, 10) === dateKey,
       );
 
       rows.push({
@@ -429,6 +433,14 @@ export default class DashboardService {
 
         balanceInquiry: dayReceipts.filter(
           (receipt) => receipt.transactionCategory === "BALANCE_ENQUIRY",
+        ).length,
+
+        moneyTransfer: dayReceipts.filter(
+          (receipt) => receipt.transactionCategory === "MONEY_TRANSFER",
+        ).length,
+
+        fundTransfer: dayReceipts.filter(
+          (receipt) => receipt.transactionCategory === "FUND_TRANSFER",
         ).length,
       });
     }

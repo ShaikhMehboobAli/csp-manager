@@ -14,8 +14,10 @@ export function mapPlan(plan: any) {
     })),
 
     features: plan.features.map((feature: any) => ({
-      name: feature.name,
-      value: feature.value,
+      code: feature.feature.code,
+      name: feature.feature.name,
+      description: feature.feature.description,
+      category: feature.feature.category,
     })),
   };
 }

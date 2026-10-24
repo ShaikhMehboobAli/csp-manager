@@ -52,21 +52,6 @@ export default class PaymentRepository {
     });
   }
 
-  findActiveSubscription(
-    ownerType: SubscriptionOwnerType,
-    ownerId: string,
-    planId: string,
-  ) {
-    return this.db.subscription.findFirst({
-      where: {
-        ownerType,
-        ownerId,
-        planId,
-        status: SubscriptionStatus.ACTIVE,
-      },
-    });
-  }
-
   findPaymentById(paymentId: string) {
     return this.db.payment.findUnique({
       where: {

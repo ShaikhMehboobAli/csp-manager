@@ -2,7 +2,10 @@ import { Router } from "express";
 
 import ReceiptController from "./receipt.controller";
 
-import { uploadReceiptSchema } from "./receipt.validation";
+import {
+  uploadReceiptCountsSchema,
+  uploadReceiptSchema,
+} from "./receipt.validation";
 
 import { validate } from "../../core/middlewares/validate";
 import { asyncHandler } from "../../core/utils/asyncHandler";
@@ -16,6 +19,12 @@ router.post(
   "/upload",
   validate(uploadReceiptSchema),
   asyncHandler(controller.upload.bind(controller)),
+);
+
+router.post(
+  "/upload-counts",
+  validate(uploadReceiptCountsSchema),
+  asyncHandler(controller.uploadCounts.bind(controller)),
 );
 
 router.get("/", authMiddleware, controller.getReceipts.bind(controller));

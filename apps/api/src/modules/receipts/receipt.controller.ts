@@ -18,6 +18,12 @@ export default class ReceiptController {
     return res.status(201).json(result);
   }
 
+  async uploadCounts(req: Request, res: Response) {
+    const result = await this.service.uploadCounts(req.body);
+
+    return res.status(201).json(result);
+  }
+
   async getReceipts(req: Request, res: Response) {
     const query = receiptListSchema.parse(req.query);
 
@@ -103,13 +109,6 @@ export default class ReceiptController {
 
       const agentIds = await scopeService.getAgentScope(req.user!);
       scopeService.ensureAgentAccessible(query.agentId, agentIds);
-
-      if (query.agentId && !agentIds.includes(query.agentId)) {
-        return res.status(403).json({
-          success: false,
-          message: "You are not allowed to access this CSP.",
-        });
-      }
 
       const workbook = await this.service.export({
         ...query,

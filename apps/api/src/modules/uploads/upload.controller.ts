@@ -2,6 +2,8 @@ import { Request, Response } from "express";
 
 import UploadService from "./upload.service";
 import { BadRequestError } from "../../core/errors/BadRequestError";
+import { ForbiddenError } from "../../core/errors/ForbiddenError";
+import { UserRole } from "../../generated/prisma/enums";
 
 export default class UploadController {
   private readonly uploadService: UploadService;
@@ -21,11 +23,14 @@ export default class UploadController {
       throw new BadRequestError("Content type is required.");
     }
 
-    const result = await this.uploadService.createPresignedUploadUrl({
-      fileName,
-      contentType,
-      //   folder,
-    });
+    const result = await this.uploadService.createPresignedUploadUrl(
+      {
+        fileName,
+        contentType,
+        //   folder,
+      },
+      req.user!.agentId,
+    );
 
     return res.status(200).json({
       success: true,
@@ -40,6 +45,8 @@ export default class UploadController {
     if (!key || typeof key !== "string") {
       throw new BadRequestError("File key is required.");
     }
+
+    this.ensureOwnKey(req, key);
 
     const url = await this.uploadService.createPresignedDownloadUrl(key);
 
@@ -60,11 +67,26 @@ export default class UploadController {
       throw new BadRequestError("File key is required.");
     }
 
+    this.ensureOwnKey(req, key);
+
     await this.uploadService.deleteObject(key);
 
     return res.status(200).json({
       success: true,
       message: "File deleted successfully.",
     });
+  }
+
+  // Users may only touch their own uploads; SUPER_ADMIN may touch any.
+  private ensureOwnKey(req: Request, key: string) {
+    const user = req.user!;
+
+    if (user.role === UserRole.SUPER_ADMIN) {
+      return;
+    }
+
+    if (!UploadService.isOwnedBy(key, user.agentId)) {
+      throw new ForbiddenError("You are not allowed to access this file.");
+    }
   }
 }

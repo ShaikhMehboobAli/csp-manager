@@ -31,18 +31,6 @@ export default class PaymentService {
     return withTransaction(async (tx) => {
       const repository = new PaymentRepository(tx);
 
-      const activeSubscription = await repository.findActiveSubscription(
-        data.ownerType,
-        data.ownerId,
-        data.planId,
-      );
-
-      if (activeSubscription) {
-        throw new BadRequestError(
-          "You already have an active subscription for this plan.",
-        );
-      }
-
       const pendingPayment = await repository.findPendingPayment(
         data.ownerType,
         data.ownerId,
@@ -62,8 +50,13 @@ export default class PaymentService {
 
       const plan = await repository.findPlanWithPricing(data.planId);
 
-      if (!plan) {
+      if (!plan || !plan.isActive || plan.isDeleted) {
         throw new NotFoundError("Plan not found.");
+      }
+
+      // Plan owner types (BC / CSP) share values with subscription owner types.
+      if (plan.ownerType !== data.ownerType) {
+        throw new BadRequestError("This plan is not available for your account.");
       }
 
       const pricing = plan.pricings.find(
@@ -175,12 +168,17 @@ export default class PaymentService {
 
       const payment = await repository.findPaymentById(data.paymentId);
 
-      if (!payment) {
+      // Users can only verify their own payments.
+      if (!payment || payment.ownerId !== data.agentId) {
         throw new NotFoundError("Payment not found.");
       }
 
       if (payment.status === PaymentStatus.SUCCESS) {
         throw new BadRequestError("Payment is already verified.");
+      }
+
+      if (payment.status !== PaymentStatus.PENDING) {
+        throw new BadRequestError("Payment is no longer pending.");
       }
 
       return this.completePayment(
@@ -241,6 +239,10 @@ export default class PaymentService {
           success: true,
           message: "Payment already processed.",
         };
+      }
+
+      if (payment.status !== PaymentStatus.PENDING) {
+        throw new BadRequestError("Payment is no longer pending.");
       }
 
       return this.completePayment(

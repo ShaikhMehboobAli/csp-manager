@@ -258,12 +258,18 @@ export class AgentRepository {
     type?: AgentType;
     bcId?: string;
     parentAgentId?: string;
+    agentIds?: string[];
     skip: number;
     take: number;
   }) {
     return this.db.agent.findMany({
       where: {
         isDeleted: false,
+        ...(params.agentIds?.length && {
+          agentId: {
+            in: params.agentIds,
+          },
+        }),
         ...(params.type && {
           type: params.type,
         }),
@@ -290,10 +296,16 @@ export class AgentRepository {
     type?: AgentType;
     bcId?: string;
     parentAgentId?: string;
+    agentIds?: string[];
   }) {
     return this.db.agent.count({
       where: {
         isDeleted: false,
+        ...(params.agentIds?.length && {
+          agentId: {
+            in: params.agentIds,
+          },
+        }),
         ...(params.type && { type: params.type }),
         ...(params.bcId && { bcId: params.bcId }),
         ...(params.parentAgentId && {

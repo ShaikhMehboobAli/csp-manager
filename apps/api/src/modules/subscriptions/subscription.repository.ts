@@ -8,6 +8,7 @@ import {
 import {
   PaymentMethod,
   PlanOwnerType,
+  SubscriptionEventType,
   SubscriptionOwnerType,
   SubscriptionStatus,
   SubscriptionType,
@@ -33,7 +34,11 @@ export default class SubscriptionRepository {
             durationDays: "asc",
           },
         },
-        features: true,
+        features: {
+          include: {
+            feature: true,
+          },
+        },
       },
       orderBy: {
         level: "asc",
@@ -80,16 +85,95 @@ export default class SubscriptionRepository {
     });
   }
 
-  expireActiveSubscription(ownerId: string, planId: string) {
-    return this.db.subscription.updateMany({
+  /**
+   * Latest ACTIVE or EXPIRED subscription for an owner, used as the base for
+   * renewals, upgrades and machine carry-over.
+   */
+  findLatestSubscription(ownerType: SubscriptionOwnerType, ownerId: string) {
+    return this.db.subscription.findFirst({
       where: {
+        ownerType,
         ownerId,
-        planId,
+        status: {
+          in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.EXPIRED],
+        },
+      },
+      orderBy: {
+        endDate: "desc",
+      },
+    });
+  }
+
+  extendSubscription(
+    subscriptionId: string,
+    endDate: Date,
+    additionalAmount: number,
+  ) {
+    return this.db.subscription.update({
+      where: {
+        id: subscriptionId,
+      },
+      data: {
+        endDate,
         status: SubscriptionStatus.ACTIVE,
+        amountPaid: {
+          increment: additionalAmount,
+        },
+      },
+    });
+  }
+
+  expireSubscription(subscriptionId: string) {
+    return this.db.subscription.update({
+      where: {
+        id: subscriptionId,
       },
       data: {
         status: SubscriptionStatus.EXPIRED,
       },
+    });
+  }
+
+  /**
+   * Marks subscriptions whose end date (and grace period, if any) has passed.
+   */
+  expireEndedSubscriptions(now: Date) {
+    return this.db.subscription.updateMany({
+      where: {
+        status: SubscriptionStatus.ACTIVE,
+        subscriptionType: {
+          not: SubscriptionType.LIFETIME,
+        },
+        endDate: {
+          lt: now,
+        },
+        OR: [
+          {
+            graceEndsAt: null,
+          },
+          {
+            graceEndsAt: {
+              lt: now,
+            },
+          },
+        ],
+      },
+      data: {
+        status: SubscriptionStatus.EXPIRED,
+      },
+    });
+  }
+
+  createHistory(data: {
+    subscriptionId: string;
+    eventType: SubscriptionEventType;
+    previousPlanId?: string;
+    newPlanId: string;
+    amount: number;
+    remarks?: string;
+  }) {
+    return this.db.subscriptionHistory.create({
+      data,
     });
   }
 

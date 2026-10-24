@@ -57,4 +57,93 @@ export default class ReceiptRepository {
 
     return new Set(receipts.map((receipt) => receipt.receiptId));
   }
+
+  async createIfAbsent(data: Prisma.ReceiptCreateManyInput) {
+    const result = await this.db.receipt.createMany({
+      data: [data],
+      skipDuplicates: true,
+    });
+
+    return result.count === 1;
+  }
+
+  async createCashDenomination(
+    receiptRecordId: string,
+    denomination: {
+      notes500: number;
+      notes200: number;
+      notes100: number;
+      notes50: number;
+      notes20: number;
+      notes10: number;
+      notes5: number;
+      coins20: number;
+      coins10: number;
+      coins5: number;
+      coins2: number;
+      coins1: number;
+    },
+  ) {
+    return this.db.receiptCashDenomination.create({
+      data: {
+        receiptRecordId,
+        ...denomination,
+      },
+    });
+  }
+
+  async findAssignedCsp(agentId: string) {
+    return this.db.agent.findFirst({
+      where: {
+        agentId,
+        isDeleted: false,
+        type: "CSP",
+      },
+      select: {
+        agentId: true,
+      },
+    });
+  }
+
+  async getCumulativeCounts(agentId: string) {
+    const [byReceiptType, byTransactionCategory, byTransactionType] =
+      await Promise.all([
+        this.db.receipt.groupBy({
+          by: ["receiptType"],
+          where: { agentId },
+          _sum: { count: true },
+        }),
+        this.db.receipt.groupBy({
+          by: ["transactionCategory"],
+          where: { agentId },
+          _sum: { count: true },
+        }),
+        this.db.receipt.groupBy({
+          by: ["transactionType"],
+          where: { agentId },
+          _sum: { count: true },
+        }),
+      ]);
+
+    return {
+      receiptType: Object.fromEntries(
+        byReceiptType.map(({ receiptType, _sum }) => [
+          receiptType,
+          Number(_sum.count ?? 0),
+        ]),
+      ),
+      transactionCategory: Object.fromEntries(
+        byTransactionCategory.map(({ transactionCategory, _sum }) => [
+          transactionCategory,
+          Number(_sum.count ?? 0),
+        ]),
+      ),
+      transactionType: Object.fromEntries(
+        byTransactionType.map(({ transactionType, _sum }) => [
+          transactionType,
+          Number(_sum.count ?? 0),
+        ]),
+      ),
+    };
+  }
 }

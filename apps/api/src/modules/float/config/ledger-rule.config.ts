@@ -47,6 +47,20 @@ export const LEDGER_RULES: Record<TransactionCategory, LedgerRule> = {
     showInDashboard: true,
   },
 
+  MONEY_TRANSFER: {
+    cashEffect: CashEffect.CASH_IN,
+    createLedger: true,
+    updateAgentFloat: true,
+    showInDashboard: true,
+  },
+
+  FUND_TRANSFER: {
+    cashEffect: CashEffect.NONE,
+    createLedger: false,
+    updateAgentFloat: false,
+    showInDashboard: true,
+  },
+
   BALANCE_ENQUIRY: {
     cashEffect: CashEffect.NONE,
     createLedger: false,

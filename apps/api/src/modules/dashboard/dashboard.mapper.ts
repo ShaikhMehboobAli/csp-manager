@@ -100,7 +100,7 @@ export function mapServiceSummary(services: ServiceSummaryAggregate[]) {
 
 export function mapStatusSummary(
   statuses: Array<{
-    status: ReceiptStatus;
+    status: ReceiptStatus | null;
     _count: {
       id: number;
     };
@@ -194,7 +194,7 @@ type TrendBucket = {
 
 export function mapTransactionTrend(
   receipts: {
-    transactionAt: Date;
+    transactionAt: Date | null;
     amount: unknown;
   }[],
   groupBy: "hour" | "day" | "week" | "month" | "year",
@@ -202,6 +202,10 @@ export function mapTransactionTrend(
   const grouped = new Map<string, TrendBucket>();
 
   for (const receipt of receipts) {
+    if (!receipt.transactionAt) {
+      continue;
+    }
+
     const date = new Date(receipt.transactionAt);
 
     let label = "";
@@ -279,9 +283,9 @@ export function mapServiceTrend(
 
 export function mapSuccessFailureTrend(
   receipts: {
-    transactionAt: Date;
+    transactionAt: Date | null;
 
-    status: ReceiptStatus;
+    status: ReceiptStatus | null;
   }[],
   groupBy: "hour" | "day" | "week" | "month" | "year",
 ) {
@@ -297,6 +301,10 @@ export function mapSuccessFailureTrend(
   >();
 
   for (const receipt of receipts) {
+    if (!receipt.transactionAt) {
+      continue;
+    }
+
     const date = new Date(receipt.transactionAt);
 
     let label = "";
@@ -351,12 +359,16 @@ export function mapSuccessFailureTrend(
 
 export function mapHourlyDistribution(
   receipts: {
-    transactionAt: Date;
+    transactionAt: Date | null;
   }[],
 ) {
   const grouped = new Map<number, number>();
 
   for (const receipt of receipts) {
+    if (!receipt.transactionAt) {
+      continue;
+    }
+
     const hour = receipt.transactionAt.getHours();
 
     grouped.set(hour, (grouped.get(hour) ?? 0) + 1);

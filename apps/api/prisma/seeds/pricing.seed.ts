@@ -16,6 +16,18 @@ export async function seedPlanPricing() {
       continue;
     }
 
+    await prisma.planPricing.updateMany({
+      where: {
+        planId: dbPlan.id,
+        billingCycle: {
+          notIn: plan.pricing.map((pricing) => pricing.billingCycle),
+        },
+      },
+      data: {
+        isActive: false,
+      },
+    });
+
     for (const pricing of plan.pricing) {
       await prisma.planPricing.upsert({
         where: {

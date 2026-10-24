@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { webhookAuth } from "./webhook-auth.middleware";
 
 import * as PaymentController from "./payment.controller";
 
@@ -31,6 +32,7 @@ router.get("/:paymentId", authMiddleware, PaymentController.getPaymentDetails);
 
 router.post(
   "/webhook",
+  webhookAuth,
   validate(paymentWebhookSchema),
   PaymentController.webhook,
 );

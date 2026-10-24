@@ -27,4 +27,13 @@ export interface HeartbeatResponse {
 
   latestWatcherVersion: string;
   heartbeatTimeout: number;
+
+  planCode: string;
+
+  subscriptionEndDate: Date;
+
+  graceEndsAt: Date | null;
+
+  // Feature codes included in the current plan, e.g. "RECEIPT_SYNC".
+  features: string[];
 }

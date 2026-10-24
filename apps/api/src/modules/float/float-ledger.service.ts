@@ -276,10 +276,6 @@ export default class FloatLedgerService {
       throw new BadRequestError("Receipt id is required.");
     }
 
-    if (input.amount === undefined) {
-      throw new BadRequestError("Amount is required.");
-    }
-
     // Get ledger rule
     const rule = getLedgerRule(input.transactionCategory);
 
@@ -290,6 +286,10 @@ export default class FloatLedgerService {
     // Transaction doesn't affect ledger
     if (!rule.createLedger) {
       return null;
+    }
+
+    if (input.amount === undefined) {
+      throw new BadRequestError("Amount is required.");
     }
 
     // Prevent duplicate ledger creation

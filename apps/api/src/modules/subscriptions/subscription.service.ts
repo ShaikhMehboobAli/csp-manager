@@ -19,7 +19,19 @@ import { BadRequestError } from "../../core/errors/BadRequestError";
 import { PrismaDb } from "../../core/database/prisma.types";
 import { AgentRepository } from "../agents/repository/agent.repository";
 import ActivationRepository from "../activations/activation.repository";
-import { SubscriptionOwnerType } from "../../generated/prisma/enums";
+import {
+  SubscriptionEventType,
+  SubscriptionOwnerType,
+  SubscriptionStatus,
+} from "../../generated/prisma/enums";
+
+function addDays(date: Date, days: number) {
+  const result = new Date(date);
+
+  result.setDate(result.getDate() + days);
+
+  return result;
+}
 import { Prisma, PrismaClient } from "../../generated/prisma/client";
 
 export default class SubscriptionService {
@@ -104,31 +116,61 @@ export default class SubscriptionService {
         throw new BadRequestError("Selected billing cycle is not available.");
       }
 
-      await repository.expireActiveSubscription(data.ownerId, data.planId);
+      const activationRepository = new ActivationRepository(db);
+
+      const now = new Date();
+
+      const amount = Number(pricing.price);
+
+      const latest = await repository.findLatestSubscription(
+        data.ownerType,
+        data.ownerId,
+      );
+
+      const isRunning =
+        latest?.status === SubscriptionStatus.ACTIVE && latest.endDate >= now;
+
+      /**
+       * Renewal of the running plan: extend the same subscription from its
+       * current end date. Machines stay on it, so nothing is re-activated.
+       */
+      if (latest && isRunning && latest.planId === plan.id) {
+        const endDate = addDays(latest.endDate, pricing.durationDays);
+
+        const subscription = await repository.extendSubscription(
+          latest.id,
+          endDate,
+          amount,
+        );
+
+        await activationRepository.updateSubscriptionActivationExpiry(
+          subscription.id,
+          endDate,
+        );
+
+        await repository.createHistory({
+          subscriptionId: subscription.id,
+          eventType: SubscriptionEventType.RENEWAL,
+          previousPlanId: latest.planId,
+          newPlanId: plan.id,
+          amount,
+        });
+
+        return subscription;
+      }
+
+      /**
+       * New subscription starting now: first purchase, upgrade of a running
+       * plan (old one ends immediately), or purchase after the last one ended.
+       */
+      const endDate = addDays(now, pricing.durationDays);
+
+      const machineLimit = plan.machineLimit ?? 0;
 
       const subscriptionNumber =
         await codeGenerator.generateSubscriptionNumber();
 
-      const startDate = new Date();
-
-      const endDate = new Date(startDate);
-
-      endDate.setDate(endDate.getDate() + pricing.durationDays);
-
-      //   return repository.createSubscription({
-      //     subscriptionNumber,
-      //     agentId: data.agentId,
-      //     bcId: data.bcId,
-      //     planId: plan.id,
-      //     machineLimit: plan.machineLimit ?? 0,
-      //     amountPaid: Number(pricing.price),
-      //     ownerType: data.ownerType,
-      //     ownerId: data.ownerId,
-      //     startDate,
-      //     endDate,
-      //   });
-
-      return repository.createSubscription({
+      const subscription = await repository.createSubscription({
         subscriptionNumber,
 
         ownerType: data.ownerType,
@@ -136,13 +178,43 @@ export default class SubscriptionService {
 
         planId: plan.id,
 
-        machineLimit: plan.machineLimit ?? 0,
+        machineLimit,
 
-        amountPaid: Number(pricing.price),
+        amountPaid: amount,
 
-        startDate,
+        startDate: now,
         endDate,
       });
+
+      if (latest) {
+        // Machines activated on the previous subscription keep working.
+        await activationRepository.carryOverActivations(
+          latest.id,
+          subscription.id,
+          endDate,
+          machineLimit,
+        );
+
+        await activationRepository.revokeUnusedActivations(latest.id);
+
+        if (latest.status === SubscriptionStatus.ACTIVE) {
+          await repository.expireSubscription(latest.id);
+        }
+      }
+
+      await repository.createHistory({
+        subscriptionId: subscription.id,
+        eventType: !latest
+          ? SubscriptionEventType.PURCHASE
+          : latest.planId === plan.id
+            ? SubscriptionEventType.RENEWAL
+            : SubscriptionEventType.UPGRADE,
+        previousPlanId: latest?.planId,
+        newPlanId: plan.id,
+        amount,
+      });
+
+      return subscription;
     };
 
     if (tx) {

@@ -290,7 +290,19 @@ export default class MachineActivationService {
       throw new Error("Failed to register machine.");
     }
 
-    await repository.completeActivation(activation.id, registeredMachine?.id);
+    if (machine) {
+      // Existing machine: the newly issued API key must replace the old one,
+      // and only the new activation may remain current.
+      registeredMachine = await repository.reassignMachine(
+        machine.id,
+        agent.agentId,
+        apiKeyHash,
+      );
+
+      await repository.releaseCurrentActivations(machine.id);
+    }
+
+    await repository.completeActivation(activation.id, registeredMachine.id);
 
     return {
       machine: registeredMachine,

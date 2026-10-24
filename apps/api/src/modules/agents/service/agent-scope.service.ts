@@ -49,13 +49,17 @@ export default class AgentScopeService {
                 AgentType.KO,
               );
 
-        return [
+        const scope = [
           //   user.agentId,
 
           ...cspAgents.map((agent) => agent.agentId),
 
           ...koAgents.map((agent) => agent.agentId),
         ];
+
+        // An empty scope means "all agents" (SUPER_ADMIN only), so a BC with
+        // no CSPs yet must still get a non-empty scope.
+        return scope.length > 0 ? scope : [user.agentId];
       }
 
       default:
@@ -68,6 +72,11 @@ export default class AgentScopeService {
     allowedAgentIds: string[],
   ) {
     if (!requestedAgentId) {
+      return;
+    }
+
+    // Empty scope = SUPER_ADMIN (all agents).
+    if (allowedAgentIds.length === 0) {
       return;
     }
 

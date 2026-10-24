@@ -99,6 +99,8 @@ enum ReceiptStatus {
 
 enum ReceiptType {
   AEPS
+  ACCOUNT
+  CARD
   BBPS
   MICRO_ATM
   ACCOUNT_OPENING
@@ -189,6 +191,8 @@ enum SettingType {
 enum TransactionCategory {
   CASH_DEPOSIT
   CASH_WITHDRAWAL
+  MONEY_TRANSFER
+  FUND_TRANSFER
   BALANCE_ENQUIRY
   MINI_STATEMENT
   ACCOUNT_OPENING
@@ -546,7 +550,7 @@ model Agent {
 
   cspVisits CspVisit[] @relation("CspVisits")
 
-conductedCspVisits CspVisit[] @relation("CspVisitsByAgent")
+  conductedCspVisits CspVisit[] @relation("CspVisitsByAgent")
 
   isDeleted Boolean @default(false)
 
@@ -566,8 +570,6 @@ conductedCspVisits CspVisit[] @relation("CspVisitsByAgent")
 
   createdBy String?
   updatedBy String?
-
-  
 
   @@index([bcId])
   @@index([parentAgentId])
@@ -1059,11 +1061,13 @@ model Receipt {
 
   transactionType String
 
-  status ReceiptStatus
+  status ReceiptStatus?
 
-  transactionAt DateTime
+  transactionAt DateTime?
 
-  amount Decimal @db.Decimal(12, 2)
+  amount Decimal? @db.Decimal(12, 2)
+
+  count Int @default(1)
 
   charges Decimal? @db.Decimal(12, 2)
 
@@ -1094,6 +1098,8 @@ model Receipt {
 
   machineSession MachineSession? @relation(fields: [machineSessionId], references: [machineSessionId])
 
+  cashDenomination ReceiptCashDenomination?
+
   @@index([machineId])
   @@index([machineSessionId])
   @@index([agentId])
@@ -1101,6 +1107,30 @@ model Receipt {
   @@index([status])
   @@index([receiptType])
   @@index([transactionCategory])
+}
+
+model ReceiptCashDenomination {
+  id String @id @default(cuid())
+
+  receiptRecordId String @unique
+
+  notes500 Int @default(0)
+  notes200 Int @default(0)
+  notes100 Int @default(0)
+  notes50  Int @default(0)
+  notes20  Int @default(0)
+  notes10  Int @default(0)
+  notes5   Int @default(0)
+  coins20  Int @default(0)
+  coins10  Int @default(0)
+  coins5   Int @default(0)
+  coins2   Int @default(0)
+  coins1   Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  receipt Receipt @relation(fields: [receiptRecordId], references: [id], onDelete: Cascade)
 }
 
 ///////////////////////////
@@ -1445,18 +1475,17 @@ model RunningNumber {
 //CSP VISIT Model
 ///////////////////////////
 
-
 model CspVisit {
   id String @id @default(cuid())
 
   visitId String @unique
 
-  cspAgentId String
+  cspAgentId       String
   visitedByAgentId String
 
   visitDate DateTime
 
-  latitude Decimal? @db.Decimal(10, 7)
+  latitude  Decimal? @db.Decimal(10, 7)
   longitude Decimal? @db.Decimal(10, 7)
 
   photoUrl String?
@@ -1484,14 +1513,12 @@ model CspVisit {
 //CUSTOMER REVIEW MODEL for CSP VISIT
 ///////////////////////////
 
-
-
 model CspVisitCustomerReview {
   id String @id @default(cuid())
 
   visitId String
 
-  customerName String?
+  customerName    String?
   customerAccount String?
 
   review String?

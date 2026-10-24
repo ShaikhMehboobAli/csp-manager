@@ -68,9 +68,8 @@ export default class UploadService {
 
   async createPresignedUploadUrl(
     input: CreatePresignedUploadUrlInput,
+    ownerAgentId: string,
   ): Promise<PresignedUploadUrlResponse> {
-    const folder = "csp-visits";
-
     this.validateImageType(input.fileName, input.contentType);
 
     const extension = this.getFileExtension(input.fileName);
@@ -79,7 +78,7 @@ export default class UploadService {
     const year = now.getUTCFullYear();
     const month = String(now.getUTCMonth() + 1).padStart(2, "0");
 
-    const key = `${folder}/${year}/${month}/${randomUUID()}${extension}`;
+    const key = `${UploadService.ownerPrefix(ownerAgentId)}${year}/${month}/${randomUUID()}${extension}`;
 
     const result = await this.storageService.createPresignedUploadPost({
       key,
@@ -104,6 +103,18 @@ export default class UploadService {
 
   async deleteObject(key: string): Promise<void> {
     await this.storageService.deleteObject(key);
+  }
+
+  /**
+   * Every uploaded object lives under its uploader's folder, so ownership can
+   * be checked from the key alone.
+   */
+  static ownerPrefix(agentId: string): string {
+    return `csp-visits/${encodeURIComponent(agentId)}/`;
+  }
+
+  static isOwnedBy(key: string, agentId: string): boolean {
+    return key.startsWith(UploadService.ownerPrefix(agentId));
   }
 
   private sanitizeFolder(folder: string): string {
