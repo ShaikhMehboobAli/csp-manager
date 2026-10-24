@@ -16,6 +16,12 @@ router.get(
   MachineController.getHeartbeat,
 );
 
+router.get(
+  "/:machineId/activity-sessions",
+  authMiddleware,
+  MachineController.getActivitySessions,
+);
+
 router.get("/:machineId", authMiddleware, MachineController.getMachine);
 
 router.patch("/:machineId", authMiddleware, MachineController.updateMachine);

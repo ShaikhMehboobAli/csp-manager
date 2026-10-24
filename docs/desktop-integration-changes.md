@@ -2,7 +2,7 @@
 
 **Audience:** the engineer/agent implementing changes in the C# desktop repo (`ReceiptWarcher/`).
 **Source of truth for the backend:** `csp-manager/apps/api` (Express + Prisma). This doc lists what the desktop must add, modify, or remove to match the backend.
-**Last updated:** 2026-10-25 (rev 3)
+**Last updated:** 2026-10-25 (rev 4)
 
 > Paths below are relative to the desktop project root (`ReceiptWarcher/`). The doc was written against `ReceiptWarcher.zip` (Downloads, 2026-10-24); verify each location against your current checkout before editing.
 
@@ -27,7 +27,7 @@
 | 9 | Sensitive data in logs | READY |
 | 10 | `SaveRawReceipts` defaults | READY |
 | 11 | Active machine session required for receipt upload | READY (behaviour to handle) |
-| 12 | UI-mode heartbeat / CSP activity session lifecycle | FUTURE (Phase 3) |
+| 12 | UI-mode CSP activity session (start / heartbeat / stop) | READY |
 | 13 | Renewal / upgrade: no re-activation needed | READY (behaviour) |
 
 ---
@@ -254,15 +254,43 @@ Never log: API key, activation password, SBI credentials, customer name/account,
 
 `/receipts/upload-counts` needs an ACTIVE machine session, which the server creates/extends on each heartbeat and closes after ~180 s without one. Today only the **background service** sends heartbeats; UI mode does not. If the service is not running, UI uploads fail with `"No active machine session found."`.
 
-Until #12 lands: treat that error as retryable (keep `Pending`) and ensure the background service is installed and running alongside UI mode.
+With #12 implemented, the UI's activity heartbeat also keeps the machine session alive, so UI uploads work without the background service. Still treat this error as retryable (keep `Pending`): it happens after the CSP logs out and the session times out, and the queued receipt uploads at the next login.
 
-## 12. UI-mode heartbeat / CSP activity lifecycle — FUTURE (Phase 3)
+## 12. UI-mode CSP activity session — READY
 
-Planned; backend contract not final. Do not implement yet. Intended behaviour:
-- Start a 60 s activity heartbeat when the SBI login begins; stop on explicit logout, detected SBI auto-logout, and app close (X / `FormClosing`).
-- When offline, pause sending; on reconnect send **one** immediate heartbeat (no replay of missed ones).
-- Server marks sessions stale after missed heartbeats (covers crash / kill / power loss).
-- Keep machine/service liveness separate from CSP activity; the service heartbeat must not keep a logged-out CSP session alive.
+Tracks "the CSP is logged in to SBI" separately from "the machine/service is alive". Three machine-authenticated endpoints (same `machineCode` / `apiKey` / `fingerprint` as the heartbeat). The existing `POST /machines/runtime/heartbeat` (background service) is unchanged and must keep running as before.
+
+| When | Call | Body (plus machine credentials) |
+|---|---|---|
+| SBI login workflow begins | `POST /api/v1/machines/runtime/activity/start` | `{ "agentId": "<MachineConfig.AgentId>" }` |
+| Every `heartbeatInterval` s (60) while logged in, and **once immediately** after connectivity returns | `POST /api/v1/machines/runtime/activity/heartbeat` | `{ "activitySessionId": "<current id>" }` |
+| Explicit SBI logout | `POST /api/v1/machines/runtime/activity/stop` | `{ "activitySessionId": "...", "reason": "LOGOUT" }` |
+| Detected SBI auto-logout / session expiry | same | `"reason": "AUTO_LOGOUT"` |
+| App close (X / `FormClosing` / shutdown) | same, best effort | `"reason": "APP_CLOSE"` |
+
+**Response (start and heartbeat):**
+
+```json
+"data": {
+  "activitySessionId": "ACT-2026-000001",
+  "startedAt": "2026-10-25T10:00:00.000Z",
+  "restarted": false,
+  "heartbeatInterval": 60,
+  "heartbeatTimeout": 180
+}
+```
+
+Desktop rules:
+- **Always store the `activitySessionId` from the latest response.** If `restarted` is `true`, the previous session timed out (e.g. after an outage) and the server started a new one; use the new id from then on. No extra call is needed.
+- **409 on heartbeat** ("Activity session has ended. Start a new activity session.") means the session was stopped or replaced. If the CSP is still logged in, call `start` again; otherwise stop the heartbeat loop.
+- **403 on start** means `agentId` doesn't match the machine's current assignment; reload `MachineConfig` (see #8).
+- **Offline:** pause sending (don't queue or replay missed heartbeats). On reconnect, send one heartbeat immediately, then resume the 60 s timer.
+- **Stop is idempotent:** calling it twice, or for an already-closed session, returns 200. On app close, try it once with a short timeout and don't block closing.
+- **Crash / kill / power loss:** nothing to do. The server closes sessions that haven't sent a heartbeat for 180 s, ending them at the last heartbeat.
+- Run the timer off the UI thread (e.g. `PeriodicTimer` + `CancellationToken`). Cancel it on logout, auto-logout and `FormClosing`.
+- Never log the request body (it contains `apiKey`, see #9).
+
+**Implementation pointers:** the SBI login start, logout and auto-logout detection live in `Forms/csp/CSPManagerForm.cs` / `SbiTransactionWorkflow.cs`. Add a small `CspActivityService` (start/heartbeat/stop + timer) next to `Services/HeartbeatService.cs`, and add `ActivityStartEndpoint`, `ActivityHeartbeatEndpoint` and `ActivityStopEndpoint` to `appsettings.json` / `ConfigService`.
 
 ## 13. Renewal / upgrade keeps the machine activated — READY (behaviour)
 
@@ -282,6 +310,7 @@ Desktop impact:
 ## Changelog
 
 - 2026-10-25 — Initial version: items 1–12.
+- 2026-10-25 (rev 4) — #12 now READY: activity start/heartbeat/stop contract; #11 updated (UI activity heartbeat keeps the machine session alive).
 - 2026-10-25 (rev 3b) — #1: `upload-counts` accepts at most 20 receipts per request.
 - 2026-10-25 (rev 3) — Added #13: renewal/upgrade keep the machine activated; no re-activation prompt.
 - 2026-10-25 (rev 2) — #2 now READY: backend added `notes200`; desktop must rename all keys to the backend names and add ₹5 note, ₹20/₹2/₹1 coin inputs.

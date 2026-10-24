@@ -67,6 +67,26 @@ export const updateMachine = async (req: Request, res: Response) => {
   });
 };
 
+export const getActivitySessions = async (req: Request, res: Response) => {
+  const result = await machineService.getActivitySessions(
+    req.params.machineId as string,
+    req.user!,
+    {
+      from: req.query.from ? new Date(req.query.from as string) : undefined,
+
+      to: req.query.to ? new Date(req.query.to as string) : undefined,
+    },
+  );
+
+  return res.json({
+    success: true,
+
+    message: "CSP activity sessions fetched successfully.",
+
+    data: result,
+  });
+};
+
 export const getHeartbeat = async (req: Request, res: Response) => {
   const result = await machineService.getHeartbeat(
     req.params.machineId as string,

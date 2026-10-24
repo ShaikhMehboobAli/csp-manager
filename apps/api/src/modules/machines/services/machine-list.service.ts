@@ -17,6 +17,7 @@ import SubscriptionEntitlementService from "../../subscriptions/subscription-ent
 
 import MachineListRepository from "../repository/machine-list.repository";
 import MachineSessionRepository from "../runtime/machine-session.repository";
+import CspActivityService from "../runtime/csp-activity.service";
 import { MachineDetailFilter, MachineListFilter } from "../types/machine.types";
 
 export default class MachineListService {
@@ -555,6 +556,10 @@ export default class MachineListService {
       if (!machine) {
         throw new NotFoundError("Machine not found.");
       }
+
+      // CSP SBI-login activity within the requested range.
+      const { sessions: _activitySessions, ...cspActivity } =
+        await CspActivityService.getActivitySummary(tx, machine.id, from, to);
 
       // ============================================================
       // 4. Determine CSP root
@@ -1234,6 +1239,12 @@ export default class MachineListService {
         },
 
         // ----------------------------------------------------------
+        // CSP activity (SBI login sessions)
+        // ----------------------------------------------------------
+
+        cspActivity,
+
+        // ----------------------------------------------------------
         // CSP float
         // ----------------------------------------------------------
 
@@ -1381,6 +1392,41 @@ export default class MachineListService {
       }
 
       return machine;
+    });
+  }
+
+  async getActivitySessions(
+    machineId: string,
+    user: CurrentUser,
+    filter: MachineDetailFilter,
+  ) {
+    return withTransaction(async (tx) => {
+      const agentIds = await new AgentScopeService(tx).getAgentScope(user);
+
+      // Scoped lookup: machines outside the caller's scope are "not found".
+      const machine = await new MachineListRepository(tx).getHeartbeat(
+        machineId,
+        agentIds,
+      );
+
+      if (!machine) {
+        throw new NotFoundError("Machine not found.");
+      }
+
+      const { from, to } = normalizeDateRange(filter.from, filter.to);
+
+      return {
+        machineId: machine.id,
+        machineCode: machine.machineCode,
+        from,
+        to,
+        ...(await CspActivityService.getActivitySummary(
+          tx,
+          machine.id,
+          from,
+          to,
+        )),
+      };
     });
   }
 

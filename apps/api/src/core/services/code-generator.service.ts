@@ -62,4 +62,11 @@ export default class CodeGeneratorService {
   async generateCspVisitNumber() {
     return this.generateSequentialNumber(RunningNumberType.CSP_VISIT, "VIS");
   }
+
+  async generateCspActivitySessionCode() {
+    return this.generateSequentialNumber(
+      RunningNumberType.CSP_ACTIVITY_SESSION,
+      "ACT",
+    );
+  }
 }
