@@ -26,8 +26,9 @@ router.use("/agents", agentRoutes);
 router.use("/receipts", receiptRoutes);
 router.use("/dashboard", dashboardRoutes);
 router.use("/reports", reportRoutes);
-router.use("/metrics", metricRoutes);
+// Mount before "/metrics": its "/:metricId" would otherwise swallow "/values".
 router.use("/metrics/values", metricValueRoutes);
+router.use("/metrics", metricRoutes);
 console.log("CSP VISIT ROUTES REGISTERED");
 router.use("/csp-visits", cspVisitRoutes);
 router.use("/uploads", uploadRoutes);
