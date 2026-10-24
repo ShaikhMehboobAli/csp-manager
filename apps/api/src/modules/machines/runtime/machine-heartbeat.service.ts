@@ -8,6 +8,7 @@ import RuntimeConfig from "../../../config/runtime.config";
 import MachineSessionService from "./machine-session.service";
 import MachineRuntimeValidator from "./machine-runtime-validator";
 import { HEARTBEAT_TIMEOUT_SECONDS } from "./machine-runtime.constants";
+import SubscriptionEntitlementService from "../../subscriptions/subscription-entitlement.service";
 
 export default class MachineHeartbeatService {
   private readonly authService: MachineAuthenticationService;
@@ -48,6 +49,10 @@ export default class MachineHeartbeatService {
       lastTransactionAt: input.lastTransactionAt,
     });
 
+    const { plan, features } = await new SubscriptionEntitlementService(
+      this.db,
+    ).getPlanEntitlements(authenticated.subscription.planId);
+
     return {
       serverTime: new Date(),
       heartbeatInterval: RuntimeConfig.heartbeatInterval,
@@ -58,6 +63,10 @@ export default class MachineHeartbeatService {
       latestWatcherVersion:
         RuntimeConfig.latestWatcherVersion ||
         authenticated.machine.watcherVersion,
+      planCode: plan.code,
+      subscriptionEndDate: authenticated.subscription.endDate,
+      graceEndsAt: authenticated.subscription.graceEndsAt,
+      features: features.map((feature) => feature.code),
     };
   }
 }

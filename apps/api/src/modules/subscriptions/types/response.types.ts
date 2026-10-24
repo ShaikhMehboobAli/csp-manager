@@ -16,7 +16,9 @@ export interface PlanResponse {
   }[];
 
   features: {
+    code: string;
     name: string;
-    value: string;
+    description: string | null;
+    category: string | null;
   }[];
 }

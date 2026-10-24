@@ -52,6 +52,81 @@ export default class ActivationRepository {
     });
   }
 
+  /**
+   * Moves activated machines from one subscription to another so they keep
+   * working after a renewal or upgrade without re-activation.
+   * Returns the number of activations moved.
+   */
+  async carryOverActivations(
+    fromSubscriptionId: string,
+    toSubscriptionId: string,
+    expiresAt: Date,
+    limit: number,
+  ) {
+    const activations = await this.db.activation.findMany({
+      where: {
+        subscriptionId: fromSubscriptionId,
+        status: ActivationStatus.ACTIVE,
+        isCurrent: true,
+        machineId: {
+          not: null,
+        },
+      },
+      orderBy: {
+        activatedAt: "asc",
+      },
+      take: limit,
+      select: {
+        id: true,
+      },
+    });
+
+    if (activations.length === 0) {
+      return 0;
+    }
+
+    const result = await this.db.activation.updateMany({
+      where: {
+        id: {
+          in: activations.map((activation) => activation.id),
+        },
+      },
+      data: {
+        subscriptionId: toSubscriptionId,
+        expiresAt,
+      },
+    });
+
+    return result.count;
+  }
+
+  revokeUnusedActivations(subscriptionId: string) {
+    return this.db.activation.updateMany({
+      where: {
+        subscriptionId,
+        status: ActivationStatus.NOT_ACTIVATED,
+      },
+      data: {
+        status: ActivationStatus.REVOKED,
+        isCurrent: false,
+      },
+    });
+  }
+
+  updateSubscriptionActivationExpiry(subscriptionId: string, expiresAt: Date) {
+    return this.db.activation.updateMany({
+      where: {
+        subscriptionId,
+        status: {
+          in: [ActivationStatus.NOT_ACTIVATED, ActivationStatus.ACTIVE],
+        },
+      },
+      data: {
+        expiresAt,
+      },
+    });
+  }
+
   countSubscriptionActivations(subscriptionId: string) {
     return this.db.activation.count({
       where: {

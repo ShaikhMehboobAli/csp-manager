@@ -596,6 +596,14 @@ export default class AuthService {
       throw new ForbiddenError("Please verify your account first.");
     }
 
+    if (user.status === UserStatus.BLOCKED) {
+      throw new ForbiddenError("Your account has been blocked.");
+    }
+
+    if (user.status === UserStatus.SUSPENDED) {
+      throw new ForbiddenError("Your account has been suspended.");
+    }
+
     const passwordMatched = await this.bcryptService.compare(
       data.password,
       user.passwordHash,

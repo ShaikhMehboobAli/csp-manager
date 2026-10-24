@@ -1,5 +1,6 @@
 import { Request, RequestHandler, Response } from "express";
 import ActivationService from "./activation.service";
+import { getOwnerType } from "../payments/payment.controller";
 import { ParamsDictionary } from "express-serve-static-core";
 
 const activationService = new ActivationService();
@@ -35,7 +36,12 @@ export const regeneratePassword = async (req: Request, res: Response) => {
 };
 
 export const assignActivation = async (req: Request, res: Response) => {
-  const result = await activationService.assignActivation(req.body);
+  const result = await activationService.assignActivation({
+    activationId: req.body.activationId,
+    assignedAgentId: req.body.assignedAgentId,
+    assignedByOwnerType: getOwnerType(req.user!.role),
+    assignedByOwnerId: req.user!.agentId,
+  });
 
   return res.status(200).json(result);
 };

@@ -22,4 +22,11 @@ export const heartbeatSchema = z.object({
   lastTransactionAt: z.coerce.date().optional(),
 });
 
+export const entitlementSchema = z.object({
+  machineCode: z.string().trim().min(1),
+  apiKey: z.string().trim().min(1),
+  fingerprint: z.string().trim().min(1),
+});
+
 export type HeartbeatRequest = z.infer<typeof heartbeatSchema>;
+export type EntitlementRequest = z.infer<typeof entitlementSchema>;

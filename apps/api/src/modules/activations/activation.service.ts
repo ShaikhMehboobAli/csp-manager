@@ -165,6 +165,7 @@ export default class ActivationService {
     ownerType: SubscriptionOwnerType,
     ownerId: string,
     targetAgent: {
+      agentId: string;
       type: AgentType;
       bcId: string | null;
       parentAgentId: string | null;
@@ -179,8 +180,12 @@ export default class ActivationService {
       return;
     }
 
-    // CSP can assign only to its own KO
+    // CSP can assign to itself (individual CSP) or to its own KO
     if (ownerType === SubscriptionOwnerType.CSP) {
+      if (targetAgent.agentId === ownerId) {
+        return;
+      }
+
       if (targetAgent.type !== AgentType.KO) {
         throw new ForbiddenError("CSP can assign only to KO.");
       }
@@ -212,7 +217,12 @@ export default class ActivationService {
         data.activationId,
       );
 
-      if (!activation) {
+      // Only the subscription owner may assign its activations.
+      if (
+        !activation ||
+        activation.subscription.ownerType !== data.assignedByOwnerType ||
+        activation.subscription.ownerId !== data.assignedByOwnerId
+      ) {
         throw new NotFoundError("Activation not found.");
       }
 
