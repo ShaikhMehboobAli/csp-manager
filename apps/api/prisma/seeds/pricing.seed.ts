@@ -16,18 +16,8 @@ export async function seedPlanPricing() {
       continue;
     }
 
-    await prisma.planPricing.updateMany({
-      where: {
-        planId: dbPlan.id,
-        billingCycle: {
-          notIn: plan.pricing.map((pricing) => pricing.billingCycle),
-        },
-      },
-      data: {
-        isActive: false,
-      },
-    });
-
+    // Pricing belongs to SUPER_ADMIN once created: seeding only adds missing
+    // billing cycles and never overwrites or deactivates existing prices.
     for (const pricing of plan.pricing) {
       await prisma.planPricing.upsert({
         where: {
@@ -36,11 +26,7 @@ export async function seedPlanPricing() {
             billingCycle: pricing.billingCycle,
           },
         },
-        update: {
-          durationDays: pricing.durationDays,
-          price: pricing.price,
-          isActive: true,
-        },
+        update: {},
         create: {
           planId: dbPlan.id,
           billingCycle: pricing.billingCycle,

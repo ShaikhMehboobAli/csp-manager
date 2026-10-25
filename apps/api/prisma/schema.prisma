@@ -498,6 +498,8 @@ model BusinessCorrespondent {
 
   agents Agent[]
 
+  linkRequests BcLinkRequest[]
+
   deletedAt DateTime?
 
   deletedByUserId String?
@@ -546,6 +548,12 @@ model Agent {
   openingCash Decimal? @db.Decimal(18, 2)
 
   linkedAt DateTime?
+
+  // Set by an approved SUBSCRIBED_CSP link request (BC ₹799): the BC sees this
+  // CSP's data only while the CSP's own subscription is active.
+  bcLinkedByRequest Boolean @default(false)
+
+  bcLinkRequests BcLinkRequest[]
 
   receipts Receipt[]
 
@@ -1497,6 +1505,7 @@ enum RunningNumberType {
   RECEIPT
   CSP_VISIT
   CSP_ACTIVITY_SESSION
+  BC_LINK_REQUEST
 }
 
 model RunningNumber {
@@ -1568,4 +1577,58 @@ model CspVisitCustomerReview {
   visit CspVisit @relation(fields: [visitId], references: [id], onDelete: Cascade)
 
   @@index([visitId])
+}
+
+///////////////////////////
+//BC Link Request Model
+///////////////////////////
+
+enum BcLinkRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+// A BC asks to link an already-subscribed CSP; SUPER_ADMIN approves/rejects.
+model BcLinkRequest {
+  id String @id @default(cuid())
+
+  requestNumber String @unique
+
+  bcId String
+
+  businessCorrespondent BusinessCorrespondent @relation(fields: [bcId], references: [bcId], onDelete: Restrict)
+
+  cspAgentId String
+
+  csp Agent @relation(fields: [cspAgentId], references: [agentId], onDelete: Restrict)
+
+  status BcLinkRequestStatus @default(PENDING)
+
+  // The CSP was already linked to another BC (currentBcId) when this request
+  // was raised or while it was pending; the admin must look into it.
+  isConflict Boolean @default(false)
+
+  currentBcId String?
+
+  // true: BC ₹799 link — the BC sees the CSP's data only while the CSP's own
+  // subscription is active. false: legacy BC link (POST /agents) — the BC
+  // provides the CSP's machines, so visibility doesn't depend on the CSP plan.
+  cspSubscriptionRequired Boolean @default(true)
+
+  remarks String?
+
+  reviewRemarks    String?
+  reviewedByUserId String?
+  reviewedAt       DateTime?
+
+  createdByUserId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([bcId])
+  @@index([cspAgentId])
 }

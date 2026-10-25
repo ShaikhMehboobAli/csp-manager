@@ -2,14 +2,21 @@ import { PrismaDb } from "../../../core/database/prisma.types";
 import { ForbiddenError } from "../../../core/errors/ForbiddenError";
 import { CurrentUser } from "../../../core/types/auth.types";
 
-import { AgentType, UserRole } from "../../../generated/prisma/enums";
+import {
+  AgentType,
+  SubscriptionOwnerType,
+  UserRole,
+} from "../../../generated/prisma/enums";
 import { AgentRepository } from "../repository/agent.repository";
+import SubscriptionRepository from "../../subscriptions/subscription.repository";
 
 export default class AgentScopeService {
   private readonly repository: AgentRepository;
+  private readonly subscriptionRepository: SubscriptionRepository;
 
   constructor(db: PrismaDb) {
     this.repository = new AgentRepository(db);
+    this.subscriptionRepository = new SubscriptionRepository(db);
   }
 
   async getAgentScope(user: CurrentUser): Promise<string[]> {
@@ -31,11 +38,13 @@ export default class AgentScopeService {
          * Step 1
          * Fetch all CSPs under BC
          */
-        const cspAgents = await this.repository.getCspAgents(
+        const linkedCsps = await this.repository.getCspAgents(
           //   [user.agentId],
           //   AgentType.CSP,
           user.agentId,
         );
+
+        const cspAgents = await this.withVisibleRequestLinks(linkedCsps);
 
         /**
          * Step 2
@@ -65,6 +74,33 @@ export default class AgentScopeService {
       default:
         return [user.agentId];
     }
+  }
+
+  /**
+   * CSPs linked through an approved BC link request (BC ₹799 plan) stay
+   * linked, but the BC sees their data only while the CSP's own subscription
+   * is active.
+   */
+  private async withVisibleRequestLinks<
+    T extends { agentId: string; bcLinkedByRequest: boolean },
+  >(csps: T[]): Promise<T[]> {
+    const requestLinked = csps
+      .filter((csp) => csp.bcLinkedByRequest)
+      .map((csp) => csp.agentId);
+
+    if (requestLinked.length === 0) {
+      return csps;
+    }
+
+    const subscribed =
+      await this.subscriptionRepository.findOwnerIdsWithActiveSubscription(
+        SubscriptionOwnerType.CSP,
+        requestLinked,
+      );
+
+    return csps.filter(
+      (csp) => !csp.bcLinkedByRequest || subscribed.has(csp.agentId),
+    );
   }
 
   ensureAgentAccessible(

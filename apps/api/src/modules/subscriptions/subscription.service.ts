@@ -5,6 +5,7 @@ import { mapSubscription } from "./mappers/subscription.mapper";
 import SubscriptionRepository from "./subscription.repository";
 
 import type { GetPlansDto } from "./validations/get-plans.validation";
+import type { UpdatePlanPricingDto } from "./validations/update-plan-pricing.validation";
 
 import { withTransaction } from "../../core/database/transaction";
 import { createCodeGeneratorService } from "../../core/services/service.factory";
@@ -60,6 +61,50 @@ export default class SubscriptionService {
       success: true,
       message: "Plans fetched successfully.",
       data: plans.map(mapPlan),
+    };
+  }
+
+  async updatePlanPricing(planId: string, data: UpdatePlanPricingDto) {
+    const plan = await this.subscriptionRepository.findPlanById(planId);
+
+    if (!plan || plan.isDeleted) {
+      throw new NotFoundError("Plan not found.");
+    }
+
+    const existing = await this.subscriptionRepository.findPlanPricing(
+      planId,
+      data.billingCycle,
+    );
+
+    const durationDays = data.durationDays ?? existing?.durationDays;
+
+    if (!durationDays) {
+      throw new BadRequestError(
+        "durationDays is required for a new billing cycle.",
+      );
+    }
+
+    // Applies to new purchases and renewals; running subscriptions keep the
+    // amount they paid.
+    const pricing = await this.subscriptionRepository.upsertPlanPricing({
+      planId,
+      billingCycle: data.billingCycle,
+      price: data.price,
+      durationDays,
+      isActive: data.isActive ?? existing?.isActive ?? true,
+    });
+
+    return {
+      success: true,
+      message: "Plan pricing updated successfully.",
+      data: {
+        planId,
+        planCode: plan.code,
+        billingCycle: pricing.billingCycle,
+        durationDays: pricing.durationDays,
+        price: pricing.price.toString(),
+        isActive: pricing.isActive,
+      },
     };
   }
 

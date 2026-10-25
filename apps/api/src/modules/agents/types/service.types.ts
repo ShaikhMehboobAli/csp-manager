@@ -1,4 +1,5 @@
 import { Agent, Prisma } from "../../../generated/prisma/client";
+import type { mapRequest } from "../../bc-links/bc-link.service";
 import {
   AgentType,
   SubscriptionOwnerType,
@@ -126,8 +127,10 @@ export interface AgentResponse {
 }
 
 export interface CreateCSPResponse {
-  csp: AgentResponse;
+  // null when an existing CSP was requested instead of linked (linkRequest).
+  csp: AgentResponse | null;
   kos: AgentResponse[];
+  linkRequest?: ReturnType<typeof mapRequest>;
 }
 
 export interface CreateKOResponse {

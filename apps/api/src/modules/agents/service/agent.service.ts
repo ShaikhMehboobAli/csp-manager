@@ -28,6 +28,12 @@ import {
 import { canManageAgent } from "../utils/agent-authorization";
 import AgentScopeService from "./agent-scope.service";
 import { ListAgentsDto } from "../validations/list-agents.validation";
+import {
+  hasLinkingPlan,
+  mapRequest,
+  raiseLinkRequest,
+} from "../../bc-links/bc-link.service";
+import { UserRole } from "../../../generated/prisma/enums";
 import { UpdateAgentDto } from "../validations/update-agent.validation";
 
 export class AgentService {
@@ -54,6 +60,7 @@ export class AgentService {
     bcId: string,
     createdBy: string,
     input: CreateCSPInput,
+    role: UserRole = UserRole.BC_ADMIN,
   ): Promise<CreateCSPResponse> {
     const totalRequestedMachines =
       input.machineCount +
@@ -62,6 +69,20 @@ export class AgentService {
     return this.prisma.$transaction(async (tx) => {
       const activationRepository = new ActivationRepository(tx);
       const subscriptionService = new SubscriptionService(tx);
+
+      const existingCsp = await new AgentRepository(tx).findAgentByAgentId({
+        agentId: input.agentId,
+      });
+
+      // A BC linking an existing CSP needs SUPER_ADMIN approval, as in the
+      // BC ₹799 flow; only a CSP the BC creates here is linked immediately.
+      if (
+        role === UserRole.BC_ADMIN &&
+        existingCsp &&
+        existingCsp.bcId !== bcId
+      ) {
+        return this.requestCspLink(tx, bcId, createdBy, existingCsp, input);
+      }
 
       //   await subscriptionService.validateMachineLimit({
       //     ownerType: SubscriptionOwnerType.BC,
@@ -166,6 +187,41 @@ export class AgentService {
         ko: mapAgent(ko),
       };
     });
+  }
+
+  private async requestCspLink(
+    tx: Prisma.TransactionClient,
+    bcId: string,
+    createdBy: string,
+    existingCsp: Agent,
+    input: CreateCSPInput,
+  ): Promise<CreateCSPResponse> {
+    if (existingCsp.type !== AgentType.CSP) {
+      throw new BadRequestError("Provided Agent ID does not belong to a CSP.");
+    }
+
+    if (input.kos?.length) {
+      throw new BadRequestError("Add KOs after the CSP link is approved.");
+    }
+
+    const request = await raiseLinkRequest(tx, {
+      bcId,
+      cspAgentId: existingCsp.agentId,
+      createdByUserId: createdBy,
+      // A BC on a CSP-linking plan gets the ₹799 rules; otherwise it's a
+      // legacy link where the BC provides the CSP's machines.
+      cspSubscriptionRequired: await hasLinkingPlan(tx, bcId),
+    });
+
+    return {
+      csp: null,
+      kos: [],
+      linkRequest: mapRequest(request, {
+        userId: createdBy,
+        agentId: bcId,
+        role: UserRole.BC_ADMIN,
+      }),
+    };
   }
 
   private async createOrLinkCSP(

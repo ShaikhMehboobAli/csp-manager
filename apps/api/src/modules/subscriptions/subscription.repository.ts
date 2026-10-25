@@ -6,6 +6,7 @@ import {
 } from "../../generated/prisma/client";
 
 import {
+  BillingCycle,
   PaymentMethod,
   PlanOwnerType,
   SubscriptionEventType,
@@ -198,6 +199,38 @@ export default class SubscriptionRepository {
     });
   }
 
+  findPlanPricing(planId: string, billingCycle: BillingCycle) {
+    return this.db.planPricing.findUnique({
+      where: {
+        planId_billingCycle: {
+          planId,
+          billingCycle,
+        },
+      },
+    });
+  }
+
+  upsertPlanPricing(data: {
+    planId: string;
+    billingCycle: BillingCycle;
+    price: number;
+    durationDays: number;
+    isActive: boolean;
+  }) {
+    const { planId, billingCycle, ...values } = data;
+
+    return this.db.planPricing.upsert({
+      where: {
+        planId_billingCycle: {
+          planId,
+          billingCycle,
+        },
+      },
+      update: values,
+      create: data,
+    });
+  }
+
   findPlanWithPricing(planId: string) {
     return this.db.plan.findUnique({
       where: {
@@ -274,6 +307,50 @@ export default class SubscriptionRepository {
         createdAt: "desc",
       },
     });
+  }
+
+  /**
+   * Owners (of the given type) whose subscription is usable right now.
+   */
+  async findOwnerIdsWithActiveSubscription(
+    ownerType: SubscriptionOwnerType,
+    ownerIds: string[],
+  ): Promise<Set<string>> {
+    if (ownerIds.length === 0) {
+      return new Set();
+    }
+
+    const now = new Date();
+
+    const subscriptions = await this.db.subscription.findMany({
+      where: {
+        ownerType,
+        ownerId: {
+          in: ownerIds,
+        },
+        status: SubscriptionStatus.ACTIVE,
+        startDate: {
+          lte: now,
+        },
+        OR: [
+          {
+            endDate: {
+              gte: now,
+            },
+          },
+          {
+            graceEndsAt: {
+              gte: now,
+            },
+          },
+        ],
+      },
+      select: {
+        ownerId: true,
+      },
+    });
+
+    return new Set(subscriptions.map((subscription) => subscription.ownerId));
   }
 
   async getCurrentSubscription(ownerId: string, ownerType?: "BC" | "CSP") {

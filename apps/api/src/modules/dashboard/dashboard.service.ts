@@ -174,6 +174,7 @@ export default class DashboardService {
             dashboardFilter.currentAgentId,
             dashboardFilter.from!,
             dashboardFilter.to!,
+            dashboardFilter.agentIds,
           )
         : null,
       //   this.machineRepository.getCspMachineSummary(filter),

@@ -6,6 +6,9 @@ import { validate } from "../../core/middlewares/validate";
 
 import { getPlansSchema } from "./validations/get-plans.validation";
 import { authMiddleware } from "../../core/middlewares/auth.middleware";
+import { authorize } from "../../core/middlewares/authorize.middleware";
+import { UserRole } from "../../generated/prisma/enums";
+import { updatePlanPricingSchema } from "./validations/update-plan-pricing.validation";
 
 const router = Router();
 
@@ -13,6 +16,15 @@ router.get(
   "/plans",
   validate(getPlansSchema, "query"),
   SubscriptionController.getPlans,
+);
+
+// Plan prices are owned by SUPER_ADMIN (seeding never overwrites them).
+router.patch(
+  "/plans/:planId/pricing",
+  authMiddleware,
+  authorize(UserRole.SUPER_ADMIN),
+  validate(updatePlanPricingSchema),
+  SubscriptionController.updatePlanPricing,
 );
 
 router.get(

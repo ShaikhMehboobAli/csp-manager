@@ -12,6 +12,8 @@ export default class DashboardCspSummaryRepository {
     bcAgentId: string,
     from: Date,
     to: Date,
+    // The BC's agent scope; drops request-linked CSPs whose plan lapsed.
+    visibleAgentIds?: string[],
   ): Promise<DashboardCspSummary> {
     /**
      * 1. Fetch all CSPs belonging to this BC.
@@ -23,6 +25,12 @@ export default class DashboardCspSummaryRepository {
         type: "CSP",
 
         isDeleted: false,
+
+        ...(visibleAgentIds && {
+          agentId: {
+            in: visibleAgentIds,
+          },
+        }),
       },
 
       select: {
