@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 
-import { withTransaction } from "../../core/database/transaction";
+import { withReadOnly } from "../../core/database/transaction";
 
 import AgentScopeService from "../agents/service/agent-scope.service";
 
@@ -27,7 +27,7 @@ export default class ReceiptController {
   async getReceipts(req: Request, res: Response) {
     const query = receiptListSchema.parse(req.query);
 
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const scopeService = new AgentScopeService(tx);
 
       const agentIds = await scopeService.getAgentScope(req.user!);
@@ -53,7 +53,7 @@ export default class ReceiptController {
   }
 
   async getReceipt(req: Request<ReceiptParams>, res: Response) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const scopeService = new AgentScopeService(tx);
 
       const agentIds = await scopeService.getAgentScope(req.user!);
@@ -77,7 +77,7 @@ export default class ReceiptController {
   async getStats(req: Request, res: Response) {
     const query = receiptListSchema.parse(req.query);
 
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const scopeService = new AgentScopeService(tx);
 
       const agentIds = await scopeService.getAgentScope(req.user!);
@@ -105,7 +105,7 @@ export default class ReceiptController {
   async export(req: Request, res: Response) {
     const query = receiptListSchema.parse(req.query);
 
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const scopeService = new AgentScopeService(tx);
 
       const agentIds = await scopeService.getAgentScope(req.user!);

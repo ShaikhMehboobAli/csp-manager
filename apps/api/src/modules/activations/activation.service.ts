@@ -1,4 +1,4 @@
-import { withTransaction } from "../../core/database/transaction";
+import { withTransaction, withReadOnly } from "../../core/database/transaction";
 import { PrismaDb } from "../../core/database/prisma.types";
 import ActivationRepository from "./activation.repository";
 import {
@@ -81,7 +81,7 @@ export default class ActivationService {
   }
 
   async getActivations(agentId: string) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const repository = new ActivationRepository(tx);
 
       const activations = await repository.findActivationsByOwner(agentId);
@@ -95,7 +95,7 @@ export default class ActivationService {
   }
 
   async getActivationById(activationId: string, ownerId: string) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const repository = new ActivationRepository(tx);
 
       const activation = await repository.findActivationById(

@@ -4,8 +4,11 @@
 // Get a free hosted Postgres database in seconds: `npx create-db`
 
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider        = "prisma-client"
+  output          = "../src/generated/prisma"
+  // Loads include trees in one SQL query (LATERAL joins) instead of one round
+  // trip per relation level; matters on a remote database.
+  previewFeatures = ["relationJoins"]
 }
 
 datasource db {

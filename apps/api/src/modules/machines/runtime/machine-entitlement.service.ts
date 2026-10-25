@@ -1,4 +1,4 @@
-import { withTransaction } from "../../../core/database/transaction";
+import { withReadOnly } from "../../../core/database/transaction";
 import MachineAuthenticationService from "./machine-auth.service";
 import MachineRuntimeValidator from "./machine-runtime-validator";
 import { EntitlementRequest } from "./machine-runtime.validation";
@@ -11,7 +11,7 @@ import SubscriptionEntitlementService from "../../subscriptions/subscription-ent
  */
 export default class MachineEntitlementService {
   async getEntitlements(request: EntitlementRequest) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const authenticationService = new MachineAuthenticationService(tx);
 
       const authenticated = await authenticationService.authenticate({

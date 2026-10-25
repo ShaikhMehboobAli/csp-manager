@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 
-import { withTransaction } from "../../core/database/transaction";
+import { withReadOnly } from "../../core/database/transaction";
 
 import AgentScopeService from "../agents/service/agent-scope.service";
 
@@ -14,7 +14,7 @@ export default class ReportController {
   async getSummary(req: Request, res: Response) {
     const query = reportSummarySchema.parse(req.query);
 
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const scopeService = new AgentScopeService(tx);
 
       const agentIds = await scopeService.getAgentScope(req.user!);
@@ -41,7 +41,7 @@ export default class ReportController {
   async export(req: Request, res: Response) {
     const query = reportSummarySchema.parse(req.query);
 
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const scopeService = new AgentScopeService(tx);
 
       const agentIds = await scopeService.getAgentScope(req.user!);

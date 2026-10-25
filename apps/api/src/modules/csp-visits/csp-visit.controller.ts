@@ -7,7 +7,7 @@ import { BadRequestError } from "../../core/errors/BadRequestError";
 
 import CspVisitService from "./csp-visit.service";
 import { createCspVisitSchema } from "./validators/create-csp-visit.schema";
-import { withTransaction } from "../../core/database/transaction";
+import { withTransaction, withReadOnly } from "../../core/database/transaction";
 import AgentScopeService from "../agents/service/agent-scope.service";
 
 export default class CspVisitController {
@@ -44,7 +44,7 @@ export default class CspVisitController {
   }
 
   async getVisit(req: Request, res: Response) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const currentUser = req.user!;
 
       if (!currentUser) {
@@ -74,7 +74,7 @@ export default class CspVisitController {
   }
 
   async getCspVisits(req: Request, res: Response) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const currentUser = req.user!;
 
       const cspAgentIdParam = req.params.cspAgentId;

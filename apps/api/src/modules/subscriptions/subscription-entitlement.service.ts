@@ -10,10 +10,45 @@ export const DesktopFeature = {
   MOBILE_TRACKING: "MOBILE_TRACKING",
 } as const;
 
+/**
+ * Plan features are read on most gated requests and change rarely, so they are
+ * cached per process. Admin edits to a plan's features apply within the TTL.
+ */
+const PLAN_CACHE_TTL_MS = 60_000;
+
+type PlanEntitlements = Awaited<
+  ReturnType<SubscriptionEntitlementService["loadPlanEntitlements"]>
+>;
+
+const planCache = new Map<
+  string,
+  { expiresAt: number; value: Promise<PlanEntitlements> }
+>();
+
 export default class SubscriptionEntitlementService {
   constructor(private readonly db: PrismaDb) {}
 
-  async getPlanEntitlements(planId: string) {
+  async getPlanEntitlements(planId: string): Promise<PlanEntitlements> {
+    const cached = planCache.get(planId);
+
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.value;
+    }
+
+    const value = this.loadPlanEntitlements(planId);
+
+    planCache.set(planId, {
+      expiresAt: Date.now() + PLAN_CACHE_TTL_MS,
+      value,
+    });
+
+    // Failed lookups (e.g. plan not found) are not cached.
+    value.catch(() => planCache.delete(planId));
+
+    return value;
+  }
+
+  private async loadPlanEntitlements(planId: string) {
     const plan = await this.db.plan.findUnique({
       where: {
         id: planId,

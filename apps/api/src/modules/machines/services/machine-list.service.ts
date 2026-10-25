@@ -1,4 +1,4 @@
-import { withTransaction } from "../../../core/database/transaction";
+import { withTransaction, withReadOnly } from "../../../core/database/transaction";
 import { NotFoundError } from "../../../core/errors/NotFoundError";
 import { CurrentUser } from "../../../core/types/auth.types";
 import { normalizeDateRange } from "../../../core/utils/date-range.helper";
@@ -23,7 +23,7 @@ import { MachineDetailFilter, MachineListFilter } from "../types/machine.types";
 export default class MachineListService {
   async getMachines(user: CurrentUser, filter: MachineListFilter) {
     console.log(filter);
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const resolver = new SubscriptionResolver(tx);
 
       const subscription = await resolver.getEffectiveSubscription(
@@ -511,23 +511,20 @@ export default class MachineListService {
     user: CurrentUser,
     filter: MachineDetailFilter,
   ) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       // ============================================================
       // 1. Subscription validation
       // ============================================================
 
       const resolver = new SubscriptionResolver(tx);
 
-      const subscription = await resolver.getEffectiveSubscription(
-        user.agentId,
-      );
+      const [subscription, agentIds] = await Promise.all([
+        resolver.getEffectiveSubscription(user.agentId),
+
+        new AgentScopeService(tx).getAgentScope(user),
+      ]);
 
       SubscriptionAccessValidator.validate(subscription);
-
-      // Float figures are null for CSP plans without CASH_MANAGEMENT.
-      const canViewFloat = await new SubscriptionEntitlementService(
-        tx,
-      ).canViewCashManagement(subscription);
 
       // ============================================================
       // 2. Date range
@@ -545,21 +542,20 @@ export default class MachineListService {
       // 3. Validate machine access
       // ============================================================
 
-      const scopeService = new AgentScopeService(tx);
-
-      const agentIds = await scopeService.getAgentScope(user);
-
       const repository = new MachineListRepository(tx);
 
-      const machine = await repository.getMachine(machineId, agentIds);
+      const [canViewFloat, machine] = await Promise.all([
+        // Float figures are null for CSP plans without CASH_MANAGEMENT.
+        new SubscriptionEntitlementService(tx).canViewCashManagement(
+          subscription,
+        ),
+
+        repository.getMachine(machineId, agentIds),
+      ]);
 
       if (!machine) {
         throw new NotFoundError("Machine not found.");
       }
-
-      // CSP SBI-login activity within the requested range.
-      const { sessions: _activitySessions, ...cspActivity } =
-        await CspActivityService.getActivitySummary(tx, machine.id, from, to);
 
       // ============================================================
       // 4. Determine CSP root
@@ -593,53 +589,75 @@ export default class MachineListService {
       // └── KO1002
       // ============================================================
 
-      const scopedAgents = await tx.agent.findMany({
-        where: {
-          isDeleted: false,
+      // Runtime (section 12) and SBI-login activity belong to the requested
+      // machine only, so they load together with the reporting unit.
+      const sessionRepository = new MachineSessionRepository(tx);
 
-          OR: [
-            {
-              agentId: parentAgent,
+      const [activitySummary, activeSession, sessions, scopedAgents] =
+        await Promise.all([
+          // CSP SBI-login activity within the requested range.
+          CspActivityService.getActivitySummary(tx, machine.id, from, to),
+
+          sessionRepository.findActiveSession(machine.id),
+
+          sessionRepository.findSessionsForRange(machine.id, from, to),
+
+          tx.agent.findMany({
+            where: {
+              isDeleted: false,
+
+              OR: [
+                {
+                  agentId: parentAgent,
+                },
+                {
+                  parentAgentId: parentAgent,
+                  type: "KO",
+                },
+              ],
             },
-            {
-              parentAgentId: parentAgent,
-              type: "KO",
+
+            select: {
+              id: true,
+              agentId: true,
+              name: true,
+              type: true,
+              mobile: true,
+              email: true,
+              address: true,
+              bcId: true,
+              parentAgentId: true,
+              linkedAt: true,
+              createdAt: true,
+              updatedAt: true,
             },
-          ],
-        },
 
-        select: {
-          id: true,
-          agentId: true,
-          name: true,
-          type: true,
-          mobile: true,
-          email: true,
-          address: true,
-          bcId: true,
-          parentAgentId: true,
-          linkedAt: true,
-          createdAt: true,
-          updatedAt: true,
-        },
+            orderBy: {
+              type: "asc",
+            },
+          }),
+        ]);
 
-        orderBy: {
-          type: "asc",
-        },
-      });
+      const { sessions: _activitySessions, ...cspActivity } = activitySummary;
 
       const scopedAgentIds = scopedAgents
         .map((agent) => agent.agentId)
         .filter((id): id is string => Boolean(id));
 
-      // ============================================================
-      // 6. Fetch machines belonging to CSP + KOs
-      // ============================================================
+      // 6. Machines, 8. transactions and 9. services of CSP + KOs are
+      // independent queries over the same reporting unit.
+      const isEmptyUnit = scopedAgentIds.length === 0;
 
-      const childMachines =
-        scopedAgentIds.length === 0
+      const [
+        childMachines,
+        childTransactionRows,
+        lastTransaction,
+        childServiceRows,
+        recentTransactions,
+      ] = await Promise.all([
+        isEmptyUnit
           ? []
-          : await tx.machine.findMany({
+          : tx.machine.findMany({
               where: {
                 agentId: {
                   in: scopedAgentIds,
@@ -675,7 +693,128 @@ export default class MachineListService {
               orderBy: {
                 updatedAt: "desc",
               },
-            });
+            }),
+
+        isEmptyUnit
+          ? []
+          : tx.receipt.groupBy({
+              by: ["agentId", "status"],
+
+              where: {
+                agentId: {
+                  in: scopedAgentIds,
+                },
+
+                transactionAt: {
+                  gte: from,
+                  lte: to,
+                },
+              },
+
+              _count: {
+                id: true,
+              },
+
+              _sum: {
+                amount: true,
+              },
+            }),
+
+        isEmptyUnit
+          ? null
+          : tx.receipt.findFirst({
+              where: {
+                agentId: {
+                  in: scopedAgentIds,
+                },
+
+                transactionAt: {
+                  gte: from,
+                  lte: to,
+                },
+              },
+
+              orderBy: {
+                transactionAt: "desc",
+              },
+
+              select: {
+                transactionAt: true,
+              },
+            }),
+
+        isEmptyUnit
+          ? []
+          : tx.receipt.groupBy({
+              by: ["agentId", "transactionCategory", "receiptType", "status"],
+
+              where: {
+                agentId: {
+                  in: scopedAgentIds,
+                },
+
+                transactionAt: {
+                  gte: from,
+                  lte: to,
+                },
+              },
+
+              _count: {
+                id: true,
+              },
+
+              _sum: {
+                amount: true,
+              },
+
+              orderBy: {
+                transactionCategory: "asc",
+              },
+            }),
+
+        isEmptyUnit
+          ? []
+          : tx.receipt.findMany({
+              where: {
+                agentId: {
+                  in: scopedAgentIds,
+                },
+
+                transactionAt: {
+                  gte: from,
+                  lte: to,
+                },
+              },
+
+              orderBy: {
+                transactionAt: "desc",
+              },
+
+              take: 5,
+
+              select: {
+                receiptId: true,
+
+                receiptType: true,
+
+                transactionCategory: true,
+
+                status: true,
+
+                amount: true,
+
+                transactionAt: true,
+
+                customerName: true,
+
+                customerAccount: true,
+
+                rrn: true,
+
+                stan: true,
+              },
+            }),
+      ]);
 
       // ============================================================
       // 7. Map machine by agent
@@ -701,31 +840,6 @@ export default class MachineListService {
       // 8. Transaction summary for CSP + KOs
       // ============================================================
 
-      const childTransactionRows =
-        scopedAgentIds.length === 0
-          ? []
-          : await tx.receipt.groupBy({
-              by: ["agentId", "status"],
-
-              where: {
-                agentId: {
-                  in: scopedAgentIds,
-                },
-
-                transactionAt: {
-                  gte: from,
-                  lte: to,
-                },
-              },
-
-              _count: {
-                id: true,
-              },
-
-              _sum: {
-                amount: true,
-              },
-            });
 
       const childTransactionMap = new Map<
         string,
@@ -788,29 +902,6 @@ export default class MachineListService {
         }
       }
 
-      const lastTransaction =
-        scopedAgentIds.length === 0
-          ? null
-          : await tx.receipt.findFirst({
-              where: {
-                agentId: {
-                  in: scopedAgentIds,
-                },
-
-                transactionAt: {
-                  gte: from,
-                  lte: to,
-                },
-              },
-
-              orderBy: {
-                transactionAt: "desc",
-              },
-
-              select: {
-                transactionAt: true,
-              },
-            });
 
       const successRate =
         totalTransactions === 0
@@ -828,35 +919,6 @@ export default class MachineListService {
       // 9. Service summary for CSP + KOs
       // ============================================================
 
-      const childServiceRows =
-        scopedAgentIds.length === 0
-          ? []
-          : await tx.receipt.groupBy({
-              by: ["agentId", "transactionCategory", "receiptType", "status"],
-
-              where: {
-                agentId: {
-                  in: scopedAgentIds,
-                },
-
-                transactionAt: {
-                  gte: from,
-                  lte: to,
-                },
-              },
-
-              _count: {
-                id: true,
-              },
-
-              _sum: {
-                amount: true,
-              },
-
-              orderBy: {
-                transactionCategory: "asc",
-              },
-            });
 
       const childServiceMap = new Map<
         string,
@@ -972,49 +1034,6 @@ export default class MachineListService {
         total: totalTransactions,
       };
 
-      const recentTransactions =
-        scopedAgentIds.length === 0
-          ? []
-          : await tx.receipt.findMany({
-              where: {
-                agentId: {
-                  in: scopedAgentIds,
-                },
-
-                transactionAt: {
-                  gte: from,
-                  lte: to,
-                },
-              },
-
-              orderBy: {
-                transactionAt: "desc",
-              },
-
-              take: 5,
-
-              select: {
-                receiptId: true,
-
-                receiptType: true,
-
-                transactionCategory: true,
-
-                status: true,
-
-                amount: true,
-
-                transactionAt: true,
-
-                customerName: true,
-
-                customerAccount: true,
-
-                rrn: true,
-
-                stan: true,
-              },
-            });
 
       // ============================================================
       // 10. Build children
@@ -1171,18 +1190,6 @@ export default class MachineListService {
       //
       // It is NOT CSP + KO aggregated runtime.
       // ============================================================
-
-      const sessionRepository = new MachineSessionRepository(tx);
-
-      const activeSession = await sessionRepository.findActiveSession(
-        machine.id,
-      );
-
-      const sessions = await sessionRepository.findSessionsForRange(
-        machine.id,
-        from,
-        to,
-      );
 
       const onlineHours = this.calculateRuntimeHours(sessions, from, to);
 
@@ -1400,7 +1407,7 @@ export default class MachineListService {
     user: CurrentUser,
     filter: MachineDetailFilter,
   ) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const agentIds = await new AgentScopeService(tx).getAgentScope(user);
 
       // Scoped lookup: machines outside the caller's scope are "not found".
@@ -1431,7 +1438,7 @@ export default class MachineListService {
   }
 
   async getHeartbeat(machineId: string, user: CurrentUser) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const scopeService = new AgentScopeService(tx);
 
       const agentIds = await scopeService.getAgentScope(user);

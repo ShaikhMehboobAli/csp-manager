@@ -1,4 +1,4 @@
-import { withTransaction } from "../../core/database/transaction";
+import { withTransaction, withReadOnly } from "../../core/database/transaction";
 import { CurrentUser } from "../../core/types/auth.types";
 import { BadRequestError } from "../../core/errors/BadRequestError";
 import { NotFoundError } from "../../core/errors/NotFoundError";
@@ -124,7 +124,7 @@ export default class MetricValueService {
     from?: Date,
     to?: Date,
   ) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const repository = new MetricValueRepository(tx);
 
       const scopeService = new AgentScopeService(tx);
