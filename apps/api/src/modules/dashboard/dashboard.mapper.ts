@@ -1,3 +1,5 @@
+import { getTrendLabel } from "./dashboard.helper";
+import { istParts } from "../../core/utils/ist";
 import { ReceiptStatus } from "../../generated/prisma/enums";
 import { getMachineStatus } from "./dashboard.helper";
 import {
@@ -206,38 +208,7 @@ export function mapTransactionTrend(
       continue;
     }
 
-    const date = new Date(receipt.transactionAt);
-
-    let label = "";
-
-    switch (groupBy) {
-      case "hour":
-        label = `${date.getHours()}:00`;
-        break;
-
-      case "day":
-        label = date.toISOString().split("T")[0];
-        break;
-
-      case "week": {
-        const firstDay = new Date(date);
-        firstDay.setDate(date.getDate() - date.getDay());
-
-        label = firstDay.toISOString().split("T")[0];
-        break;
-      }
-
-      case "month":
-        label = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(
-          2,
-          "0",
-        )}`;
-        break;
-
-      case "year":
-        label = `${date.getFullYear()}`;
-        break;
-    }
+    const label = getTrendLabel(receipt.transactionAt, groupBy);
 
     if (!grouped.has(label)) {
       grouped.set(label, {
@@ -305,35 +276,7 @@ export function mapSuccessFailureTrend(
       continue;
     }
 
-    const date = new Date(receipt.transactionAt);
-
-    let label = "";
-
-    switch (groupBy) {
-      case "hour":
-        label = `${date.getHours()}:00`;
-        break;
-
-      case "day":
-        label = date.toISOString().split("T")[0];
-        break;
-
-      case "week": {
-        const firstDay = new Date(date);
-        firstDay.setDate(date.getDate() - date.getDay());
-
-        label = firstDay.toISOString().split("T")[0];
-        break;
-      }
-
-      case "month":
-        label = `${date.getFullYear()}-${date.getMonth() + 1}`;
-        break;
-
-      case "year":
-        label = `${date.getFullYear()}`;
-        break;
-    }
+    const label = getTrendLabel(receipt.transactionAt, groupBy);
 
     if (!grouped.has(label)) {
       grouped.set(label, {
@@ -369,7 +312,7 @@ export function mapHourlyDistribution(
       continue;
     }
 
-    const hour = receipt.transactionAt.getHours();
+    const { hour } = istParts(receipt.transactionAt);
 
     grouped.set(hour, (grouped.get(hour) ?? 0) + 1);
   }

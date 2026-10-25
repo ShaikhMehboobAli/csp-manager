@@ -12,6 +12,10 @@ export interface CreatePaidSubscriptionInput {
   billingCycle: BillingCycle;
 
   paymentId: string;
+
+  // CSP plans: machines bought (per-machine pricing). Ignored for BC plans.
+  machineCount?: number;
+
   ownerType: SubscriptionOwnerType;
 
   ownerId: string;

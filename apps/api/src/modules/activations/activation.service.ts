@@ -1,4 +1,5 @@
 import { withTransaction, withReadOnly } from "../../core/database/transaction";
+import { withVisiblePassword } from "./activation-password-exposure";
 import { PrismaDb } from "../../core/database/prisma.types";
 import ActivationRepository from "./activation.repository";
 import {
@@ -89,7 +90,7 @@ export default class ActivationService {
       return {
         success: true,
         message: "Activations fetched successfully.",
-        data: activations,
+        data: activations.map(withVisiblePassword),
       };
     });
   }
@@ -111,7 +112,7 @@ export default class ActivationService {
         success: true,
         message: "Activation fetched successfully.",
         data: {
-          ...activation,
+          ...withVisiblePassword(activation),
           canRegenerate:
             activation.status === ActivationStatus.NOT_ACTIVATED &&
             !activation.machine,
@@ -147,6 +148,7 @@ export default class ActivationService {
       await repository.updateActivationPassword(
         activation.id,
         credentials.hash,
+        credentials.password,
       );
 
       return {
@@ -280,7 +282,11 @@ export default class ActivationService {
 
       const credentials = await this.passwordService.generateCredentials();
 
-      await repository.assignActivation(data, credentials.hash);
+      await repository.assignActivation(
+        data,
+        credentials.hash,
+        credentials.password,
+      );
 
       // return {
       //   success: true,

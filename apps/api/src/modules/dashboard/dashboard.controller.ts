@@ -10,6 +10,7 @@ import {
 import { UnauthorizedError } from "../../core/errors/UnauthorizedError";
 import AgentScopeService from "../agents/service/agent-scope.service";
 import { getTodayRange } from "./dashboard.helper";
+import { endOfIstDay, istInstant } from "../../core/utils/ist";
 import { AppError } from "../../core/errors/AppError";
 import { DashboardCspDetailRepository } from "./repository/dashboard-csp-detail.repository";
 import { BadRequestError } from "../../core/errors/BadRequestError";
@@ -181,25 +182,12 @@ export default class DashboardController {
 
       // const to = new Date(Date.UTC(year, monthNumber, 0, 23, 59, 59, 999));
 
-      const from = new Date(Date.UTC(year, monthNumber - 1, 1));
+      // The month and "today" are IST calendar days.
+      const from = istInstant(year, monthNumber - 1, 1);
 
-      const monthEnd = new Date(
-        Date.UTC(year, monthNumber, 0, 23, 59, 59, 999),
-      );
+      const monthEnd = istInstant(year, monthNumber, 0, 23, 59, 59, 999);
 
-      const now = new Date();
-
-      const today = new Date(
-        Date.UTC(
-          now.getUTCFullYear(),
-          now.getUTCMonth(),
-          now.getUTCDate(),
-          23,
-          59,
-          59,
-          999,
-        ),
-      );
+      const today = endOfIstDay(new Date());
 
       if (from > today) {
         throw new BadRequestError("Future month is not allowed.");

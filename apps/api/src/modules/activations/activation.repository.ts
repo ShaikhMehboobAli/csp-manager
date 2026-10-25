@@ -1,4 +1,5 @@
 import { PrismaDb } from "../../core/database/prisma.types";
+import { storablePlainPassword } from "./activation-password-exposure";
 import {
   ActivationStatus,
   SubscriptionOwnerType,
@@ -204,6 +205,7 @@ export default class ActivationRepository {
   updateActivationPassword(
     activationId: string,
     activationPasswordHash: string,
+    plainPassword: string,
   ) {
     return this.db.activation.update({
       where: {
@@ -211,6 +213,7 @@ export default class ActivationRepository {
       },
       data: {
         activationPasswordHash,
+        activationPasswordPlain: storablePlainPassword(plainPassword),
         passwordRegeneratedAt: new Date(),
       },
     });
@@ -252,6 +255,7 @@ export default class ActivationRepository {
   assignActivation(
     data: AssignActivationInput,
     activationPasswordHash: string,
+    plainPassword: string,
   ) {
     // return this.db.activation.update({
     //   where: {
@@ -275,6 +279,7 @@ export default class ActivationRepository {
         assignedAt: new Date(),
 
         activationPasswordHash,
+        activationPasswordPlain: storablePlainPassword(plainPassword),
         passwordGeneratedAt: new Date(),
       },
     });

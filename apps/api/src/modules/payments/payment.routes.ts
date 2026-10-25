@@ -4,6 +4,8 @@ import { webhookAuth } from "./webhook-auth.middleware";
 import * as PaymentController from "./payment.controller";
 
 import { authMiddleware } from "../../core/middlewares/auth.middleware";
+import { authorize } from "../../core/middlewares/authorize.middleware";
+import { UserRole } from "../../generated/prisma/enums";
 
 import { createOrderSchema } from "./validations/create-order.validation";
 import { validate } from "../../core/middlewares/validate";
@@ -15,6 +17,8 @@ const router = Router();
 router.post(
   "/create-order",
   authMiddleware,
+  // Only a CSP or BC buys plans (KOs have no login; SUPER_ADMIN has none).
+  authorize(UserRole.CSP_ADMIN, UserRole.BC_ADMIN),
   validate(createOrderSchema),
   PaymentController.createOrder,
 );

@@ -2,6 +2,7 @@ import { NextFunction, Request, Response } from "express";
 import { JsonWebTokenError, TokenExpiredError } from "jsonwebtoken";
 
 import JwtService from "../services/jwt.service";
+import { runWithUser } from "../context/request-context";
 
 import { UnauthorizedError } from "../errors/UnauthorizedError";
 
@@ -33,7 +34,7 @@ export const authMiddleware = (
 
     req.user = payload;
 
-    next();
+    runWithUser(payload, next);
   } catch (error) {
     if (error instanceof TokenExpiredError) {
       throw new UnauthorizedError("Token has expired.");

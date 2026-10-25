@@ -2,7 +2,7 @@
 
 **Audience:** the engineer/agent implementing changes in the C# desktop repo (`ReceiptWarcher/`).
 **Source of truth for the backend:** `csp-manager/apps/api` (Express + Prisma). This doc lists what the desktop must add, modify, or remove to match the backend.
-**Last updated:** 2026-10-25 (rev 7)
+**Last updated:** 2026-10-25 (rev 8)
 
 > Paths below are relative to the desktop project root (`ReceiptWarcher/`). The doc was written against `ReceiptWarcher.zip` (Downloads, 2026-10-24); verify each location against your current checkout before editing.
 
@@ -356,7 +356,7 @@ Rules that tie these together:
 | Field | Type | Rule |
 |---|---|---|
 | `agentId` | string | required; the agent the activation is assigned to (e.g. `CSP-001`, or a KO id) |
-| `activationCode` | string | required; 16 characters from `A–Z` (no `I`, `O`) and `2–9`. Uppercase the input and strip spaces before sending |
+| `activationCode` | string | required; format `XXXX-XXXX-XXXX-XXXX` (16 characters from `A–Z` without `I`/`O` and `2–9`, in groups of 4). Uppercase the input, trim spaces, and send it with the dashes |
 | `activationPassword` | string | required; never store or log it |
 | `machine.fingerprint` | string | required; stable hardware fingerprint (same value forever on this PC) |
 | `machine.watcherVersion` | string | required; app version, e.g. `1.0.0` |
@@ -365,7 +365,7 @@ Rules that tie these together:
 ```json
 {
   "agentId": "CSP-001",
-  "activationCode": "K7M2QX9PRT4WHB3N",
+  "activationCode": "K7M2-QX9P-RT4W-HB3N",
   "activationPassword": "<typed by user>",
   "machine": {
     "fingerprint": "ABCDEF123456",
@@ -608,6 +608,7 @@ Always read features from `MachineConfig.Features` (last heartbeat). Offline, us
 
 ## Changelog
 
+- 2026-10-25 (rev 8) — §C: activation code format is `XXXX-XXXX-XXXX-XXXX` (was described as 16 plain characters). A CSP plan can now cover several machines; each machine still activates with its own code, so nothing changes on the desktop.
 - 2026-10-25 (rev 7) — Section I: BC plans now list explicit features; added the ₹799 `BC_CSP_LINK` plan (no machines) and the `CSP_LINKING` feature.
 - 2026-10-25 (rev 6) — Backend fixes: `upload-counts` accepts machines assigned to a **KO** (message now `The assigned agent is not valid.`); BC plans report all features in heartbeat/entitlements and pass the upload feature check; legacy `/receipts/upload` returns 400/403 instead of 500 for "no active session" / "no agent". Section J trimmed accordingly.
 - 2026-10-25 (rev 5) — Added Part 2: full desktop API reference (A–J). Corrected #6 (expired subscription is 400 from machine auth, not 403) and #8 (re-activation refused while an active activation of the same owner type exists).

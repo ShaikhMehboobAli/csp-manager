@@ -32,6 +32,8 @@ Status: `OPEN` (must do), `DECIDE` (needs an owner decision), `DONE`.
 | 2.8 | No refresh-token endpoint; refresh tokens are issued but never stored or exchanged. | DECIDE | `auth.service.ts` |
 | 2.9 | Existing JWTs stay valid for up to 15 min after a user is blocked/suspended. Acceptable, or check user status in `authMiddleware`. | DECIDE | `core/middlewares/auth.middleware.ts` |
 | 2.10 | Production API base URL must be HTTPS (desktop and mobile). | OPEN | deployment |
+| 2.11 | **DEV ONLY — remove before production:** activation passwords are stored in plain text (`Activation.activationPasswordPlain`) and returned as `activationPassword` by `GET /activations` and `GET /activations/:id`, so owners can see them until activation emails exist. Disabled when `NODE_ENV=production`, but before go-live: replace with emailing the password, delete `src/modules/activations/activation-password-exposure.ts` and its uses, drop the column (migration), and confirm `NODE_ENV=production` is set. | OPEN | `activation-password-exposure.ts`, `activation.repository.ts`, `activation.service.ts`, `prisma/schema.prisma` |
+| 2.12 | Planned auth/notification endpoints (resend OTP, forgot/reset password, refresh token, push tokens, activation email) are documented in the app KTs but not built. Email is still a console stub. | OPEN | `src/modules/auth`, `core/services/email.service.ts` |
 
 ## 3. Database and deployment
 
@@ -58,9 +60,11 @@ Status: `OPEN` (must do), `DECIDE` (needs an owner decision), `DONE`.
 | 4.4 | No RM / Network Manager role exists. Metric definitions are SUPER_ADMIN-only until it does. | DECIDE |
 | 4.6 | A BC linking an **existing** CSP always needs SUPER_ADMIN approval: `POST /agents/csp` with an existing CSP now returns 202 and creates a `BC_MANAGED` link request (KOs must be added after approval); `/bc-links/requests` creates `SUBSCRIBED_CSP` requests. Only CSPs the BC creates are linked immediately. SUPER_ADMIN calling `POST /agents/csp` still links directly. | DONE |
 | 4.7 | Link requests are approved by SUPER_ADMIN only; CSP-side approval is planned later. | DECIDE |
-| 4.8 | SUPER_ADMIN has no subscription, so every endpoint that checks the caller's subscription (dashboard, machines, receipts, reports, agent edit/delete) returns 403 for the admin console. Decide to skip subscription checks for SUPER_ADMIN centrally (`docs/admin-web-kt.md` G1). | DECIDE |
-| 4.9 | No way to create a SUPER_ADMIN user (none in dev); add a seed/CLI reading credentials from env (`docs/admin-web-kt.md` G2). | OPEN |
-| 4.10 | Dashboard and report day boundaries are UTC days; IST transactions between 00:00 and 05:30 count on the previous day. Decide whether to use IST (`Asia/Kolkata`) boundaries. | DECIDE |
+| 4.8 | SUPER_ADMIN isn't gated by a subscription: `SubscriptionAccessValidator` skips the admin's own (absent) subscription using a per-request user context (`core/context/request-context.ts`); other owners' subscriptions checked during an admin request are still validated. | DONE |
+| 4.9 | SUPER_ADMIN account: `npm run seed:super-admin` with `SUPER_ADMIN_EMAIL`, `SUPER_ADMIN_PASSWORD` (≥12 chars), optional `SUPER_ADMIN_AGENT_ID` (default `SUPERADMIN`) and `SUPER_ADMIN_RESET_PASSWORD=true`; also runs from `prisma db seed` when the env vars are set. Created in dev on 2026-10-25. **Create production credentials separately; never reuse dev ones.** | DONE |
+| 4.10 | Day boundaries are IST (`Asia/Kolkata`) for dashboards, reports, CSP monthly detail, analytics labels, machine analytics and the one-visit-per-month rule (`core/utils/ist.ts`). | DONE |
+| 4.11 | CSP plans are priced **per machine**: `create-order` takes `machineCount` (1–100), amount = price × machines, the subscription gets that many activations. Buying a different machine count while a plan runs starts a new subscription now (old one ends, activated machines carry over, no credit). Confirm the no-credit rule for adding machines mid-term. | DECIDE |
+| 4.12 | `GET /reports/summary` accepts `cspAgentId` but never applied it. | OPEN |
 | 4.5 | Uploads created before 2026-10-25 have keys without the owner folder (`csp-visits/<year>/...`). Only SUPER_ADMIN can fetch them directly; visit detail still serves them. Re-key or accept for any non-test data. | DECIDE |
 | 4.3 | Money Transfer and Fund Transfer shown as separate columns in dashboard CSP summary, CSP monthly detail, and reports (JSON + Excel). | DONE |
 
@@ -77,3 +81,4 @@ Status: `OPEN` (must do), `DECIDE` (needs an owner decision), `DONE`.
 - 2026-10-25 — BC ₹799 plan built: 3.3 and 3.11 updated; added 4.6 (legacy direct CSP linking bypasses approval) and 4.7 (CSP approval later).
 - 2026-10-25 — 4.6 DONE: existing-CSP linking through `POST /agents/csp` goes through admin approval too.
 - 2026-10-25 — Added 4.8 (SUPER_ADMIN blocked by subscription checks), 4.9 (no SUPER_ADMIN seed), 4.10 (UTC day boundaries) while writing the mobile/admin KTs.
+- 2026-10-25 — 4.8–4.10 DONE (super admin access + account, IST days); added 2.11 (remove plain activation passwords), 2.12 (planned auth endpoints), 4.11 (per-machine CSP pricing), 4.12.

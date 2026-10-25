@@ -57,6 +57,7 @@ function hideMonitoringFloat<T>(summary: T): T {
   };
 }
 import { DashboardCspDetailRepository } from "./repository/dashboard-csp-detail.repository";
+import { addDays, istDateKey, istMonthKey } from "../../core/utils/ist";
 
 export default class DashboardService {
   private readonly overviewRepository: DashboardOverviewRepository;
@@ -329,7 +330,7 @@ export default class DashboardService {
       return {
         agentId: result.csp.agentId,
         cspName: result.csp.name,
-        month: from.toISOString().slice(0, 7),
+        month: istMonthKey(from),
         section,
         socialSecurity: this.buildSocialSecurityDailyData(result, from, to),
       };
@@ -338,7 +339,7 @@ export default class DashboardService {
     return {
       agentId: result.csp.agentId,
       cspName: result.csp.name,
-      month: from.toISOString().slice(0, 7),
+      month: istMonthKey(from),
       section,
       transaction: this.buildTransactionDailyData(result, from, to),
     };
@@ -360,7 +361,7 @@ export default class DashboardService {
     const manualMap = new Map<string, number>();
 
     for (const value of result.manualMetricValues) {
-      const dateKey = value.date.toISOString().slice(0, 10);
+      const dateKey = istDateKey(value.date);
 
       const key = `${dateKey}:${value.metricId}`;
 
@@ -374,7 +375,7 @@ export default class DashboardService {
         continue;
       }
 
-      const dateKey = receipt.transactionAt.toISOString().slice(0, 10);
+      const dateKey = istDateKey(receipt.transactionAt);
 
       const keys = [receipt.receiptType, receipt.transactionCategory];
 
@@ -388,9 +389,9 @@ export default class DashboardService {
     for (
       let current = new Date(from);
       current <= to;
-      current.setUTCDate(current.getUTCDate() + 1)
+      current = addDays(current, 1)
     ) {
-      const dateKey = current.toISOString().slice(0, 10);
+      const dateKey = istDateKey(current);
 
       const metrics = result.metricDefinitions.map((metric) => {
         let value = 0;
@@ -434,13 +435,13 @@ export default class DashboardService {
     for (
       let current = new Date(from);
       current <= to;
-      current.setUTCDate(current.getUTCDate() + 1)
+      current = addDays(current, 1)
     ) {
-      const dateKey = current.toISOString().slice(0, 10);
+      const dateKey = istDateKey(current);
 
       const dayReceipts = result.receipts.filter(
         (receipt) =>
-          receipt.transactionAt?.toISOString().slice(0, 10) === dateKey,
+          receipt.transactionAt && istDateKey(receipt.transactionAt) === dateKey,
       );
 
       rows.push({

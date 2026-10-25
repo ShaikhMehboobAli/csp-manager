@@ -3,6 +3,7 @@ import {
   PaymentMethod,
   PaymentProvider,
   PaymentStatus,
+  SubscriptionOwnerType,
 } from "../../generated/prisma/enums";
 
 import { withTransaction, withReadOnly } from "../../core/database/transaction";
@@ -31,11 +32,28 @@ export default class PaymentService {
     return withTransaction(async (tx) => {
       const repository = new PaymentRepository(tx);
 
+      // CSP plans are priced per machine; BC plans have a fixed machine limit.
+      if (
+        data.ownerType !== SubscriptionOwnerType.CSP &&
+        data.machineCount !== undefined &&
+        data.machineCount !== 1
+      ) {
+        throw new BadRequestError(
+          "Machine count can only be chosen for CSP plans.",
+        );
+      }
+
+      const machineCount =
+        data.ownerType === SubscriptionOwnerType.CSP
+          ? (data.machineCount ?? 1)
+          : 1;
+
       const pendingPayment = await repository.findPendingPayment(
         data.ownerType,
         data.ownerId,
         data.planId,
         data.billingCycle,
+        machineCount,
       );
 
       if (pendingPayment) {
@@ -69,6 +87,8 @@ export default class PaymentService {
 
       const paymentNumber = await codeGenerator.generatePaymentNumber();
 
+      const amount = Number(pricing.price) * machineCount;
+
       const payment = await repository.createPayment({
         paymentNumber,
 
@@ -82,11 +102,13 @@ export default class PaymentService {
 
         billingCycle: data.billingCycle,
 
-        amount: Number(pricing.price),
+        machineCount,
+
+        amount,
 
         taxAmount: 0,
 
-        totalAmount: Number(pricing.price),
+        totalAmount: amount,
 
         paymentMethod: PaymentMethod.MANUAL,
 
@@ -128,6 +150,8 @@ export default class PaymentService {
         planId: payment.planId,
 
         billingCycle: payment.billingCycle,
+
+        machineCount: payment.machineCount,
 
         paymentId: payment.id,
       },
