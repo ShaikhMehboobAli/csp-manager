@@ -18,3 +18,14 @@ export async function withTransaction<T>(
     return callback(tx as PrismaDb);
   }, TRANSACTION_OPTIONS);
 }
+
+/**
+ * Read-only work runs on the pooled client. An interactive transaction pins a
+ * single connection, so Promise.all queries inside it run one after another
+ * and BEGIN/COMMIT add two round trips; reads need neither.
+ */
+export async function withReadOnly<T>(
+  callback: (db: PrismaDb) => Promise<T>,
+): Promise<T> {
+  return callback(prisma);
+}

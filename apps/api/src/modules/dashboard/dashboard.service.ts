@@ -106,21 +106,22 @@ export default class DashboardService {
       to,
     };
 
-    const currentAgent = await this.db.agent.findUnique({
-      where: {
-        agentId: dashboardFilter.currentAgentId,
-      },
-      select: {
-        type: true,
-      },
-    });
+    const [currentAgent, subscription] = await Promise.all([
+      this.db.agent.findUnique({
+        where: {
+          agentId: dashboardFilter.currentAgentId,
+        },
+        select: {
+          type: true,
+        },
+      }),
+
+      this.subscriptionResolver.getEffectiveSubscription(
+        dashboardFilter.currentAgentId,
+      ),
+    ]);
 
     const isBc = currentAgent?.type === "BC";
-
-    const subscription =
-      await this.subscriptionResolver.getEffectiveSubscription(
-        dashboardFilter.currentAgentId,
-      );
 
     SubscriptionAccessValidator.validate(subscription);
 
@@ -164,7 +165,9 @@ export default class DashboardService {
         : this.machineRepository.getMachineMonitoring(dashboardFilter),
 
       this.activationRepository.getActivationSummary(dashboardFilter),
-      this.subscriptionResolver.getEffectiveSubscription(filter.currentAgentId),
+
+      // Already resolved above for the access check.
+      subscription,
 
       isBc
         ? this.cspSummaryRepository.getCspSummary(

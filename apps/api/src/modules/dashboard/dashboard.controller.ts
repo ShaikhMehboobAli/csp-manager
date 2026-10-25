@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 
-import { withTransaction } from "../../core/database/transaction";
+import { withReadOnly } from "../../core/database/transaction";
 
 import DashboardService from "./dashboard.service";
 import {
@@ -16,7 +16,7 @@ import { BadRequestError } from "../../core/errors/BadRequestError";
 
 export default class DashboardController {
   async getSummary(req: Request, res: Response) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const service = new DashboardService(tx);
 
       console.log("dashboard controller---", req.user);
@@ -102,7 +102,7 @@ export default class DashboardController {
   }
 
   async getAnalytics(req: Request, res: Response) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const service = new DashboardService(tx);
 
       const query = dashboardAnalyticsSchema.parse(req.query);
@@ -147,7 +147,7 @@ export default class DashboardController {
   }
 
   async getCspDetail(req: Request, res: Response) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const currentUser = req.user!;
 
       if (!currentUser) {

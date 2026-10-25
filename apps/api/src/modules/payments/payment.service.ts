@@ -5,7 +5,7 @@ import {
   PaymentStatus,
 } from "../../generated/prisma/enums";
 
-import { withTransaction } from "../../core/database/transaction";
+import { withTransaction, withReadOnly } from "../../core/database/transaction";
 
 import { createCodeGeneratorService } from "../../core/services/service.factory";
 
@@ -191,7 +191,7 @@ export default class PaymentService {
   }
 
   async getPaymentHistory(agentId: string) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const repository = new PaymentRepository(tx);
 
       const payments = await repository.findPaymentHistory(agentId);
@@ -205,7 +205,7 @@ export default class PaymentService {
   }
 
   async getPaymentDetails(paymentId: string, agentId: string) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const repository = new PaymentRepository(tx);
 
       const payment = await repository.findPaymentDetails(paymentId, agentId);

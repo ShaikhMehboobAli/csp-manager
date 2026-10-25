@@ -12,7 +12,7 @@ import {
   UploadReceiptCountsPayload,
   UploadReceiptRequest,
 } from "./receipt.dto";
-import { withTransaction } from "../../core/database/transaction";
+import { withTransaction, withReadOnly } from "../../core/database/transaction";
 
 import {
   ActivationStatus,
@@ -386,7 +386,7 @@ export default class ReceiptService {
    * Receipt List
    */
   async getReceipts(filter: ReceiptFilter) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       // check for subscription and access validation
 
       const resolver = new SubscriptionResolver(tx);
@@ -414,7 +414,7 @@ export default class ReceiptService {
     agentIds: string[],
     currentAgentId: string,
   ) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       // check for subscription and access validation
 
       // const resolver = new SubscriptionResolver(tx);
@@ -449,7 +449,7 @@ export default class ReceiptService {
   }
 
   async getStats(filter: ReceiptFilter) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       // check for subscription and access validation
 
       const resolver = new SubscriptionResolver(tx);
@@ -467,7 +467,7 @@ export default class ReceiptService {
   }
 
   async export(filter: ReceiptFilter) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       // check for subscription and access validation
 
       const resolver = new SubscriptionResolver(tx);
