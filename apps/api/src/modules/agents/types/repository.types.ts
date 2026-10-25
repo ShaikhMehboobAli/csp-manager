@@ -41,7 +41,7 @@ export interface LinkAgentToBCRepositoryInput {
 export interface LinkKOToCSPRepositoryInput {
   agentId: string;
 
-  bcId: string;
+  bcId: string | null;
 
   parentAgentId: string;
 

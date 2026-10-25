@@ -142,6 +142,9 @@ export default class ActivationRepository {
           ownerId,
         },
       },
+      omit: {
+        activationPasswordHash: true,
+      },
       include: {
         machine: {
           select: {
@@ -173,6 +176,9 @@ export default class ActivationRepository {
         subscription: {
           ownerId,
         },
+      },
+      omit: {
+        activationPasswordHash: true,
       },
       include: {
         machine: {

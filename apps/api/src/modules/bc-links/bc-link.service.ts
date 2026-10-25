@@ -64,6 +64,8 @@ export default class BcLinkService {
           agentId: csp.agentId,
           name: csp.name,
           address: csp.address,
+          // Approval links the CSP together with all of these KOs.
+          koCount: csp._count.childAgents,
           linkStatus:
             csp.bcId === bcId
               ? "LINKED"
@@ -157,7 +159,7 @@ export default class BcLinkService {
       // it is the admin's decision, recorded on the request.
       const linkedElsewhere = Boolean(csp.bcId) && csp.bcId !== request.bcId;
 
-      await repository.linkCsp(
+      const linkedKoAgentIds = await repository.linkCsp(
         csp.agentId,
         request.bcId,
         request.cspSubscriptionRequired,
@@ -178,7 +180,7 @@ export default class BcLinkService {
         reviewedAt: new Date(),
       });
 
-      return mapRequest(updated, user);
+      return { ...mapRequest(updated, user), linkedKoAgentIds };
     });
   }
 

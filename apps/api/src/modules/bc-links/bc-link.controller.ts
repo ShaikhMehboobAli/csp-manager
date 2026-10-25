@@ -94,7 +94,10 @@ export const approveRequest = async (req: Request, res: Response) => {
 
   return res.status(200).json({
     success: true,
-    message: "Link request approved. The CSP is now linked to the BC.",
+    message:
+      data.linkedKoAgentIds.length > 0
+        ? `Link request approved. The CSP and its ${data.linkedKoAgentIds.length} KO(s) are now linked to the BC.`
+        : "Link request approved. The CSP is now linked to the BC.",
     data,
   });
 };

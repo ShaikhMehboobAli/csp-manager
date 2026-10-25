@@ -59,6 +59,16 @@ export default class BcLinkRepository {
         name: true,
         address: true,
         bcId: true,
+        _count: {
+          select: {
+            childAgents: {
+              where: {
+                type: AgentType.KO,
+                isDeleted: false,
+              },
+            },
+          },
+        },
       },
       orderBy: {
         agentId: "asc",
@@ -174,8 +184,8 @@ export default class BcLinkRepository {
   }
 
   /**
-   * Links the CSP and its KOs to the BC. The CSP keeps working on its own
-   * subscription; the BC only gains visibility.
+   * Links the CSP and all of its KOs to the BC. The CSP keeps working on its
+   * own subscription; the BC only gains visibility. Returns the linked KOs.
    */
   async linkCsp(
     cspAgentId: string,
@@ -195,6 +205,17 @@ export default class BcLinkRepository {
       },
     });
 
+    const kos = await this.db.agent.findMany({
+      where: {
+        parentAgentId: cspAgentId,
+        type: AgentType.KO,
+        isDeleted: false,
+      },
+      select: {
+        agentId: true,
+      },
+    });
+
     await this.db.agent.updateMany({
       where: {
         parentAgentId: cspAgentId,
@@ -205,6 +226,8 @@ export default class BcLinkRepository {
         linkedAt,
       },
     });
+
+    return kos.map((ko) => ko.agentId);
   }
 
   // Other BCs still waiting on this CSP now conflict with the new link.

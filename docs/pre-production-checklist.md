@@ -58,6 +58,9 @@ Status: `OPEN` (must do), `DECIDE` (needs an owner decision), `DONE`.
 | 4.4 | No RM / Network Manager role exists. Metric definitions are SUPER_ADMIN-only until it does. | DECIDE |
 | 4.6 | A BC linking an **existing** CSP always needs SUPER_ADMIN approval: `POST /agents/csp` with an existing CSP now returns 202 and creates a `BC_MANAGED` link request (KOs must be added after approval); `/bc-links/requests` creates `SUBSCRIBED_CSP` requests. Only CSPs the BC creates are linked immediately. SUPER_ADMIN calling `POST /agents/csp` still links directly. | DONE |
 | 4.7 | Link requests are approved by SUPER_ADMIN only; CSP-side approval is planned later. | DECIDE |
+| 4.8 | SUPER_ADMIN has no subscription, so every endpoint that checks the caller's subscription (dashboard, machines, receipts, reports, agent edit/delete) returns 403 for the admin console. Decide to skip subscription checks for SUPER_ADMIN centrally (`docs/admin-web-kt.md` G1). | DECIDE |
+| 4.9 | No way to create a SUPER_ADMIN user (none in dev); add a seed/CLI reading credentials from env (`docs/admin-web-kt.md` G2). | OPEN |
+| 4.10 | Dashboard and report day boundaries are UTC days; IST transactions between 00:00 and 05:30 count on the previous day. Decide whether to use IST (`Asia/Kolkata`) boundaries. | DECIDE |
 | 4.5 | Uploads created before 2026-10-25 have keys without the owner folder (`csp-visits/<year>/...`). Only SUPER_ADMIN can fetch them directly; visit detail still serves them. Re-key or accept for any non-test data. | DECIDE |
 | 4.3 | Money Transfer and Fund Transfer shown as separate columns in dashboard CSP summary, CSP monthly detail, and reports (JSON + Excel). | DONE |
 
@@ -73,3 +76,4 @@ Status: `OPEN` (must do), `DECIDE` (needs an owner decision), `DONE`.
 - 2026-10-25 — Added 3.11 (BC plans include all features) with the KO/BC desktop upload fix.
 - 2026-10-25 — BC ₹799 plan built: 3.3 and 3.11 updated; added 4.6 (legacy direct CSP linking bypasses approval) and 4.7 (CSP approval later).
 - 2026-10-25 — 4.6 DONE: existing-CSP linking through `POST /agents/csp` goes through admin approval too.
+- 2026-10-25 — Added 4.8 (SUPER_ADMIN blocked by subscription checks), 4.9 (no SUPER_ADMIN seed), 4.10 (UTC day boundaries) while writing the mobile/admin KTs.
