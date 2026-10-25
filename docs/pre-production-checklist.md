@@ -39,14 +39,14 @@ Status: `OPEN` (must do), `DECIDE` (needs an owner decision), `DONE`.
 |---|---|---|---|
 | 3.1 | Apply migrations with `npx prisma migrate deploy` (never `migrate dev`) against production. | OPEN | deployment |
 | 3.2 | Seeding deactivates `CSP_BASIC` / `CSP_PRO` and old non-monthly pricings. Confirm no live customer is on them before seeding production. | DECIDE | `prisma/seeds/plan.seed.ts`, `pricing.seed.ts` |
-| 3.3 | Non-monthly (half-yearly / yearly) CSP prices and the BC ₹799 plan rules are not defined yet. | DECIDE | `prisma/seeds/data/plans.ts` |
+| 3.3 | Non-monthly (half-yearly / yearly) **CSP** prices are not defined yet. BC ₹799 (`BC_CSP_LINK`) is seeded at 799 / 4794 / 9588 (monthly / half-yearly / yearly); SUPER_ADMIN sets real prices with `PATCH /subscriptions/plans/:planId/pricing`. Seeding never overwrites existing prices. | DECIDE | `prisma/seeds/data/plans.ts` |
 | 3.4 | No automated tests exist. Add at least: receipt upload (both endpoints), ledger effect, subscription renew/upgrade/expiry, activation assign/activate. | OPEN | — |
 | 3.5 | `apps/api/dist` was untracked from git; production builds should come from `npm run build` in CI, not a committed `dist/`. | DONE | `.gitignore` |
 | 3.7 | Host the API in the same region as the Neon database (ap-southeast-1). From a remote location each query is ~75 ms and a 5-receipt `upload-counts` takes ~5 s; in-region it's a few ms. Transactions now allow 15 s and `upload-counts` is capped at 20 receipts. | OPEN | deployment |
 | 3.8 | `upload-counts` makes ~8 sequential queries per receipt (insert, re-read, denomination, ledger reads/writes). Batch these if larger uploads are ever needed. | DECIDE | `receipt.service.ts`, `float-ledger.service.ts` |
 | 3.9 | The Prisma client uses the `relationJoins` preview feature (includes load in one SQL query). The build/deploy must run `npx prisma generate` from the current schema, and re-check this flag on any Prisma upgrade. | OPEN | `prisma/schema.prisma` |
 | 3.10 | Plan features are cached in-process for 60 s, so admin edits to a plan's features take up to a minute (per instance) to apply. | DECIDE | `subscription-entitlement.service.ts` |
-| 3.11 | BC plans are treated as including every active feature (BC access needs only an active subscription). Revisit when the Phase 4 BC ₹799 plan defines BC feature tiers. | DECIDE | `subscription-entitlement.service.ts` `loadPlanEntitlements` |
+| 3.11 | Legacy BC plans (`BC_BASIC`, `BC_PRO`) carry the four desktop features as explicit plan features; `BC_CSP_LINK` has `CSP_LINKING` + `CASH_MANAGEMENT`. Run `npx prisma db seed` after deploying so these plan-feature links exist. | OPEN | `prisma/seeds/data/plans.ts` |
 | 3.6 | Subscription expiry runs hourly in-process (`node-cron`). If the API runs as multiple instances, make sure only one runs jobs (or the jobs are safe to run concurrently — current ones are idempotent). | DECIDE | `src/jobs/*`, `src/server.ts` |
 
 ## 4. Product rules to confirm
@@ -56,6 +56,8 @@ Status: `OPEN` (must do), `DECIDE` (needs an owner decision), `DONE`.
 | 4.1 | Grace period after subscription end (currently none). | DECIDE |
 | 4.2 | Upgrade gives no credit/refund for unused days of the old plan. | DECIDE |
 | 4.4 | No RM / Network Manager role exists. Metric definitions are SUPER_ADMIN-only until it does. | DECIDE |
+| 4.6 | A BC linking an **existing** CSP always needs SUPER_ADMIN approval: `POST /agents/csp` with an existing CSP now returns 202 and creates a `BC_MANAGED` link request (KOs must be added after approval); `/bc-links/requests` creates `SUBSCRIBED_CSP` requests. Only CSPs the BC creates are linked immediately. SUPER_ADMIN calling `POST /agents/csp` still links directly. | DONE |
+| 4.7 | Link requests are approved by SUPER_ADMIN only; CSP-side approval is planned later. | DECIDE |
 | 4.5 | Uploads created before 2026-10-25 have keys without the owner folder (`csp-visits/<year>/...`). Only SUPER_ADMIN can fetch them directly; visit detail still serves them. Re-key or accept for any non-test data. | DECIDE |
 | 4.3 | Money Transfer and Fund Transfer shown as separate columns in dashboard CSP summary, CSP monthly detail, and reports (JSON + Excel). | DONE |
 
@@ -69,3 +71,5 @@ Status: `OPEN` (must do), `DECIDE` (needs an owner decision), `DONE`.
 - 2026-10-25 — Added 4.4 (no RM role) and 4.5 (legacy upload keys) after the authorization pass.
 - 2026-10-25 — Added 3.9 (`relationJoins` needs `prisma generate`) and 3.10 (60 s plan-feature cache) after the performance pass.
 - 2026-10-25 — Added 3.11 (BC plans include all features) with the KO/BC desktop upload fix.
+- 2026-10-25 — BC ₹799 plan built: 3.3 and 3.11 updated; added 4.6 (legacy direct CSP linking bypasses approval) and 4.7 (CSP approval later).
+- 2026-10-25 — 4.6 DONE: existing-CSP linking through `POST /agents/csp` goes through admin approval too.

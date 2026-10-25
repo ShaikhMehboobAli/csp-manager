@@ -2,7 +2,7 @@
 
 **Audience:** the engineer/agent implementing changes in the C# desktop repo (`ReceiptWarcher/`).
 **Source of truth for the backend:** `csp-manager/apps/api` (Express + Prisma). This doc lists what the desktop must add, modify, or remove to match the backend.
-**Last updated:** 2026-10-25 (rev 6)
+**Last updated:** 2026-10-25 (rev 7)
 
 > Paths below are relative to the desktop project root (`ReceiptWarcher/`). The doc was written against `ReceiptWarcher.zip` (Downloads, 2026-10-24); verify each location against your current checkout before editing.
 
@@ -584,7 +584,8 @@ Other: **409** (activity only, F2). **5xx / network / timeout:** temporary; retr
 | `CSP_AUTOMATION` | ₹250 | `DESKTOP_AUTOMATION`, `RECEIPT_SYNC` |
 | `CSP_AUTOMATION_CASH_MANAGEMENT` | ₹450 | + `CASH_MANAGEMENT` |
 | `CSP_COMPLETE` | ₹550 | + `CASH_MANAGEMENT`, `MOBILE_TRACKING` |
-| `BC_BASIC` / `BC_PRO` | ₹199 / ₹399 | all active features (BC access is not feature-gated; plans differ by machine limit) |
+| `BC_BASIC` / `BC_PRO` | ₹199 / ₹399 | `DESKTOP_AUTOMATION`, `RECEIPT_SYNC`, `CASH_MANAGEMENT`, `MOBILE_TRACKING` (plans differ by machine limit) |
+| `BC_CSP_LINK` | ₹799 | `CSP_LINKING`, `CASH_MANAGEMENT`; **no machines**, so no desktop activations exist on this plan |
 
 | Feature | Desktop behaviour |
 |---|---|
@@ -592,6 +593,7 @@ Other: **409** (activity only, F2). **5xx / network / timeout:** temporary; retr
 | `RECEIPT_SYNC` | upload-counts allowed (needs `DESKTOP_AUTOMATION` too) |
 | `CASH_MANAGEMENT` | show cash/float screens and the denomination inputs. Without it: hide them and omit `cashDenomination` (`amount` is still required for cash/transfer categories) |
 | `MOBILE_TRACKING` | not used by the desktop |
+| `CSP_LINKING` | web only (BC links CSPs); not used by the desktop |
 
 Always read features from `MachineConfig.Features` (last heartbeat). Offline, use the cached list. It's a UI hint only; the server re-checks on every call.
 
@@ -606,6 +608,7 @@ Always read features from `MachineConfig.Features` (last heartbeat). Offline, us
 
 ## Changelog
 
+- 2026-10-25 (rev 7) — Section I: BC plans now list explicit features; added the ₹799 `BC_CSP_LINK` plan (no machines) and the `CSP_LINKING` feature.
 - 2026-10-25 (rev 6) — Backend fixes: `upload-counts` accepts machines assigned to a **KO** (message now `The assigned agent is not valid.`); BC plans report all features in heartbeat/entitlements and pass the upload feature check; legacy `/receipts/upload` returns 400/403 instead of 500 for "no active session" / "no agent". Section J trimmed accordingly.
 - 2026-10-25 (rev 5) — Added Part 2: full desktop API reference (A–J). Corrected #6 (expired subscription is 400 from machine auth, not 403) and #8 (re-activation refused while an active activation of the same owner type exists).
 - 2026-10-25 — Initial version: items 1–12.

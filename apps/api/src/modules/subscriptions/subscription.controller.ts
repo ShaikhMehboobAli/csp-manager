@@ -12,6 +12,15 @@ export const getPlans = async (req: Request, res: Response) => {
   return res.status(200).json(result);
 };
 
+export const updatePlanPricing = async (req: Request, res: Response) => {
+  const result = await subscriptionService.updatePlanPricing(
+    req.params.planId as string,
+    req.body,
+  );
+
+  return res.status(200).json(result);
+};
+
 export const getCurrentSubscription = async (req: Request, res: Response) => {
   const result = await subscriptionService.getCurrentSubscription(
     req.user!.agentId,

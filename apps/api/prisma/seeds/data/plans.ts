@@ -29,6 +29,21 @@ export const features = [
     description: "Mobile application tracking features.",
     category: FeatureCategory.DASHBOARD,
   },
+  {
+    code: "CSP_LINKING",
+    name: "CSP Linking",
+    description:
+      "Link already-subscribed CSPs to the BC (admin-approved) to share their data.",
+    category: FeatureCategory.USER,
+  },
+] as const;
+
+// Legacy BC plans (machine activations) are not feature-gated.
+const LEGACY_BC_FEATURES = [
+  "DESKTOP_AUTOMATION",
+  "RECEIPT_SYNC",
+  "CASH_MANAGEMENT",
+  "MOBILE_TRACKING",
 ] as const;
 
 export const plans = [
@@ -46,7 +61,7 @@ export const plans = [
         price: 199,
       },
     ],
-    featureCodes: [],
+    featureCodes: LEGACY_BC_FEATURES,
   },
 
   {
@@ -63,7 +78,39 @@ export const plans = [
         price: 399,
       },
     ],
-    featureCodes: [],
+    featureCodes: LEGACY_BC_FEATURES,
+  },
+
+  /**
+   * BC ₹799: no machine activations. The BC links already-subscribed CSPs
+   * (SUPER_ADMIN approves) and sees their data while their plan is active.
+   * Seed prices are initial values only; SUPER_ADMIN owns them afterwards.
+   */
+  {
+    code: "BC_CSP_LINK",
+    name: "BC CSP Link",
+    ownerType: PlanOwnerType.BC,
+    level: 3,
+    machineLimit: 0,
+
+    pricing: [
+      {
+        billingCycle: BillingCycle.MONTHLY,
+        durationDays: 30,
+        price: 799,
+      },
+      {
+        billingCycle: BillingCycle.HALF_YEARLY,
+        durationDays: 180,
+        price: 799 * 6,
+      },
+      {
+        billingCycle: BillingCycle.YEARLY,
+        durationDays: 365,
+        price: 799 * 12,
+      },
+    ],
+    featureCodes: ["CSP_LINKING", "CASH_MANAGEMENT"],
   },
 
   {

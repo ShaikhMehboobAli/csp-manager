@@ -63,6 +63,13 @@ export default class CodeGeneratorService {
     return this.generateSequentialNumber(RunningNumberType.CSP_VISIT, "VIS");
   }
 
+  async generateBcLinkRequestNumber() {
+    return this.generateSequentialNumber(
+      RunningNumberType.BC_LINK_REQUEST,
+      "LNK",
+    );
+  }
+
   async generateCspActivitySessionCode() {
     return this.generateSequentialNumber(
       RunningNumberType.CSP_ACTIVITY_SESSION,

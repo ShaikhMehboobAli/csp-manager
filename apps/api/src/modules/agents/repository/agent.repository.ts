@@ -386,6 +386,8 @@ export class AgentRepository {
 
       select: {
         agentId: true,
+
+        bcLinkedByRequest: true,
       },
     });
   }

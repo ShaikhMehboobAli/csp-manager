@@ -20,7 +20,18 @@ export const createCSP = async (
     req.user!.agentId,
     req.user!.userId,
     req.body,
+    req.user!.role,
   );
+
+  if (result.linkRequest) {
+    return res.status(202).json({
+      success: true,
+      message: result.linkRequest.isConflict
+        ? "This CSP is linked to another BC. A link request was sent to the admin for review."
+        : "This CSP already exists. A link request was sent to the admin for approval.",
+      data: result,
+    });
+  }
 
   return res.status(201).json({
     success: true,
