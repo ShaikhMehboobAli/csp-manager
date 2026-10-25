@@ -1,7 +1,10 @@
 import { PrismaDb } from "../../core/database/prisma.types";
 import { ForbiddenError } from "../../core/errors/ForbiddenError";
 import { NotFoundError } from "../../core/errors/NotFoundError";
-import { SubscriptionOwnerType } from "../../generated/prisma/enums";
+import {
+  PlanOwnerType,
+  SubscriptionOwnerType,
+} from "../../generated/prisma/enums";
 
 export const DesktopFeature = {
   AUTOMATION: "DESKTOP_AUTOMATION",
@@ -70,6 +73,22 @@ export default class SubscriptionEntitlementService {
 
     if (!plan) {
       throw new NotFoundError("Subscription plan not found.");
+    }
+
+    // BC access needs only an active subscription: BC plans include every
+    // active feature, so desktop gating and the heartbeat feature list agree.
+    if (plan.ownerType === PlanOwnerType.BC) {
+      const features = await this.db.feature.findMany({
+        where: {
+          isActive: true,
+          isDeleted: false,
+        },
+        orderBy: {
+          code: "asc",
+        },
+      });
+
+      return { plan, features };
     }
 
     return {

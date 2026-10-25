@@ -88,7 +88,9 @@ export default class ReceiptService {
       // }
 
       if (!authenticated.machine.currentAgentId) {
-        throw new Error("No agent is currently assigned to this machine.");
+        throw new ForbiddenError(
+          "No agent is currently assigned to this machine.",
+        );
       }
 
       // Find Active Machine Session
@@ -97,7 +99,7 @@ export default class ReceiptService {
       );
 
       if (!session) {
-        throw new Error("No active machine session found.");
+        throw new BadRequestError("No active machine session found.");
       }
 
       const uploadedReceipts = [];
@@ -263,10 +265,10 @@ export default class ReceiptService {
         );
       }
 
-      const assignedCsp = await repository.findAssignedCsp(request.agentId);
+      const assignedAgent = await repository.findAssignedAgent(request.agentId);
 
-      if (!assignedCsp) {
-        throw new BadRequestError("The assigned CSP agent is not valid.");
+      if (!assignedAgent) {
+        throw new BadRequestError("The assigned agent is not valid.");
       }
 
       const session = await sessionRepository.findActiveSession(
