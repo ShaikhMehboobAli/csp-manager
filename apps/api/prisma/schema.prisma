@@ -30,6 +30,8 @@ enum AgentType {
   BC
   CSP
   KO
+  // The SUPER_ADMIN user's own agent record (User.agentId is required).
+  ADMIN
 }
 
 enum AgentStatus {
@@ -950,6 +952,11 @@ model Activation {
 
   activationPasswordHash String?
 
+  // DEV ONLY — REMOVE BEFORE PRODUCTION (pre-production checklist 2.11).
+  // Plain activation password so owners can see it again until activation
+  // emails exist. Never written when NODE_ENV=production.
+  activationPasswordPlain String?
+
   machineId String?
 
   subscriptionId String
@@ -1358,6 +1365,10 @@ model Payment {
   ownerType SubscriptionOwnerType
 
   ownerId String
+
+  // CSP plans are priced per machine: amount = price × machineCount, and the
+  // subscription gets that many machine slots. Always 1 for BC plans.
+  machineCount Int @default(1)
 
   bcId String?
 

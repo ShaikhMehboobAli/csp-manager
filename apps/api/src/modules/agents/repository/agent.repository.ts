@@ -270,9 +270,10 @@ export class AgentRepository {
             in: params.agentIds,
           },
         }),
-        ...(params.type && {
-          type: params.type,
-        }),
+        // The SUPER_ADMIN's own ADMIN record is never listed.
+        type: params.type ?? {
+          not: AgentType.ADMIN,
+        },
 
         ...(params.bcId && {
           bcId: params.bcId,
@@ -306,7 +307,7 @@ export class AgentRepository {
             in: params.agentIds,
           },
         }),
-        ...(params.type && { type: params.type }),
+        type: params.type ?? { not: AgentType.ADMIN },
         ...(params.bcId && { bcId: params.bcId }),
         ...(params.parentAgentId && {
           parentAgentId: params.parentAgentId,

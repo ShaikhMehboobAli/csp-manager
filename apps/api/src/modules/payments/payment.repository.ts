@@ -37,6 +37,7 @@ export default class PaymentRepository {
     ownerId: string,
     planId: string,
     billingCycle: BillingCycle,
+    machineCount: number,
   ) {
     return this.db.payment.findFirst({
       where: {
@@ -44,6 +45,7 @@ export default class PaymentRepository {
         ownerId,
         planId,
         billingCycle,
+        machineCount,
         status: PaymentStatus.PENDING,
       },
       orderBy: {

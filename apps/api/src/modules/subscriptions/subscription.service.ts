@@ -165,7 +165,16 @@ export default class SubscriptionService {
 
       const now = new Date();
 
-      const amount = Number(pricing.price);
+      // CSP plans are priced per machine and get one slot per machine bought;
+      // BC plans have a fixed machine limit.
+      const machineLimit =
+        plan.ownerType === SubscriptionOwnerType.CSP
+          ? (data.machineCount ?? 1)
+          : (plan.machineLimit ?? 0);
+
+      const amount =
+        Number(pricing.price) *
+        (plan.ownerType === SubscriptionOwnerType.CSP ? machineLimit : 1);
 
       const latest = await repository.findLatestSubscription(
         data.ownerType,
@@ -176,10 +185,17 @@ export default class SubscriptionService {
         latest?.status === SubscriptionStatus.ACTIVE && latest.endDate >= now;
 
       /**
-       * Renewal of the running plan: extend the same subscription from its
-       * current end date. Machines stay on it, so nothing is re-activated.
+       * Renewal of the running plan (same machine count): extend the same
+       * subscription from its current end date. Machines stay on it, so
+       * nothing is re-activated. A different machine count starts a new
+       * subscription below, carrying activated machines over.
        */
-      if (latest && isRunning && latest.planId === plan.id) {
+      if (
+        latest &&
+        isRunning &&
+        latest.planId === plan.id &&
+        latest.machineLimit === machineLimit
+      ) {
         const endDate = addDays(latest.endDate, pricing.durationDays);
 
         const subscription = await repository.extendSubscription(
@@ -209,8 +225,6 @@ export default class SubscriptionService {
        * plan (old one ends immediately), or purchase after the last one ended.
        */
       const endDate = addDays(now, pricing.durationDays);
-
-      const machineLimit = plan.machineLimit ?? 0;
 
       const subscriptionNumber =
         await codeGenerator.generateSubscriptionNumber();

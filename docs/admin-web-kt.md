@@ -3,7 +3,7 @@
 **Audience:** the web team building the **Super Admin** console in React / Next.js.
 **Not covered here:** the BC/CSP mobile app → `docs/mobile-app-kt.md` (read its sections 3 and 18 for API conventions, errors and dates; they apply here too); the desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api`.
-**Last updated:** 2026-10-25 (rev 1)
+**Last updated:** 2026-10-25 (rev 2)
 
 > Describes the backend once PRs #3–#8 are merged into `development`.
 
@@ -16,8 +16,8 @@
 | Review BC↔CSP link requests (approve / reject, conflicts) — approving links the CSP **and its KOs** | READY |
 | Set plan prices and billing cycles | READY |
 | Manage metric definitions (social-security and other metrics) | READY |
-| Browse and edit agents (BCs, CSPs, KOs) | list/view READY; edit/delete **BLOCKED** (gap G1) |
-| Global dashboards, machines, transactions, reports | **BLOCKED** (gap G1) |
+| Browse and edit agents (BCs, CSPs, KOs) | READY |
+| Global dashboards, machines, transactions, reports (all agents) | READY |
 | Manage users, subscriptions, payments | not available (gap G3) |
 
 ## 2. Recommended stack
@@ -37,7 +37,8 @@ Env: `API_BASE_URL` (server-side only; HTTPS in production).
 ## 3. Auth and session
 
 - **Login:** `POST /auth/login { agentId, password }` → `data.user.role` must be `SUPER_ADMIN`. Errors as in the mobile KT §5.
-- **No super admin signup:** signup only creates BC/CSP accounts. A super admin user must be created on the backend (gap G2: there's currently **no** `SUPER_ADMIN` user in the dev database).
+- **No super admin signup:** signup only creates BC/CSP accounts. The backend creates the super admin with `npm run seed:super-admin` (env `SUPER_ADMIN_EMAIL`, `SUPER_ADMIN_PASSWORD` ≥ 12 chars, optional `SUPER_ADMIN_AGENT_ID`, default `SUPERADMIN`). The dev account is `SUPERADMIN`; ask the backend owner for its password. The admin's own agent record has type `ADMIN` and is never listed.
+- **No subscription needed:** the super admin isn't gated by a subscription. (Other owners' subscriptions are still checked, e.g. approving a ₹799 request still requires the BC's plan to be active.)
 - **Token lifetime:** 15 minutes, no refresh endpoint (gap G4). On a 401 from the API, clear the cookie and redirect to `/login?expired=1`.
 - **Scope:** a super admin's scope is **everything**. List endpoints return all agents' data; narrow with `agentId` / `bcId` filters.
 
@@ -136,20 +137,19 @@ UI: table with an active toggle; a create/edit form. Warn before deactivating ("
 |---|---|
 | `GET /agents?type=BC\|CSP\|KO&bcId=&parentAgentId=&page=&limit=` | works (all agents) |
 | `GET /agents/:agentId` | works |
-| `PATCH /agents/:agentId`, `DELETE /agents/:agentId` | **blocked** by G1 (403 `No subscription found…`) |
+| `PATCH /agents/:agentId`, `DELETE /agents/:agentId` | works (any agent; delete KOs before their CSP) |
 | `POST /agents/csp` | don't use from the console (gap G5) |
 
 Agent: `{ id, agentId, name, type, mobile, email, address, bcId, parentAgentId, cashLimit, openingCash, linkedAt, createdAt, updatedAt }`. Build the BC → CSP → KO tree with `bcId` and `parentAgentId` filters.
 
-## 8. Global data views — BLOCKED (G1)
+## 8. Global data views — READY
 
-These endpoints work for BC/CSP users (mobile KT §11–§14) but **return 403 for a super admin today**, because each one checks the caller's own subscription:
+Same endpoints and shapes as the mobile KT §11–§14; for the super admin they cover **all agents** (narrow with `agentId`):
 
-`GET /dashboard/summary`, `/dashboard/analytics`, `/dashboard/csp/:agentId/detail`, `/machines/list`, `/machines/:id`, `/machines/:id/analytics`, `/receipts`, `/receipts/:id`, `/receipts/stats`, `/receipts/export`, `/reports/summary`, `/reports/export`.
+`GET /dashboard/summary` (multi-agent view: `machineMonitoring` across all machines), `/dashboard/analytics`, `/dashboard/csp/:agentId/detail`, `/machines/list`, `/machines/:id`, `/machines/:id/analytics`, `/machines/:id/activity-sessions`, `/receipts`, `/receipts/:receiptId`, `/receipts/stats`, `/receipts/export`, `/reports/summary` (one row per CSP), `/reports/export`.
 
-`GET /activations` doesn't fail but returns only the caller's **own** activations (none for an admin); there's no admin-wide activation list (G3).
-
-Once G1 is fixed they'll return data for **all** agents (narrow with `agentId`), with the same shapes as in the mobile KT. Build these pages against those shapes behind a feature flag.
+- Day boundaries are IST (mobile KT §18).
+- `GET /activations` returns only the caller's **own** activations (none for an admin); there's no admin-wide activation list yet (G3).
 
 ## 9. Other endpoints the console can use
 
@@ -160,8 +160,8 @@ Once G1 is fixed they'll return data for **all** agents (narrow with `agentId`),
 
 | # | Gap | Effect | Proposed fix |
 |---|---|---|---|
-| G1 | Read/edit endpoints check the caller's own subscription; a super admin has none | dashboards, machines, receipts, reports, agent edit/delete return 403 `No subscription found. Please purchase or activate a subscription to continue.` | skip subscription checks for `SUPER_ADMIN` centrally (backend, needs sign-off) |
-| G2 | No way to create a super admin; none exists in dev | can't log in to the console | add a seed/CLI that creates a `SUPER_ADMIN` user from env |
+| G1 | ~~Super admin blocked by subscription checks~~ | — | **fixed 2026-10-25** |
+| G2 | ~~No way to create a super admin~~ | — | **fixed 2026-10-25**: `npm run seed:super-admin` |
 | G3 | No admin APIs for users (block/suspend), subscriptions (grant/extend/cancel) or payments (list all) | those pages can't be built | backend |
 | G4 | 15-minute access token, no refresh endpoint | frequent re-login | `POST /auth/refresh` |
 | G5 | `POST /agents/csp` as SUPER_ADMIN uses the admin's own id as the BC | creating a CSP from the console fails or links to a non-BC | add a `bcId` body field for admins |
@@ -170,4 +170,5 @@ Once G1 is fixed they'll return data for **all** agents (narrow with `agentId`),
 
 ## 11. Changelog
 
+- 2026-10-25 (rev 2) — Super admin account (`npm run seed:super-admin`) and access without a subscription: global dashboards, machines, transactions, reports and agent edit/delete now work (G1, G2 fixed). Reports return all CSPs for the admin. IST day boundaries.
 - 2026-10-25 (rev 1) — Initial version: auth/BFF guidance, link-request review (CSP + KOs, conflicts), plan pricing, metric definitions, agents directory, blocked global views (G1) and other gaps.

@@ -10,6 +10,8 @@ export interface CreatePaymentOrderInput {
 
   billingCycle: BillingCycle;
 
+  machineCount?: number;
+
   ownerType: SubscriptionOwnerType;
 
   ownerId: string;

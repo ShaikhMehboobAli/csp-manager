@@ -3,7 +3,7 @@
 **Audience:** the React Native team building the CSP Manager mobile app for **BC** and **CSP** users.
 **Not covered here:** the Super Admin console (React / Next.js) → `docs/admin-web-kt.md`; the Windows desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api` (Express + Prisma + PostgreSQL).
-**Last updated:** 2026-10-25 (rev 2)
+**Last updated:** 2026-10-25 (rev 3)
 
 > Describes the backend once PRs #3–#8 are merged into `development`. Where an older build behaves differently it says so.
 
@@ -46,14 +46,14 @@ Plans (prices come from the API; these are the current values):
 
 | Who | Plan `code` | Price | Machines | Features |
 |---|---|---|---|---|
-| CSP | `CSP_AUTOMATION` | ₹250/month | 1 | `DESKTOP_AUTOMATION`, `RECEIPT_SYNC` |
-| CSP | `CSP_AUTOMATION_CASH_MANAGEMENT` | ₹450/month | 1 | + `CASH_MANAGEMENT` |
-| CSP | `CSP_COMPLETE` | ₹550/month | 1 | + `CASH_MANAGEMENT`, `MOBILE_TRACKING` |
+| CSP | `CSP_AUTOMATION` | ₹250 per machine/month | chosen at checkout (1–100) | `DESKTOP_AUTOMATION`, `RECEIPT_SYNC` |
+| CSP | `CSP_AUTOMATION_CASH_MANAGEMENT` | ₹450 per machine/month | chosen at checkout | + `CASH_MANAGEMENT` |
+| CSP | `CSP_COMPLETE` | ₹550 per machine/month | chosen at checkout | + `CASH_MANAGEMENT`, `MOBILE_TRACKING` |
 | BC | `BC_BASIC` | ₹199/month | 1 | desktop features + `CASH_MANAGEMENT`, `MOBILE_TRACKING` |
 | BC | `BC_PRO` | ₹399/month | 5 | same |
 | BC | `BC_CSP_LINK` | ₹799/month, ₹4794/6 months, ₹9588/year | **0** | `CSP_LINKING`, `CASH_MANAGEMENT` |
 
-Machine plans give activation codes (one per machine) that the BC/CSP assigns to an agent and types into the desktop app. `BC_CSP_LINK` gives no machines; instead the BC links CSPs that already pay for their own plan (section 10).
+Machine plans give activation codes (one per machine) that the BC/CSP assigns to an agent and types into the desktop app. **Only a CSP buys CSP plans** (KOs have no login): the CSP picks how many machines it needs (its own PC plus its KOs' PCs), pays price × machines, and assigns one code per PC. BC plans have a fixed machine count. `BC_CSP_LINK` gives no machines; instead the BC links CSPs that already pay for their own plan (section 10).
 
 ## 2. App architecture (recommended stack)
 
@@ -182,7 +182,22 @@ Errors (409 unless noted): `Invalid OTP.`, `OTP has expired. Please request a ne
 
 Errors: 404 `User not found.`; 403 `Please verify your account first.` (→ OTP screen), `Your account has been blocked.`, `Your account has been suspended.`, `Invalid credentials.`
 
-### 5.2 Session
+### 5.2 Planned auth endpoints — PENDING (not built yet)
+
+These are agreed but not implemented; the contracts below are proposals and may change. Build the screens behind a feature flag.
+
+| Endpoint (proposed) | Body | Purpose |
+|---|---|---|
+| `POST /auth/resend-otp` | `{ agentId }` | resend the signup OTP (until then: call signup again) |
+| `POST /auth/forgot-password` | `{ agentId }` | email a reset OTP |
+| `POST /auth/reset-password` | `{ agentId, otp, password, confirmPassword }` | set a new password with the OTP |
+| `POST /auth/refresh` | `{ refreshToken }` | new `accessToken` (+ rotated `refreshToken`) |
+| `POST /notifications/devices` / `DELETE /notifications/devices/:token` | `{ token, platform: "ios" \| "android" }` | register/unregister the push token (Expo or FCM, provider TBD) |
+| (no endpoint) activation email | — | assign/regenerate will email the code + password to the agent |
+
+When `/auth/refresh` exists, the 401 interceptor should call it once, retry the request, and log out only if the refresh fails.
+
+### 5.3 Session
 
 - Store `accessToken` and `user` in secure storage. **Don't store the password.**
 - The access token lasts **15 minutes** and **there is no refresh endpoint yet** (gap §19). Until there is one: on 401, show Login prefilled with the `agentId`. Keep the `refreshToken` stored; it'll be used when the endpoint exists.
@@ -196,7 +211,7 @@ Errors: 404 `User not found.`; 403 `Please verify your account first.` (→ OTP 
 | `GET /subscriptions/plans?ownerType=CSP\|BC` | public; only active plans and active billing cycles |
 | `GET /subscriptions/current` | `data: null` when there's no active subscription |
 | `GET /subscriptions/history` | all past subscriptions |
-| `POST /payments/create-order` `{ planId, billingCycle }` | creates a pending payment |
+| `POST /payments/create-order` `{ planId, billingCycle, machineCount? }` | creates a pending payment; `machineCount` 1–100 for **CSP plans** (default 1), not allowed for BC plans |
 | `POST /payments/verify` `{ paymentId, gatewayTransactionId, transactionReference? }` | completes it, creates/extends the subscription |
 | `GET /payments/history`, `GET /payments/:paymentId` | own payments only |
 
@@ -204,15 +219,29 @@ Plan: `{ id, code, name, ownerType, level, machineLimit, pricing: [{ billingCycl
 Current subscription: `{ id, subscriptionNumber, status, subscriptionType, machineLimit, amountPaid (string), startDate, endDate, graceEndsAt, plan: { id, code, name, ownerType, level }, latestPayment: { paymentNumber, status, amount, totalAmount, paidAt } }`.
 `create-order` returns the payment: `{ id, paymentNumber, amount, totalAmount, currency: "INR", status: "PENDING", planId, billingCycle, … }`.
 
+**CSP checkout (per machine):**
+
+```
+[Plan + cycle] → [Machines: − 2 +]  → total = price × machines (show it; the server computes the same)
+   → POST /payments/create-order { planId, billingCycle, machineCount: 2 }   → amount "500", machineCount 2
+   → POST /payments/verify …                                                → subscription.machineLimit = 2
+   → GET /activations: 2 activation codes → assign one to the CSP, one to a KO (section 8)
+```
+
+- `create-order` errors: 400 `Machine count can only be chosen for CSP plans.`; validation `Too small: expected number to be >=1` / `Too big: expected number to be <=100`; 403 for roles other than CSP/BC.
+- A pending order is reused only if plan, cycle **and** machine count match; otherwise a new order is created.
+- Machine slots in use: count activations on the current subscription (`GET /activations`).
+
 **Purchase rules (server):**
-- Same plan while it's running → **renewal**: the end date is extended from the current end date.
+- Same plan **and same machine count** while it's running → **renewal**: the end date is extended from the current end date; machines keep working.
+- Same plan with a **different machine count** (adding/removing machines) → a new subscription starts now with the new count; the old one ends; activated machines carry over (up to the new count); missing codes are generated. No credit for unused days.
 - Different plan → **upgrade/switch**: a new subscription starts now and the old one ends immediately. Machines already activated move to the new plan (up to its machine limit). No refund/credit for unused days.
 - After the plan ended → new subscription from now. No grace period.
 - Buying a plan of the wrong owner type → 400 `This plan is not available for your account.`; unknown cycle → 400 `Selected billing cycle is not available.`
 
 **Payment status — PENDING backend work:** today the payment is "manual": the app calls `create-order` and then `verify` with any `gatewayTransactionId`. Razorpay is being integrated (pre-production checklist 1.1–1.5). Build the checkout behind one function `payForPlan(planId, billingCycle)` so swapping in `react-native-razorpay` later only changes that function. Don't ship the manual flow to production users.
 
-**UI notes:** plan cards list every `pricing` entry (cycle selector). Show "Renews on `endDate`". Switching a machine plan to `BC_CSP_LINK` (0 machines) must warn: "Your machines will stop working."
+**UI notes:** plan cards list every `pricing` entry (cycle selector); CSP plans show "per machine" and a machine stepper (default: current `machineLimit`). Show "Renews on `endDate`". Switching a machine plan to `BC_CSP_LINK` (0 machines) must warn: "Your machines will stop working."
 
 ## 7. Paywall and feature gating
 
@@ -242,7 +271,7 @@ Your subscription has not started yet.
 
 ## 8. Activations (machine codes)
 
-Buying a machine plan creates one activation per machine (`machineLimit`). The owner **assigns** an activation to an agent, gets a one-time **password**, and the person at the PC types `agentId` + activation code + password into the desktop app.
+Buying a machine plan creates one activation per machine (`machineLimit`; for a CSP = the machines bought). The owner **assigns** an activation to an agent, gets a one-time **password**, and the person at the PC types `agentId` + activation code + password into the desktop app.
 
 | Call | Who | Notes |
 |---|---|---|
@@ -251,7 +280,7 @@ Buying a machine plan creates one activation per machine (`machineLimit`). The o
 | `POST /activations/assign` `{ activationId, assignedAgentId }` | owner | returns `{ activationCode, activationPassword }` **once** |
 | `POST /activations/:activationId/regenerate-password` | owner | only while `NOT_ACTIVATED`; returns a new password once |
 
-Activation: `{ id, activationCode, status, expiresAt, assignedAgentId, assignedAt, activatedAt, isCurrent, machine: { machineCode, machineName, status, isOnline, lastHeartbeatAt } | null, subscription: { subscriptionNumber, endDate } }`. `status`: `NOT_ACTIVATED`, `ACTIVE`, `INACTIVE`, `REVOKED`, `TRANSFERRED`.
+Activation: `{ id, activationCode (XXXX-XXXX-XXXX-XXXX), activationPassword (DEV ONLY, below), status, expiresAt, assignedAgentId, assignedAt, activatedAt, isCurrent, machine: { machineCode, machineName, status, isOnline, lastHeartbeatAt } | null, subscription: { subscriptionNumber, endDate } }`. `status`: `NOT_ACTIVATED`, `ACTIVE`, `INACTIVE`, `REVOKED`, `TRANSFERRED`.
 
 **Who can be assigned:**
 - **CSP owner:** itself or one of **its KOs** (`CSP can assign only to KO.`, `KO does not belong to this CSP.`).
@@ -259,7 +288,9 @@ Activation: `{ id, activationCode, status, expiresAt, assignedAgentId, assignedA
 
 Other errors: `Activation not found.` (404), `Activation has already been used.`, `Activation is already assigned.`, `Agent is inactive.`, `Activation password cannot be regenerated.`
 
-**UI:** list grouped by status. On assign/regenerate show code + password in a modal with **Copy** and **Share** buttons and the warning "This password is shown only once". Never store the password. A BC on `BC_CSP_LINK` has no activations: show "This plan doesn't include machine activations".
+**DEV ONLY — removed before production:** until activation emails exist, `GET /activations` and `GET /activations/:id` include **`activationPassword`** (the latest assigned/regenerated password, or `null`). Production builds won't get this field (pre-production checklist 2.11), so don't depend on it: treat it as optional.
+
+**UI:** list grouped by status. On assign/regenerate show code + password in a modal with **Copy** and **Share** buttons. In dev builds the list can show a "Show password" toggle when `activationPassword` is present; in production the modal is the only place the password appears ("shown only once"; later it'll also be emailed). Never store the password in the app. A BC on `BC_CSP_LINK` has no activations: show "This plan doesn't include machine activations".
 
 ## 9. Agents: CSPs and KOs
 
@@ -485,7 +516,7 @@ await Sharing.shareAsync(res.uri, { mimeType: "application/vnd.openxmlformats-of
 ## 18. Dates, money and formatting
 
 - Send dates as ISO-8601 UTC (`dayjs(...).toISOString()`); display in `Asia/Kolkata`.
-- **Day boundaries are UTC on the server** (gap §19): "today" on the dashboard is 00:00–23:59 UTC = 05:30–05:29 IST. Until fixed, label ranges plainly and don't promise "since midnight".
+- **Day boundaries are IST** on the server: "today", report periods, monthly CSP detail, chart labels and the one-visit-per-month rule all use the `Asia/Kolkata` calendar. Send `from`/`to` either as dates (`2026-10-25`) or as instants (`2026-10-24T18:30:00.000Z`); the server expands them to whole IST days.
 - Money: some fields are numbers, some strings (`price`, `amountPaid`, payment amounts, BC monitoring float). Always `Number(x)` and format `₹` with `toLocaleString("en-IN", { maximumFractionDigits: 2 })`.
 - `null` ≠ 0: `null` amount/float means "not applicable / not in your plan".
 
@@ -493,16 +524,16 @@ await Sharing.shareAsync(res.uri, { mimeType: "application/vnd.openxmlformats-of
 
 | Gap | Impact on the app | Plan |
 |---|---|---|
-| No refresh-token endpoint; access token lasts 15 min | users re-login every 15 min | backend to add `POST /auth/refresh`; keep `refreshToken` stored |
-| No resend-OTP / forgot-password endpoints | resend = signup again; no password reset | backend |
+| No refresh-token endpoint yet; access token lasts 15 min | users re-login every 15 min | planned `POST /auth/refresh` (§5.2) |
+| No resend-OTP / forgot-password endpoints yet | resend = signup again; no password reset | planned (§5.2) |
 | Payments are manual (no Razorpay yet) | don't ship checkout to production | checklist 1.1–1.5 |
-| Day boundaries are UTC | early-morning IST transactions fall on the previous day | backend decision |
-| No push notifications | poll lists for link approvals and machine status | future |
+| No push notifications / activation emails yet | poll lists for link approvals and machine status; show passwords from the assign response | planned (§5.2) |
 | `POST /auth/check-agent` returns the full agent record | only use `success` | backend to trim |
 | No unlink endpoint for BC↔CSP | can't undo a link from the app | Super Admin/backend |
 | `cashLimit`/`openingCash` are ignored when an existing CSP is requested via `POST /agents/csp` | the CSP keeps its own values | by design for now |
 
 ## 20. Changelog
 
+- 2026-10-25 (rev 3) — CSP plans are **per machine** (`machineCount` on create-order; renewal needs the same count). Activation list/detail include `activationPassword` in dev (removed before production). Day boundaries are IST. Planned endpoints listed (§5.2): resend OTP, forgot/reset password, refresh token, push devices, activation email. Activation code format `XXXX-XXXX-XXXX-XXXX`.
 - 2026-10-25 (rev 2) — Rewritten as the full React Native KT (was `frontend-integration-changes.md`): architecture, every BC/CSP API with validation, errors and UI logic. Approval links the CSP **and its KOs** (`linkedKoAgentIds` in the admin response, `koCount` in search). CSPs without a BC can create KOs. ₹799-linked CSPs are view-only for the BC. Activation responses no longer include the password hash. CSP visit photos with owner-folder keys are accepted. Reports now apply `period` (was ignored: every period returned all-time totals). Super Admin parts moved to `docs/admin-web-kt.md`.
 - 2026-10-25 (rev 1) — BC ₹799 plan, link requests, `POST /agents/csp` 202, plan pricing.

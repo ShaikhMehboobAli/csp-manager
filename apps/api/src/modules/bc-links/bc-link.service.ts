@@ -270,6 +270,14 @@ async function requireLinkingPlan(db: PrismaDb, bcId: string) {
     db,
   ).getEffectiveSubscription(bcId);
 
+  // Explicit: inside a SUPER_ADMIN request the validator skips a missing
+  // subscription, but this is the BC's subscription.
+  if (!subscription) {
+    throw new ForbiddenError(
+      "No subscription found. Please purchase or activate a subscription to continue.",
+    );
+  }
+
   SubscriptionAccessValidator.validate(subscription);
 
   await new SubscriptionEntitlementService(db).requireFeatures(

@@ -48,9 +48,12 @@ export default class ReportSummaryRepository extends ReportCommonRepository {
      */
     const csps = await this.db.agent.findMany({
       where: {
-        agentId: {
-          in: filter.agentIds,
-        },
+        // An empty scope is SUPER_ADMIN (all agents), not "none".
+        ...(filter.agentIds.length > 0 && {
+          agentId: {
+            in: filter.agentIds,
+          },
+        }),
 
         type: AgentType.CSP,
 

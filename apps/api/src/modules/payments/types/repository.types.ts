@@ -19,6 +19,8 @@ export interface CreatePaymentInput {
 
   billingCycle: BillingCycle;
 
+  machineCount: number;
+
   amount: number;
 
   taxAmount: number;
