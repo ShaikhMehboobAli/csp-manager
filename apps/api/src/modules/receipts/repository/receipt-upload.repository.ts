@@ -92,12 +92,15 @@ export default class ReceiptRepository {
     });
   }
 
-  async findAssignedCsp(agentId: string) {
+  // Machines can be assigned to a CSP or to one of its KOs.
+  async findAssignedAgent(agentId: string) {
     return this.db.agent.findFirst({
       where: {
         agentId,
         isDeleted: false,
-        type: "CSP",
+        type: {
+          in: ["CSP", "KO"],
+        },
       },
       select: {
         agentId: true,

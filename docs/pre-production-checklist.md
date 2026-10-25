@@ -46,6 +46,7 @@ Status: `OPEN` (must do), `DECIDE` (needs an owner decision), `DONE`.
 | 3.8 | `upload-counts` makes ~8 sequential queries per receipt (insert, re-read, denomination, ledger reads/writes). Batch these if larger uploads are ever needed. | DECIDE | `receipt.service.ts`, `float-ledger.service.ts` |
 | 3.9 | The Prisma client uses the `relationJoins` preview feature (includes load in one SQL query). The build/deploy must run `npx prisma generate` from the current schema, and re-check this flag on any Prisma upgrade. | OPEN | `prisma/schema.prisma` |
 | 3.10 | Plan features are cached in-process for 60 s, so admin edits to a plan's features take up to a minute (per instance) to apply. | DECIDE | `subscription-entitlement.service.ts` |
+| 3.11 | BC plans are treated as including every active feature (BC access needs only an active subscription). Revisit when the Phase 4 BC ₹799 plan defines BC feature tiers. | DECIDE | `subscription-entitlement.service.ts` `loadPlanEntitlements` |
 | 3.6 | Subscription expiry runs hourly in-process (`node-cron`). If the API runs as multiple instances, make sure only one runs jobs (or the jobs are safe to run concurrently — current ones are idempotent). | DECIDE | `src/jobs/*`, `src/server.ts` |
 
 ## 4. Product rules to confirm
@@ -67,3 +68,4 @@ Status: `OPEN` (must do), `DECIDE` (needs an owner decision), `DONE`.
 - 2026-10-25 — Added 3.7 (co-locate API with DB) and 3.8 (per-receipt query count) after a P2028 transaction timeout on `upload-counts`.
 - 2026-10-25 — Added 4.4 (no RM role) and 4.5 (legacy upload keys) after the authorization pass.
 - 2026-10-25 — Added 3.9 (`relationJoins` needs `prisma generate`) and 3.10 (60 s plan-feature cache) after the performance pass.
+- 2026-10-25 — Added 3.11 (BC plans include all features) with the KO/BC desktop upload fix.

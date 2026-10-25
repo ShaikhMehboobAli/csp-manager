@@ -2,11 +2,14 @@
 
 **Audience:** the engineer/agent implementing changes in the C# desktop repo (`ReceiptWarcher/`).
 **Source of truth for the backend:** `csp-manager/apps/api` (Express + Prisma). This doc lists what the desktop must add, modify, or remove to match the backend.
-**Last updated:** 2026-10-25 (rev 4)
+**Last updated:** 2026-10-25 (rev 6)
 
 > Paths below are relative to the desktop project root (`ReceiptWarcher/`). The doc was written against `ReceiptWarcher.zip` (Downloads, 2026-10-24); verify each location against your current checkout before editing.
 
 ## How to use this doc
+
+- **Part 1 (items 1–13)** lists what must change in the current desktop code.
+- **Part 2 (Desktop API reference, A–J)** is the full contract: every endpoint the desktop calls, where in the app to call it, request validation, the server-side checks in order with their exact error messages, and what the desktop must do for each outcome. When Part 1 and Part 2 disagree, Part 2 wins.
 
 - Each item has a **status**: `READY` (backend is live, desktop can implement), `PENDING` (waiting on a decision or backend work), or `FUTURE` (planned phase).
 - Implement `READY` items in order. Do not implement `PENDING` items until this doc marks them `READY`.
@@ -29,6 +32,7 @@
 | 11 | Active machine session required for receipt upload | READY (behaviour to handle) |
 | 12 | UI-mode CSP activity session (start / heartbeat / stop) | READY |
 | 13 | Renewal / upgrade: no re-activation needed | READY (behaviour) |
+| — | **Part 2: Desktop API reference** (all endpoints, validation, logic) | READY |
 
 ---
 
@@ -220,9 +224,11 @@ Feature codes: `DESKTOP_AUTOMATION`, `RECEIPT_SYNC`, `CASH_MANAGEMENT`, `MOBILE_
 
 ## 6. Heartbeat rejection handling — READY
 
-Today, when the server rejects a heartbeat (e.g. 403 "Subscription is inactive or expired."), `HeartbeatService.SendHeartbeat` returns before `ApplyResponse`, so `MachineConfig.SubscriptionStatus` stays `"ACTIVE"` forever.
+Today, when the server rejects a heartbeat, `HeartbeatService.SendHeartbeat` returns before `ApplyResponse`, so `MachineConfig.SubscriptionStatus` stays `"ACTIVE"` forever.
 
-Required: when the heartbeat returns HTTP 403 with `success: false`, set `SubscriptionStatus = "INACTIVE"`, `Features = []`, save, and show a non-blocking "subscription inactive" notice. On network errors do **not** change these fields (offline ≠ expired).
+**Correction (rev 5):** an expired or inactive subscription is rejected by machine authentication with **HTTP 400**, not 403. The messages are `"Subscription is not active."` (after the hourly expiry job) and `"Subscription has expired."` (end date passed, job not run yet). Classify by message, not only by status code; see Part 2, section H.
+
+Required: on a heartbeat rejected with one of the *subscription* messages in section H, set `SubscriptionStatus = "INACTIVE"`, `Features = []`, save, and show a non-blocking "subscription inactive" notice. On *credential* errors, mark the machine as needing re-activation (section H). On network errors / 5xx do **not** change these fields (offline ≠ expired).
 
 ## 7. Entitlements endpoint — READY (optional)
 
@@ -233,6 +239,8 @@ Heartbeat (#5) is the primary source. Use this endpoint only for an on-demand re
 ## 8. Activation must overwrite credentials — READY (verify)
 
 Backend change: re-activating an already-registered machine (same fingerprint) now issues a **new API key that replaces the old one** and reassigns the machine to the new agent. The old key stops working immediately.
+
+This only applies when the machine has **no current ACTIVE activation of the same owner type** (BC/CSP), e.g. after the activation was revoked or expired. If it still has one, activation fails with 400 `"Machine already has an active CSP subscription."` (or `BC`), and the existing key keeps working.
 
 `Services/ActivationService.cs` currently builds a fresh `MachineConfig` and saves it — this is correct. Verify that nothing else (e.g. the background service holding `ActivationService.Config` in memory) keeps using the old `ApiKey`/`AgentId` after a re-activation; reload config in both UI and service modes.
 
@@ -307,8 +315,299 @@ Desktop impact:
 
 ---
 
+# Part 2 — Desktop API reference
+
+Everything the desktop needs to talk to the backend. Backend paths are under `csp-manager/apps/api/src/modules/`.
+
+## A. Conventions (all endpoints)
+
+- **Base URL:** `ConfigService.ApiBaseUrl` + `/api/v1`. HTTPS in production. Never hard-code hosts.
+- **Content type:** `application/json` request and response. All desktop endpoints are `POST`.
+- **No user login / JWT on the desktop.** Every runtime call authenticates the *machine* with three body fields: `machineCode`, `apiKey`, `fingerprint` (from `MachineConfig`). Activation is the only call without them.
+- **Success envelope:** `{ "success": true, "message": "...", "data": { ... } }`. Status 200 or 201 (both mean success; check `success`).
+- **Error envelope:** `{ "success": false, "message": "..." }`. Only one message is returned, even if several fields are invalid. There is no machine-readable error code, so **classify errors by HTTP status + exact `message`** (section H). Keep the message strings in one place in the desktop (e.g. `ApiErrors.cs`).
+- **Validation (400):** body is validated before any logic. Strings are trimmed; a required string that is empty after trimming fails. Unknown fields are ignored, except inside `cashDenomination` (unknown keys → 400). Dates are ISO-8601; send UTC with `Z` (e.g. `2026-10-25T10:00:00.000Z`).
+- **Timeouts:** 15 s per request (uploads up to 30 s). Never call from the UI thread; never block the SBI workflow on a response.
+- **Logging:** never log request bodies (they contain `apiKey` / activation password). Log method, path, status and `message` only.
+
+## B. Lifecycle — which API, from where, when
+
+| Step | Who (process) | Trigger | API | Desktop location |
+|---|---|---|---|---|
+| 1 | UI | First run / "Activate" screen | `POST /machines/activate` | `Services/ActivationService.cs` |
+| 2 | Background service | Service start, then every `heartbeatInterval` s (60) | `POST /machines/runtime/heartbeat` | `Services/HeartbeatService.cs` |
+| 3 | UI | SBI login workflow begins | `POST /machines/runtime/activity/start` | new `Services/CspActivityService.cs`, called from `Forms/csp/CSPManagerForm.cs` / `SbiTransactionWorkflow.cs` |
+| 4 | UI | Every 60 s while logged in to SBI | `POST /machines/runtime/activity/heartbeat` | `CspActivityService` timer |
+| 5 | UI | After each SBI transaction is **confirmed** | enqueue locally, then `POST /receipts/upload-counts` | `Forms/csp/ReceiptUploadService.cs` + `ReceiptUploadQueue` |
+| 6 | UI | SBI logout / auto-logout / app close | `POST /machines/runtime/activity/stop` | `CspActivityService` |
+| 7 | UI (optional) | "Refresh plan" button, or after a feature 403 | `POST /machines/runtime/entitlements` | `Services/HeartbeatService.cs` or a small `EntitlementService` |
+
+Rules that tie these together:
+- **A receipt upload needs an ACTIVE machine session.** The machine heartbeat (step 2) *and* the activity heartbeat (step 4) both create/extend it. A session closes 180 s after the last of either.
+- **The activity session (CSP logged in to SBI) is separate** from the machine session. The machine heartbeat never keeps an activity session alive.
+- The background service heartbeat must keep running exactly as today, whether or not the UI is open.
+
+## C. `POST /api/v1/machines/activate` — activate this PC
+
+**When:** first install, or after section H says "re-activation required". Called from the activation screen with values the CSP types in (activation code + password are given to them from the web app, `Activations` page).
+
+**Request**
+
+| Field | Type | Rule |
+|---|---|---|
+| `agentId` | string | required; the agent the activation is assigned to (e.g. `CSP-001`, or a KO id) |
+| `activationCode` | string | required; 16 characters from `A–Z` (no `I`, `O`) and `2–9`. Uppercase the input and strip spaces before sending |
+| `activationPassword` | string | required; never store or log it |
+| `machine.fingerprint` | string | required; stable hardware fingerprint (same value forever on this PC) |
+| `machine.watcherVersion` | string | required; app version, e.g. `1.0.0` |
+| `machine.machineName`, `osName`, `osVersion`, `deviceName`, `ipAddress` | string | optional |
+
+```json
+{
+  "agentId": "CSP-001",
+  "activationCode": "K7M2QX9PRT4WHB3N",
+  "activationPassword": "<typed by user>",
+  "machine": {
+    "fingerprint": "ABCDEF123456",
+    "machineName": "Front desk PC",
+    "watcherVersion": "1.0.0",
+    "osName": "Windows",
+    "osVersion": "10.0.19045",
+    "deviceName": "DESKTOP-01",
+    "ipAddress": "192.168.1.20"
+  }
+}
+```
+
+**Server checks, in order** (first failure is returned)
+
+| # | Check | Status | Message |
+|---|---|---|---|
+| 1 | body valid | 400 | first validation issue (500 until backend PR #4 is merged) |
+| 2 | agent exists | 404 | `Agent not found.` |
+| 3 | agent not deleted / active | 400 | `Agent has been deleted.` / `Agent is inactive.` |
+| 4 | activation code exists | 404 | `Activation code not found.` |
+| 5 | subscription owner's subscription usable | 403 | `No subscription found. Please purchase or activate a subscription to continue.` / `Your subscription has expired.` / `...suspended.` / `...cancelled.` / `...pending activation.` |
+| 6 | activation unused | 400 | `Activation has already been used.` |
+| 7 | activation not expired | 400 | `Activation has expired.` |
+| 8 | activation assigned to this agent | 400 | `Activation has not been assigned.` / `Activation is not assigned to this agent.` |
+| 9 | agent belongs to the subscription owner | 400 | `Agent does not belong to this CSP subscription.` (or `BC`) |
+| 10 | password | 400 | `Activation has not been assigned yet.` / `Invalid activation password.` |
+| 11 | this PC has no other current active activation of the same owner type | 400 | `Machine already has an active CSP subscription.` (or `BC`) |
+
+**Response (201)**
+
+```json
+{ "success": true, "message": "Machine registered and activated successfully.",
+  "data": { "machineCode": "MAC-2026-000001", "apiKey": "<64 hex chars>" } }
+```
+
+**Desktop logic**
+- On success, write a **fresh** `MachineConfig` atomically (temp file + rename): `MachineCode`, `ApiKey`, `Fingerprint`, `AgentId` (= the `agentId` you sent; the response doesn't echo it), `ActivatedAt`. Clear `PlanCode`, `Features`, `SubscriptionStatus`, `SubscriptionEndDate` so stale plan data isn't shown.
+- The `apiKey` is shown **only once**. If the write fails, the user must get a new activation code.
+- Then tell the background service to reload config (or restart it) and send a heartbeat immediately (section D) to fill plan/features.
+- All errors here are user-facing: show `message` on the activation screen. Don't retry automatically.
+- Protect the stored key (DPAPI / `ProtectedData` for `ApiKey` in `MachineConfig.json`, or restrict the file ACL to the service account + admins).
+
+## D. `POST /api/v1/machines/runtime/heartbeat` — machine liveness + plan sync
+
+**When:** background service, on start and every `heartbeatInterval` seconds (server says 60). If the service isn't installed/running, the UI's activity heartbeat (section F) keeps the machine session alive while the CSP is logged in.
+
+**Request**
+
+| Field | Type | Rule |
+|---|---|---|
+| `machineCode`, `apiKey`, `fingerprint` | string | required |
+| `watcherVersion` | string | **required** |
+| `osName`, `osVersion`, `deviceName`, `ipAddress` | string | optional; send if known |
+| `lastStartupAt`, `lastTransactionAt` | ISO date | optional |
+
+**Server checks, in order:** machine credentials (section H, all 400) → activation ACTIVE and not expired (403 `Activation is inactive.` / `Activation has expired.`). Heartbeat does **not** fail when the watcher is disabled; it returns `watcherEnabled: false`.
+
+**Side effects:** creates or extends the machine session (new session if the last heartbeat was >180 s ago); updates machine info and `lastHeartbeatAt`.
+
+**Response (200)**
+
+```json
+"data": {
+  "serverTime": "2026-10-25T10:00:00.000Z",
+  "heartbeatInterval": 60,
+  "heartbeatTimeout": 180,
+  "watcherEnabled": true,
+  "receiptUploadEnabled": true,
+  "subscriptionStatus": "ACTIVE",
+  "latestWatcherVersion": "1.0.0",
+  "planCode": "CSP_AUTOMATION",
+  "subscriptionEndDate": "2026-11-24T18:42:13.000Z",
+  "graceEndsAt": null,
+  "features": ["DESKTOP_AUTOMATION", "RECEIPT_SYNC"]
+}
+```
+
+**Desktop logic (`HeartbeatService.ApplyResponse`)**
+- Save every field into `MachineConfig` plus `LastHeartbeatOkAt = now`, `FeaturesUpdatedAt = now`.
+- `heartbeatInterval`: use it as the next delay (clamp to 30–300 s). Don't hard-code 60.
+- `watcherEnabled = false`: stop the automation/watcher features and stop uploading; show "disabled by admin". Keep heartbeating (it can be re-enabled from the web).
+- `receiptUploadEnabled = false`: keep queuing receipts locally but don't upload. The server doesn't enforce this flag, so the desktop must.
+- `latestWatcherVersion` > current version: show a non-blocking "update available".
+- `serverTime`: if the PC clock is off by more than 5 min, show a warning. `transactionAt` values come from the PC clock.
+- Errors: section H. Never stop the heartbeat loop on an error; on network/5xx errors retry at the normal interval (no tight loops).
+
+## E. `POST /api/v1/machines/runtime/entitlements` — on-demand plan detail (optional)
+
+**Request:** `{ machineCode, apiKey, fingerprint }`.
+
+**Server checks:** machine credentials (400, section H) → machine not deleted, watcher enabled (403 `Receipt Watcher has been disabled for this machine.`) → activation active/not expired (403) → subscription active (403).
+
+**Response (200):** `machine { machineCode, agentId }`, `activation { status, expiresAt }`, `subscription { id, subscriptionNumber, status, subscriptionType, startDate, endDate, graceEndsAt, plan { code, name, ownerType } }`, `features [ { code, name, description, category } ]`.
+
+**Desktop logic:** same caching as the heartbeat. Use for a "Plan details" screen (feature names and descriptions) or right after a feature 403. Don't poll it.
+
+## F. CSP activity session — SBI login tracking
+
+All three need `machineCode`, `apiKey`, `fingerprint`. **Server checks for all three:** machine credentials (400) → machine not deleted, watcher enabled, activation and subscription active (403, section H). **Side effect of start and heartbeat:** also extends the machine session (section B).
+
+### F1. `POST /machines/runtime/activity/start`
+
+- **When:** right when the SBI login workflow begins (before the first transaction).
+- **Body:** `+ agentId` (required; `MachineConfig.AgentId`).
+- **Checks:** `agentId` must equal the machine's assigned agent → 403 `The supplied agent does not match this machine's assignment.`
+- **Logic (server):** closes any open activity session on this machine (`REPLACED`, or `HEARTBEAT_TIMEOUT` if it was stale) and opens a new one.
+- **Response (201):** `{ activitySessionId, startedAt, restarted: false, heartbeatInterval, heartbeatTimeout }`.
+- **Desktop:** store `activitySessionId` in memory (and in a small state file so a crash-restart can stop it), start the heartbeat timer. If start fails with a network error, retry every 30 s in the background while logged in. **Never block SBI login on it.**
+
+### F2. `POST /machines/runtime/activity/heartbeat`
+
+- **When:** every `heartbeatInterval` s while logged in, plus **once immediately** after connectivity returns.
+- **Body:** `+ activitySessionId` (required).
+- **Responses:**
+  - 200, `restarted: false`: normal.
+  - 200, `restarted: true`: the old session timed out (e.g. internet outage > 180 s); the server opened a new one. **Replace the stored id** with the returned `activitySessionId`.
+  - 409 `Activity session has ended. Start a new activity session.`: it was stopped or replaced (e.g. another start). If still logged in → call start (F1); else stop the timer.
+  - 403 `No agent is currently assigned to this machine.`: machine was unassigned in the web app; stop the timer, show notice.
+- **Offline:** skip ticks; don't queue or replay heartbeats.
+
+### F3. `POST /machines/runtime/activity/stop`
+
+- **When / reason:** explicit SBI logout → `LOGOUT`; detected SBI auto-logout / session expiry → `AUTO_LOGOUT`; app close / `FormClosing` / Windows shutdown → `APP_CLOSE`.
+- **Body:** `+ activitySessionId`, `reason` (one of the three; anything else → 400).
+- **Response (200):** `{ activitySessionId, stopped: true }`. Idempotent: unknown or already-closed ids also return 200.
+- **Desktop:** cancel the timer first, then call stop once with a 3 s timeout. On app close don't wait longer and don't retry. If it fails, do nothing: the server closes the session 180 s after the last heartbeat.
+
+## G. `POST /api/v1/receipts/upload-counts` — confirmed transactions
+
+Full field table, enum values and the denomination keys are in items #1 and #2. This section adds the server logic and the desktop queue rules.
+
+**When:** after the SBI transaction is **confirmed successful**. Failed/declined transactions are not uploaded (the server stores everything as `SUCCESS`). Always write the receipt to the local queue first, then upload from the queue (never directly from the workflow).
+
+**Validation (400)**
+
+| Rule | Message (example) |
+|---|---|
+| `receipts`: 1–20 items | `At most 20 receipts per upload.` |
+| `receiptId` non-empty | `Receipt ID is required` |
+| `receiptType`, `transactionCategory`: enum values | invalid option |
+| `transactionType` non-empty | — |
+| `count` must be `1` | — |
+| `amount` > 0 when present; **required** for `CASH_DEPOSIT`, `CASH_WITHDRAWAL`, `MONEY_TRANSFER` | `Amount is required for cash and transfer transactions.` |
+| `cashDenomination`: only the 12 keys in #2, integers 0–10,000 | unrecognized key |
+| `rrn`, `location`: if present, non-empty | — |
+| `transactionAt`: ISO date, optional (server uses receive time if missing) | — |
+
+The server does **not** check that the denomination total equals `amount`; the desktop must (item #1).
+
+**Server checks, in order (after validation)**
+
+| # | Check | Status | Message |
+|---|---|---|---|
+| 1 | machine credentials | 400 | section H |
+| 2 | machine not deleted, watcher enabled, activation + subscription active | 403 | section H |
+| 3 | machine has an assigned agent | 403 | `No agent is currently assigned to this machine.` |
+| 4 | plan has `DESKTOP_AUTOMATION` + `RECEIPT_SYNC` | 403 | `Your subscription does not include this feature.` |
+| 5 | body `agentId` = machine's assigned agent | 403 | `The supplied agent does not match this machine's assignment.` |
+| 6 | that agent is a non-deleted **CSP or KO** | 400 | `The assigned agent is not valid.` |
+| 7 | machine session ACTIVE | 400 | `No active machine session found.` |
+
+Per receipt, inside one DB transaction: duplicate id in the same request → skipped `Duplicate receipt in request.`; `receiptId` already on the server (**unique across all machines**) → skipped `Receipt already exists.`; else saved with its denomination, and a float-ledger entry is written for cash/transfer categories. If anything throws, **nothing** from that request is saved, so the whole chunk can be retried safely.
+
+**Desktop queue rules**
+
+| Result | Queue action |
+|---|---|
+| in `acceptedReceipts` | `Uploaded` |
+| in `skippedReceipts` (either reason) | `Uploaded` (it's on the server) |
+| 400 validation message | `Failed` + message; no auto-retry; show in an "upload problems" list |
+| 400 `No active machine session found.` | `Pending`; retry after the next successful heartbeat |
+| 400 `The assigned agent is not valid.` | `Pending`; show notice (agent deleted in the web app) |
+| 400 credential messages (section H) | `Pending`; stop uploading until re-activated |
+| 400 subscription messages / 403 | `Pending`; retry after a heartbeat shows the subscription/feature is back |
+| network / timeout / 5xx | `Pending`; retry with backoff 30 s → 1 → 2 → 5 → 10 min (max), with jitter |
+
+- Upload in chunks of ≤ 20, oldest first, one request at a time (no parallel uploads).
+- Trigger: after enqueue, after each successful heartbeat, and on a 60 s timer when `Pending` rows exist.
+- Before uploading old queued rows, map legacy denomination keys (#2) and drop rows older than 30 days to `Failed` ("too old") so a broken row can't loop forever.
+- `totalCount` in the response = the agent's cumulative counts on the server; use it for the on-screen counters (don't add locally).
+
+## H. Error classification (all runtime endpoints)
+
+Machine authentication runs first on every runtime call and returns **400** for all of these:
+
+| Message | Meaning | Desktop action |
+|---|---|---|
+| `Machine not found.` | machine code unknown | **Re-activation required.** Stop runtime calls, show activation screen |
+| `Machine has no active activation.` | activation released/revoked | **Re-activation required** |
+| `Machine API key not found.` / `Invalid API key.` | key replaced (re-activated elsewhere) or corrupted | **Re-activation required.** First reload `MachineConfig` from disk once and retry (the service may hold an old key, item #8) |
+| `Machine fingerprint mismatch.` | config copied to another PC, or fingerprint algorithm changed | **Re-activation required** |
+| `Machine is not active.` | disabled by admin | Show "machine disabled"; keep heartbeating every interval |
+| `Subscription is not active.` / `Subscription has expired.` | plan ended | **Subscription inactive** (item #6): `SubscriptionStatus = "INACTIVE"`, `Features = []`, notice; keep heartbeating |
+
+Then (403):
+
+| Message | Desktop action |
+|---|---|
+| `Machine has been deleted.` | Re-activation required |
+| `Receipt Watcher has been disabled for this machine.` | Same as `watcherEnabled = false` (section D) |
+| `Activation is inactive.` / `Activation has expired.` | Re-activation required |
+| `Subscription is inactive or expired.` | Subscription inactive |
+| `Your subscription does not include this feature.` | Refresh features (heartbeat/entitlements); hide the feature |
+| `The supplied agent does not match this machine's assignment.` | Reload `MachineConfig`; if still different, the machine was reassigned in the web app: show notice, require re-activation for the new agent |
+| `No agent is currently assigned to this machine.` | Show notice; stop activity and uploads |
+
+Other: **409** (activity only, F2). **5xx / network / timeout:** temporary; retry per endpoint rules, change no state.
+
+"Re-activation required" = set `MachineConfig.NeedsActivation = true`, stop the heartbeat/activity/upload loops (keep the local queue), and show the activation screen on next UI open. Receipts queued before re-activation upload afterwards (with the new `AgentId`).
+
+## I. Plan → feature → desktop UI
+
+| Plan (`planCode`) | Price | Features |
+|---|---|---|
+| `CSP_AUTOMATION` | ₹250 | `DESKTOP_AUTOMATION`, `RECEIPT_SYNC` |
+| `CSP_AUTOMATION_CASH_MANAGEMENT` | ₹450 | + `CASH_MANAGEMENT` |
+| `CSP_COMPLETE` | ₹550 | + `CASH_MANAGEMENT`, `MOBILE_TRACKING` |
+| `BC_BASIC` / `BC_PRO` | ₹199 / ₹399 | all active features (BC access is not feature-gated; plans differ by machine limit) |
+
+| Feature | Desktop behaviour |
+|---|---|
+| `DESKTOP_AUTOMATION` | SBI automation / controller workflow enabled |
+| `RECEIPT_SYNC` | upload-counts allowed (needs `DESKTOP_AUTOMATION` too) |
+| `CASH_MANAGEMENT` | show cash/float screens and the denomination inputs. Without it: hide them and omit `cashDenomination` (`amount` is still required for cash/transfer categories) |
+| `MOBILE_TRACKING` | not used by the desktop |
+
+Always read features from `MachineConfig.Features` (last heartbeat). Offline, use the cached list. It's a UI hint only; the server re-checks on every call.
+
+## J. Known backend gaps (desktop: handle as described, backend will change)
+
+| Gap | Effect today | Desktop handling |
+|---|---|---|
+| `receiptUploadEnabled` not enforced on the server | — | desktop must respect it (section D) |
+| `/machines/activate` returns 500 for a malformed body | until backend PR #4 merges | validate locally before sending |
+
+---
+
 ## Changelog
 
+- 2026-10-25 (rev 6) — Backend fixes: `upload-counts` accepts machines assigned to a **KO** (message now `The assigned agent is not valid.`); BC plans report all features in heartbeat/entitlements and pass the upload feature check; legacy `/receipts/upload` returns 400/403 instead of 500 for "no active session" / "no agent". Section J trimmed accordingly.
+- 2026-10-25 (rev 5) — Added Part 2: full desktop API reference (A–J). Corrected #6 (expired subscription is 400 from machine auth, not 403) and #8 (re-activation refused while an active activation of the same owner type exists).
 - 2026-10-25 — Initial version: items 1–12.
 - 2026-10-25 (rev 4) — #12 now READY: activity start/heartbeat/stop contract; #11 updated (UI activity heartbeat keeps the machine session alive).
 - 2026-10-25 (rev 3b) — #1: `upload-counts` accepts at most 20 receipts per request.
