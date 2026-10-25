@@ -156,12 +156,6 @@ export class AgentService {
         throw new NotFoundError("CSP not found.");
       }
 
-      if (!csp.bcId) {
-        throw new BadRequestError(
-          "CSP is not linked with any Business Correspondent.",
-        );
-      }
-
       //   await subscriptionService.validateMachineLimit({
       //     ownerType: SubscriptionOwnerType.CSP,
       //     ownerId: csp.agentId,
@@ -312,7 +306,8 @@ export class AgentService {
 
   private async createOrLinkKO(
     tx: Prisma.TransactionClient,
-    bcId: string,
+    // The CSP's BC; null for an independent (self-subscribed) CSP.
+    bcId: string | null,
     parentAgentId: string,
     createdBy: string,
     input: CreateKOInput,
@@ -372,7 +367,7 @@ export class AgentService {
         email: input.email,
         address: input.address,
 
-        bcId,
+        bcId: bcId ?? undefined,
         parentAgentId,
 
         cashLimit: input.cashLimit,
@@ -489,12 +484,42 @@ export class AgentService {
       throw new ForbiddenError("You are not allowed to update this agent.");
     }
 
+    await this.ensureNotViewOnlyLink(repository, currentUser, agent);
+
     const updatedAgent = await repository.updateAgent(agentId, {
       ...data,
       updatedBy: currentUser.agentId,
     });
 
     return mapAgent(updatedAgent);
+  }
+
+  /**
+   * A CSP linked through a BC ₹799 link request runs on its own subscription:
+   * the BC can view it and its KOs but not edit or delete them.
+   */
+  private async ensureNotViewOnlyLink(
+    repository: AgentRepository,
+    currentUser: CurrentUser,
+    agent: Agent,
+  ) {
+    if (
+      currentUser.role !== UserRole.BC_ADMIN ||
+      agent.agentId === currentUser.agentId
+    ) {
+      return;
+    }
+
+    const csp =
+      agent.type === AgentType.KO && agent.parentAgentId
+        ? await repository.findByAgentId(agent.parentAgentId)
+        : agent;
+
+    if (csp?.bcLinkedByRequest) {
+      throw new ForbiddenError(
+        "This CSP is linked for viewing only. It manages its own account.",
+      );
+    }
   }
 
   async deleteAgent(agentId: string, currentUser: CurrentUser) {
@@ -520,6 +545,8 @@ export class AgentService {
     if (!canManageAgent(currentUser, agent)) {
       throw new ForbiddenError("You are not allowed to delete this agent.");
     }
+
+    await this.ensureNotViewOnlyLink(repository, currentUser, agent);
 
     const childCount = await repository.countChildren(agent.agentId);
 

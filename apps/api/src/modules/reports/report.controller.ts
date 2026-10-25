@@ -7,12 +7,19 @@ import AgentScopeService from "../agents/service/agent-scope.service";
 import ReportService from "./report.service";
 
 import { reportSummarySchema } from "./report.validation";
+import { resolveDateRange } from "./helper/report.helper";
 
 export default class ReportController {
   private readonly service = new ReportService();
 
   async getSummary(req: Request, res: Response) {
-    const query = reportSummarySchema.parse(req.query);
+    const parsed = reportSummarySchema.parse(req.query);
+
+    // `period` was accepted but never applied (every period = all time).
+    const query = {
+      ...parsed,
+      ...resolveDateRange(parsed.period, parsed.from, parsed.to),
+    };
 
     return withReadOnly(async (tx) => {
       const scopeService = new AgentScopeService(tx);
@@ -39,7 +46,13 @@ export default class ReportController {
   }
 
   async export(req: Request, res: Response) {
-    const query = reportSummarySchema.parse(req.query);
+    const parsed = reportSummarySchema.parse(req.query);
+
+    // `period` was accepted but never applied (every period = all time).
+    const query = {
+      ...parsed,
+      ...resolveDateRange(parsed.period, parsed.from, parsed.to),
+    };
 
     return withReadOnly(async (tx) => {
       const scopeService = new AgentScopeService(tx);
