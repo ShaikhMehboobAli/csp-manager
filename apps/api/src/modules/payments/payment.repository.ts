@@ -54,6 +54,42 @@ export default class PaymentRepository {
     });
   }
 
+  // Serialises create-order per owner for the rest of the transaction, so
+  // two concurrent requests cannot both open a payment.
+  async lockOwner(ownerId: string) {
+    await this.db
+      .$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`payment-owner:${ownerId}`}))`;
+  }
+
+  // Row lock held until the transaction ends: a second verify/webhook for the
+  // same payment waits, then sees it already SUCCESS.
+  async lockPayment(paymentId: string) {
+    await this.db
+      .$queryRaw`SELECT "id" FROM "Payment" WHERE "id" = ${paymentId} FOR UPDATE`;
+  }
+
+  findByIdempotencyKey(ownerId: string, idempotencyKey: string) {
+    return this.db.payment.findUnique({
+      where: {
+        ownerId_idempotencyKey: {
+          ownerId,
+          idempotencyKey,
+        },
+      },
+    });
+  }
+
+  findByGatewayTransactionId(gatewayTransactionId: string) {
+    return this.db.payment.findUnique({
+      where: {
+        gatewayTransactionId,
+      },
+      select: {
+        id: true,
+      },
+    });
+  }
+
   findPaymentById(paymentId: string) {
     return this.db.payment.findUnique({
       where: {

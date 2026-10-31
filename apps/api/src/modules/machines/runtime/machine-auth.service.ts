@@ -10,6 +10,8 @@ import { PrismaDb } from "../../../core/database/prisma.types";
 import { BadRequestError } from "../../../core/errors/BadRequestError";
 
 import MachineAuthenticationRepository from "./machine-auth.repository";
+import { getVerifiedMachineCode } from "../../../core/context/machine-context";
+import { env } from "../../../config/env";
 
 import {
   MachineAuthenticationInput,
@@ -51,9 +53,9 @@ export default class MachineAuthenticationService {
 
     /**
      * STEP 4
-     * Verify API Key
+     * Verify the request signature (device key) or the API key
      */
-    await this.verifyApiKey(input.apiKey, machine.apiKeyHash);
+    await this.verifyCredential(machine, input.apiKey);
 
     /**
      * STEP 5
@@ -98,6 +100,34 @@ export default class MachineAuthenticationService {
     }
 
     return activation;
+  }
+
+  private async verifyCredential(
+    machine: MachineWithRelations,
+    apiKey: string | undefined,
+  ) {
+    // verifyMachineSignature already checked the signature for this code.
+    if (getVerifiedMachineCode() === machine.machineCode) {
+      return;
+    }
+
+    // Once a device key is registered, the API key alone is not enough: a
+    // leaked key can't be used without the private key on the PC.
+    if (machine.devicePublicKey) {
+      throw new BadRequestError("Signed request required for this machine.");
+    }
+
+    if (env.machineSignatureRequired) {
+      throw new BadRequestError(
+        "Signed requests are required. Re-activate this PC to register a device key.",
+      );
+    }
+
+    if (!apiKey) {
+      throw new BadRequestError("Machine API key is required.");
+    }
+
+    await this.verifyApiKey(apiKey, machine.apiKeyHash);
   }
 
   private async verifyApiKey(apiKey: string, apiKeyHash: string | null) {

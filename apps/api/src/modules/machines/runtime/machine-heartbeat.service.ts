@@ -9,6 +9,8 @@ import MachineSessionService from "./machine-session.service";
 import MachineRuntimeValidator from "./machine-runtime-validator";
 import { HEARTBEAT_TIMEOUT_SECONDS } from "./machine-runtime.constants";
 import SubscriptionEntitlementService from "../../subscriptions/subscription-entitlement.service";
+import DesktopSettingsService from "../../settings/desktop-settings.service";
+import { resolveReceiptWatcher } from "./receipt-watcher-policy";
 
 export default class MachineHeartbeatService {
   private readonly authService: MachineAuthenticationService;
@@ -49,9 +51,15 @@ export default class MachineHeartbeatService {
       lastTransactionAt: input.lastTransactionAt,
     });
 
-    const { plan, features } = await new SubscriptionEntitlementService(
-      this.db,
-    ).getPlanEntitlements(authenticated.subscription.planId);
+    const [{ plan, features }, watcher, desktop] = await Promise.all([
+      new SubscriptionEntitlementService(this.db).getPlanEntitlements(
+        authenticated.subscription.planId,
+      ),
+      resolveReceiptWatcher(this.db, authenticated),
+      new DesktopSettingsService(this.db).resolveForMachine(
+        authenticated.machine.desktopControls,
+      ),
+    ]);
 
     return {
       serverTime: new Date(),
@@ -61,9 +69,13 @@ export default class MachineHeartbeatService {
       receiptUploadEnabled: RuntimeConfig.receiptUploadEnabled,
       subscriptionStatus: authenticated.subscription.status,
       latestWatcherVersion:
-        RuntimeConfig.latestWatcherVersion ||
-        authenticated.machine.watcherVersion,
+        desktop.latestWatcherVersion || authenticated.machine.watcherVersion,
+      minimumVersion: desktop.minimumVersion,
+      downloadUrl: desktop.downloadUrl,
       planCode: plan.code,
+      ownerType: plan.ownerType,
+      ...watcher,
+      desktopControls: desktop.desktopControls,
       subscriptionEndDate: authenticated.subscription.endDate,
       graceEndsAt: authenticated.subscription.graceEndsAt,
       features: features.map((feature) => feature.code),

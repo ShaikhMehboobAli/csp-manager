@@ -113,6 +113,7 @@ enum ReceiptType {
   PMJJBY
   PMSBY
   MUDRA_LOAN
+  PASSBOOK
   UNKNOWN
 }
 
@@ -204,6 +205,7 @@ enum TransactionCategory {
   BBPS
   MICRO_ATM
   SOCIAL_SECURITY
+  PASSBOOK_PRINTING
   LOAN
   OTHER
 }
@@ -902,6 +904,10 @@ model Machine {
 
   watcherEnabled Boolean @default(true)
 
+  // Super admin overrides for this machine: { services: { CODE: bool },
+  // receiptCashDenominationConfirm: bool }. Merged with the global AppSetting.
+  desktopControls Json?
+
   currentAgentId String?
 
   lastHeartbeatAt DateTime?
@@ -921,6 +927,12 @@ model Machine {
   apiKeyHash      String?
   apiKeyIssuedAt  DateTime?
   apiKeyExpiresAt DateTime?
+
+  // ECDSA P-256 public key (PEM) of this install's device key, sent at
+  // activation. When set, requests must be signed and the API key alone is
+  // refused. Replaced on every (re-)activation.
+  devicePublicKey             String?
+  devicePublicKeyRegisteredAt DateTime?
 
   isDeleted Boolean @default(false)
 
@@ -995,6 +1007,8 @@ model Activation {
   machine Machine? @relation(fields: [machineId], references: [id], onDelete: Restrict)
 
   subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+
+  revokeRequests ActivationRevokeRequest[]
 
   @@index([machineId])
   @@index([subscriptionId])
@@ -1102,7 +1116,9 @@ model MachineSession {
 model Receipt {
   id String @id @default(cuid())
 
-  receiptId String @unique
+  // Unique per agent, not globally: social security keys are built from
+  // certificate fragments, so two CSPs can produce the same value.
+  receiptId String
 
   machineId String
 
@@ -1153,6 +1169,7 @@ model Receipt {
 
   cashDenomination ReceiptCashDenomination?
 
+  @@unique([agentId, receiptId])
   @@index([machineId])
   @@index([machineSessionId])
   @@index([agentId])
@@ -1235,7 +1252,8 @@ model FloatLedger {
 
   agentId String
 
-  receiptId String?
+  // Receipt.id (receiptId is only unique per agent).
+  receiptRecordId String?
 
   ledgerType FloatLedgerType
 
@@ -1255,10 +1273,10 @@ model FloatLedger {
 
   agent Agent @relation(fields: [agentId], references: [agentId])
 
-  receipt Receipt? @relation(fields: [receiptId], references: [receiptId])
+  receipt Receipt? @relation(fields: [receiptRecordId], references: [id])
 
   @@index([agentId])
-  @@index([receiptId])
+  @@index([receiptRecordId])
   @@index([createdAt])
   @@index([ledgerType])
 }
@@ -1386,7 +1404,7 @@ model Payment {
 
   transactionReference String?
 
-  gatewayTransactionId String?
+  gatewayTransactionId String? @unique
 
   gatewayResponse Json?
 
@@ -1413,6 +1431,11 @@ model Payment {
 
   invoiceNumber String? @unique
 
+  // Client-supplied Idempotency-Key: a retried create-order returns the same
+  // payment instead of opening a second one.
+  idempotencyKey String?
+
+  @@unique([ownerId, idempotencyKey])
   @@index([subscriptionId])
   @@index([status])
   @@index([paymentMethod])
@@ -1517,6 +1540,7 @@ enum RunningNumberType {
   CSP_VISIT
   CSP_ACTIVITY_SESSION
   BC_LINK_REQUEST
+  ACTIVATION_REVOKE_REQUEST
 }
 
 model RunningNumber {
@@ -1642,4 +1666,68 @@ model BcLinkRequest {
   @@index([status])
   @@index([bcId])
   @@index([cspAgentId])
+}
+
+///////////////////////////
+//AppSetting Model
+///////////////////////////
+
+// Global settings managed by the super admin (desktop controls, versions).
+model AppSetting {
+  key String @id
+
+  value Json
+
+  updatedAt DateTime @updatedAt
+
+  updatedBy String?
+}
+
+///////////////////////////
+//ActivationRevokeRequest Model
+///////////////////////////
+
+enum ActivationRevokeRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+// The owner (CSP / BC) asks to revoke one of its activations; SUPER_ADMIN
+// approves (the activation is revoked then) or rejects. At most one PENDING
+// request per activation (enforced in the service).
+model ActivationRevokeRequest {
+  id String @id @default(cuid())
+
+  requestNumber String @unique
+
+  activationId String
+
+  activation Activation @relation(fields: [activationId], references: [id], onDelete: Cascade)
+
+  // Subscription owner at the time of the request.
+  ownerType SubscriptionOwnerType
+
+  ownerId String
+
+  // Machine holding the activation when the request was raised, if any.
+  machineCode String?
+
+  status ActivationRevokeRequestStatus @default(PENDING)
+
+  reason String?
+
+  reviewRemarks    String?
+  reviewedByUserId String?
+  reviewedAt       DateTime?
+
+  createdByUserId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([ownerId])
+  @@index([activationId])
 }

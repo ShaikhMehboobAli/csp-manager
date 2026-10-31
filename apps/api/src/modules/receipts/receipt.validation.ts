@@ -65,14 +65,18 @@ const receiptSchema = z.object({
 export const uploadReceiptSchema = z.object({
   machineCode: z.string().trim().min(1),
 
-  apiKey: z.string().trim().min(1),
+  // Optional when the request is signed with the device key (X-Signature).
+  apiKey: z.string().trim().min(1).optional(),
 
   fingerprint: z.string().trim().min(1),
 
-  receipts: z.array(receiptSchema).min(1),
+  receipts: z
+    .array(receiptSchema)
+    .min(1)
+    .max(MAX_RECEIPTS_PER_UPLOAD, `At most ${MAX_RECEIPTS_PER_UPLOAD} receipts per upload.`),
 });
 
-const minimalReceiptSchema = z
+export const minimalReceiptSchema = z
   .object({
     receiptId: z.string().trim().min(1, "Receipt ID is required"),
     receiptType: z.nativeEnum(ReceiptType),
@@ -100,12 +104,15 @@ const minimalReceiptSchema = z
 
 export const uploadReceiptCountsSchema = z.object({
   machineCode: z.string().trim().min(1),
-  apiKey: z.string().trim().min(1),
+  // Optional when the request is signed with the device key (X-Signature).
+  apiKey: z.string().trim().min(1).optional(),
   fingerprint: z.string().trim().min(1),
   agentId: z.string().trim().min(1),
-  // Bounded so one upload stays well inside the DB transaction timeout.
+  // Each receipt is validated on its own in the service, so one bad receipt
+  // is skipped instead of failing the batch. Bounded so one upload stays well
+  // inside the DB transaction timeout.
   receipts: z
-    .array(minimalReceiptSchema)
+    .array(z.unknown())
     .min(1)
     .max(MAX_RECEIPTS_PER_UPLOAD, `At most ${MAX_RECEIPTS_PER_UPLOAD} receipts per upload.`),
 });
@@ -140,3 +147,34 @@ export const receiptListSchema = z.object({
 
 export type ReceiptListQuery = z.infer<typeof receiptListSchema>;
 export type UploadReceiptCountsRequest = z.infer<typeof uploadReceiptCountsSchema>;
+export type MinimalReceipt = z.infer<typeof minimalReceiptSchema>;
+
+/**
+ * Validates one upload-counts receipt. An invalid receipt is reported with
+ * its receiptId (when it has one) and the first problem found.
+ */
+export function parseMinimalReceipt(raw: unknown):
+  | { success: true; receipt: MinimalReceipt }
+  | { success: false; receiptId: string | null; reason: string } {
+  const result = minimalReceiptSchema.safeParse(raw);
+
+  if (result.success) {
+    return { success: true, receipt: result.data };
+  }
+
+  const rawId =
+    raw && typeof raw === "object"
+      ? (raw as { receiptId?: unknown }).receiptId
+      : undefined;
+
+  const issue = result.error.issues[0];
+  const field = issue?.path.join(".");
+
+  return {
+    success: false,
+    receiptId: typeof rawId === "string" && rawId.trim() ? rawId.trim() : null,
+    reason: issue
+      ? `Invalid receipt${field ? ` (${field})` : ""}: ${issue.message}`
+      : "Invalid receipt.",
+  };
+}

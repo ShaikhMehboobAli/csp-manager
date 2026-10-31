@@ -21,6 +21,20 @@ import { ForbiddenError } from "../../core/errors/ForbiddenError";
 import bcrypt from "bcrypt";
 import SubscriptionResolver from "../subscriptions/subscription-validator/subscription-resolver.service";
 import SubscriptionAccessValidator from "../subscriptions/subscription-validator/subscription-access-validator";
+import { JwtPayload } from "../../core/services/jwt.service";
+import { revokeActivationRecord } from "./activation-revoke.helper";
+import ActivationRevokeRepository from "./activation-revoke.repository";
+
+// `pendingRevokeRequest`: the owner's open revoke request, or null.
+function withPendingRevoke<
+  T extends {
+    revokeRequests: { id: string; requestNumber: string; createdAt: Date }[];
+  },
+>(activation: T) {
+  const { revokeRequests, ...rest } = activation;
+
+  return { ...rest, pendingRevokeRequest: revokeRequests[0] ?? null };
+}
 
 export default class ActivationService {
   private readonly passwordService = new ActivationPasswordService();
@@ -90,7 +104,9 @@ export default class ActivationService {
       return {
         success: true,
         message: "Activations fetched successfully.",
-        data: activations.map(withVisiblePassword),
+        data: activations.map((activation) =>
+          withPendingRevoke(withVisiblePassword(activation)),
+        ),
       };
     });
   }
@@ -112,7 +128,7 @@ export default class ActivationService {
         success: true,
         message: "Activation fetched successfully.",
         data: {
-          ...withVisiblePassword(activation),
+          ...withPendingRevoke(withVisiblePassword(activation)),
           canRegenerate:
             activation.status === ActivationStatus.NOT_ACTIVATED &&
             !activation.machine,
@@ -159,6 +175,37 @@ export default class ActivationService {
 
           activationPassword: credentials.password,
         },
+      };
+    });
+  }
+
+  /**
+   * SUPER_ADMIN revokes an activation directly. Owners (CSP / BC) raise a
+   * revoke request instead, which the super admin approves (revoke-requests).
+   */
+  async revokeActivation(activationId: string, user: JwtPayload) {
+    return withTransaction(async (tx) => {
+      const repository = new ActivationRepository(tx);
+
+      const activation = await repository.findActivationForRevoke(activationId);
+
+      if (!activation) {
+        throw new NotFoundError("Activation not found.");
+      }
+
+      const revoked = await revokeActivationRecord(tx, activation, user);
+
+      // A pending owner request for it is settled by this revoke.
+      await new ActivationRevokeRepository(tx).closePendingForActivation(
+        activation.id,
+        user.userId,
+      );
+
+      return {
+        success: true,
+        message:
+          "Activation revoked. Assign it to an agent to get a new activation password.",
+        data: revoked,
       };
     });
   }

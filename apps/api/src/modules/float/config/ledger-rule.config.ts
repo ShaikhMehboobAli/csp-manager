@@ -103,6 +103,13 @@ export const LEDGER_RULES: Record<TransactionCategory, LedgerRule> = {
     showInDashboard: true,
   },
 
+  PASSBOOK_PRINTING: {
+    cashEffect: CashEffect.NONE,
+    createLedger: false,
+    updateAgentFloat: false,
+    showInDashboard: true,
+  },
+
   LOAN: {
     cashEffect: CashEffect.NONE,
     createLedger: false,

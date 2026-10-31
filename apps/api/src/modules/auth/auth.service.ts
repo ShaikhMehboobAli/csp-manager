@@ -28,6 +28,10 @@ import { LoginDto } from "./validations/login.validation";
 import { AccountType } from "./types/auth.types";
 import { BadRequestError } from "../../core/errors/BadRequestError";
 
+// bcrypt hash of a random value, compared when the agent ID is unknown.
+const LOGIN_TIMING_HASH =
+  "$2b$10$CwTycUXWue0Thq9StjUM0uJ8.zdFvQ1f6lYB0yNvEJ0TVN5qM2y5W";
+
 export default class AuthService {
   private readonly repository: AuthRepository;
 
@@ -588,8 +592,16 @@ export default class AuthService {
   async login(data: LoginDto) {
     const user = await this.repository.findUserByAgentId(data.agentId);
 
-    if (!user) {
-      throw new NotFoundError("User not found.");
+    // Same answer (and similar timing) for an unknown ID and a wrong
+    // password, and account status only after the password matches, so the
+    // response doesn't reveal which IDs exist or their state.
+    const passwordMatched = await this.bcryptService.compare(
+      data.password,
+      user?.passwordHash ?? LOGIN_TIMING_HASH,
+    );
+
+    if (!user || !passwordMatched) {
+      throw new ForbiddenError("Invalid credentials.");
     }
 
     if (user.status === UserStatus.PENDING) {
@@ -602,15 +614,6 @@ export default class AuthService {
 
     if (user.status === UserStatus.SUSPENDED) {
       throw new ForbiddenError("Your account has been suspended.");
-    }
-
-    const passwordMatched = await this.bcryptService.compare(
-      data.password,
-      user.passwordHash,
-    );
-
-    if (!passwordMatched) {
-      throw new ForbiddenError("Invalid credentials.");
     }
 
     const accessToken = this.jwtService.generateAccessToken({

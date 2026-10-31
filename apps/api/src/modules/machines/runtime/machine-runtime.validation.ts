@@ -4,7 +4,8 @@ import { ActivityEndReason } from "../../../generated/prisma/enums";
 export const heartbeatSchema = z.object({
   machineCode: z.string().trim().min(1),
 
-  apiKey: z.string().trim().min(1),
+  // Optional when the request is signed with the device key (X-Signature).
+  apiKey: z.string().trim().min(1).optional(),
 
   fingerprint: z.string().trim().min(1),
 
@@ -25,13 +26,15 @@ export const heartbeatSchema = z.object({
 
 export const entitlementSchema = z.object({
   machineCode: z.string().trim().min(1),
-  apiKey: z.string().trim().min(1),
+  // Optional when the request is signed with the device key (X-Signature).
+  apiKey: z.string().trim().min(1).optional(),
   fingerprint: z.string().trim().min(1),
 });
 
 const machineCredentials = {
   machineCode: z.string().trim().min(1),
-  apiKey: z.string().trim().min(1),
+  // Optional when the request is signed with the device key (X-Signature).
+  apiKey: z.string().trim().min(1).optional(),
   fingerprint: z.string().trim().min(1),
 };
 

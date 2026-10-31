@@ -5,8 +5,11 @@ import { checkAgentSchema } from "./validations/check-agent.validation";
 import { signupSchema } from "./validations/signup.validation";
 import { verifyOtpSchema } from "./validations/verify-otp.validation";
 import { loginSchema } from "./validations/login.validation";
+import { authRateLimit } from "../../core/middlewares/rate-limit.middleware";
 
 const router = Router();
+
+router.use(authRateLimit);
 
 router.post(
   "/check-agent",

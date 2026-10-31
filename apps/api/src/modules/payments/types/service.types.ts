@@ -17,6 +17,9 @@ export interface CreatePaymentOrderInput {
   ownerId: string;
 
   bcId?: string;
+
+  // From the Idempotency-Key header.
+  idempotencyKey?: string;
 }
 
 export interface VerifyPaymentInput {
