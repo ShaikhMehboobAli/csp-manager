@@ -21,6 +21,8 @@ export interface CreatePaymentInput {
 
   machineCount: number;
 
+  idempotencyKey?: string;
+
   amount: number;
 
   taxAmount: number;

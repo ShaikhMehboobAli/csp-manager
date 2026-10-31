@@ -1,6 +1,10 @@
+import { SubscriptionOwnerType } from "../../../generated/prisma/enums";
+import { DesktopControls } from "../../settings/desktop-settings.service";
+import { ReceiptWatcherReason } from "./receipt-watcher-policy";
+
 export interface HeartbeatInput {
   machineCode: string;
-  apiKey: string;
+  apiKey?: string;
   fingerprint: string;
 
   watcherVersion: string;
@@ -28,7 +32,21 @@ export interface HeartbeatResponse {
   latestWatcherVersion: string;
   heartbeatTimeout: number;
 
+  // Below this version the desktop blocks automation; null = no minimum.
+  minimumVersion: string | null;
+
+  // Latest installer, when the super admin has set one.
+  downloadUrl: string | null;
+
   planCode: string;
+
+  ownerType: SubscriptionOwnerType;
+
+  receiptWatcherAllowed: boolean;
+
+  receiptWatcherReason: ReceiptWatcherReason;
+
+  desktopControls: DesktopControls;
 
   subscriptionEndDate: Date;
 

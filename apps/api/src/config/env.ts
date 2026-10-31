@@ -19,4 +19,11 @@ export const env = {
   jwtRefreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || "7d",
 
   paymentWebhookSecret: process.env.PAYMENT_WEBHOOK_SECRET || "",
+
+  // Number of reverse-proxy hops in front of the API; 0 = none.
+  trustProxy: Number(process.env.TRUST_PROXY) || 0,
+
+  // true: every desktop call must be signed with a device key; machines
+  // without one must re-activate. Keep false until the desktop release ships.
+  machineSignatureRequired: process.env.MACHINE_SIGNATURE_REQUIRED === "true",
 };

@@ -10,7 +10,7 @@ import {
 
 export interface UploadReceiptRequest {
   machineCode: string;
-  apiKey: string;
+  apiKey?: string;
   fingerprint: string;
 
   receipts: ReceiptPayload[];

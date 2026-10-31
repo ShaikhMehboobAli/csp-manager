@@ -25,6 +25,21 @@ import { Agent, Machine, Prisma } from "../../../generated/prisma/client";
 import { createCodeGeneratorService } from "../../../core/services/service.factory";
 import SubscriptionResolver from "../../subscriptions/subscription-validator/subscription-resolver.service";
 import SubscriptionAccessValidator from "../../subscriptions/subscription-validator/subscription-access-validator";
+import { closeOpenMachineSessions } from "../runtime/machine-release.helper";
+import { normalizeDevicePublicKey } from "../../../core/security/machine-signature";
+
+/**
+ * The install's device key, replaced on every (re-)activation. An activation
+ * without one (older desktop) clears it, so that install uses its API key.
+ */
+function deviceKeyFields(devicePublicKey: string | undefined) {
+  const key = devicePublicKey ? normalizeDevicePublicKey(devicePublicKey) : null;
+
+  return {
+    devicePublicKey: key,
+    devicePublicKeyRegisteredAt: key ? new Date() : null,
+  };
+}
 
 export default class MachineActivationService {
   //   constructor(private readonly codeGeneratorService: CodeGeneratorService) {}
@@ -51,6 +66,9 @@ export default class MachineActivationService {
       if (agent.status !== AgentStatus.ACTIVE) {
         throw new BadRequestError("Agent is inactive.");
       }
+
+      // Rejects a malformed device key before anything is written.
+      const deviceKey = deviceKeyFields(data.machine.devicePublicKey);
 
       /**
        * STEP 2
@@ -81,6 +99,18 @@ export default class MachineActivationService {
       //   throw new BadRequestError("Activation has been deleted.");
       // }
 
+      if (activation.status === ActivationStatus.ACTIVE) {
+        // The same PC (e.g. after a Windows reinstall) activating again.
+        return this.reactivate(
+          repository,
+          db,
+          activation,
+          agent,
+          data,
+          deviceKey,
+        );
+      }
+
       if (activation.status !== ActivationStatus.NOT_ACTIVATED) {
         throw new BadRequestError("Activation has already been used.");
       }
@@ -105,46 +135,13 @@ export default class MachineActivationService {
        * STEP 5
        * Validate Subscription Ownership
        */
-      switch (activation.subscription.ownerType) {
-        case "BC":
-          if (agent.bcId !== activation.subscription.ownerId) {
-            throw new BadRequestError(
-              "Agent does not belong to this BC subscription.",
-            );
-          }
-          break;
-
-        case "CSP":
-          if (
-            agent.agentId !== activation.subscription.ownerId &&
-            agent.parentAgentId !== activation.subscription.ownerId
-          ) {
-            throw new BadRequestError(
-              "Agent does not belong to this CSP subscription.",
-            );
-          }
-          break;
-
-        default:
-          throw new BadRequestError("Invalid subscription owner.");
-      }
+      this.validateOwnership(activation, agent);
 
       /**
        * STEP 6
        * Verify Password
        */
-
-      if (!activation.activationPasswordHash) {
-        throw new BadRequestError("Activation has not been assigned yet.");
-      }
-      const isValid = await bcrypt.compare(
-        data.activationPassword,
-        activation.activationPasswordHash,
-      );
-
-      if (!isValid) {
-        throw new BadRequestError("Invalid activation password.");
-      }
+      await this.verifyPassword(activation, data.activationPassword);
 
       /**
        * STEP 5
@@ -182,6 +179,7 @@ export default class MachineActivationService {
         data,
         apiKeyHash,
         agent,
+        deviceKey,
       );
 
       return {
@@ -197,14 +195,134 @@ export default class MachineActivationService {
     return withTransaction(execute);
   }
 
+  /**
+   * Re-activation of the machine that already holds this activation: same
+   * code, same fingerprint, correct password, and the assigned agent (or the
+   * machine's current agent). Issues a new API key, which replaces the old
+   * one; the machine code, activation and slot stay the same.
+   */
+  private async reactivate(
+    repository: MachineRepository,
+    db: PrismaDb,
+    activation: ActivationWithSubscription,
+    agent: Agent,
+    data: ActivateMachineInput,
+    deviceKey: ReturnType<typeof deviceKeyFields>,
+  ) {
+    const machine = await repository.findMachineByFingerprint(
+      data.machine.fingerprint,
+    );
+
+    if (
+      !machine ||
+      !activation.isCurrent ||
+      machine.id !== activation.machineId
+    ) {
+      throw new BadRequestError(
+        "Activation has already been used on another machine. Ask the owner to revoke it first.",
+      );
+    }
+
+    if (activation.expiresAt.getTime() < Date.now()) {
+      throw new BadRequestError("Activation has expired.");
+    }
+
+    if (
+      activation.assignedAgentId !== agent.agentId &&
+      machine.currentAgentId !== agent.agentId
+    ) {
+      throw new BadRequestError("Activation is not assigned to this agent.");
+    }
+
+    this.validateOwnership(activation, agent);
+
+    await this.verifyPassword(activation, data.activationPassword);
+
+    const apiKey = crypto.randomBytes(32).toString("hex");
+
+    const apiKeyHash = await bcrypt.hash(apiKey, 10);
+
+    await closeOpenMachineSessions(db, machine.id);
+
+    await repository.rotateApiKey(machine.id, apiKeyHash, {
+      watcherVersion: data.machine.watcherVersion,
+      machineName: data.machine.machineName,
+      osName: data.machine.osName,
+      osVersion: data.machine.osVersion,
+      deviceName: data.machine.deviceName,
+      ipAddress: data.machine.ipAddress,
+      ...deviceKey,
+    });
+
+    return {
+      success: true,
+      message:
+        "Machine re-activated successfully. The previous API key no longer works.",
+      data: {
+        machineCode: machine.machineCode,
+        apiKey,
+      },
+    };
+  }
+
+  private validateOwnership(
+    activation: ActivationWithSubscription,
+    agent: Agent,
+  ) {
+    switch (activation.subscription.ownerType) {
+      case "BC":
+        if (agent.bcId !== activation.subscription.ownerId) {
+          throw new BadRequestError(
+            "Agent does not belong to this BC subscription.",
+          );
+        }
+        break;
+
+      case "CSP":
+        if (
+          agent.agentId !== activation.subscription.ownerId &&
+          agent.parentAgentId !== activation.subscription.ownerId
+        ) {
+          throw new BadRequestError(
+            "Agent does not belong to this CSP subscription.",
+          );
+        }
+        break;
+
+      default:
+        throw new BadRequestError("Invalid subscription owner.");
+    }
+  }
+
+  private async verifyPassword(
+    activation: ActivationWithSubscription,
+    activationPassword: string,
+  ) {
+    if (!activation.activationPasswordHash) {
+      throw new BadRequestError("Activation has not been assigned yet.");
+    }
+
+    const isValid = await bcrypt.compare(
+      activationPassword,
+      activation.activationPasswordHash,
+    );
+
+    if (!isValid) {
+      throw new BadRequestError("Invalid activation password.");
+    }
+  }
+
   private async registerMachine(
     repository: MachineRepository,
     data: ActivateMachineInput,
     machineCode: string,
     apiKeyHash: string,
     agent: Agent,
+    deviceKey: ReturnType<typeof deviceKeyFields>,
   ) {
     return repository.createMachine({
+      ...deviceKey,
+
       machineCode,
 
       fingerprint: data.machine.fingerprint,
@@ -267,6 +385,7 @@ export default class MachineActivationService {
     data: ActivateMachineInput,
     apiKeyHash: string,
     agent: Agent,
+    deviceKey: ReturnType<typeof deviceKeyFields>,
   ) {
     // We'll implement this next.
     // let registeredMachine = machine;
@@ -283,6 +402,7 @@ export default class MachineActivationService {
         machineCode,
         apiKeyHash,
         agent,
+        deviceKey,
       );
     }
 
@@ -297,6 +417,7 @@ export default class MachineActivationService {
         machine.id,
         agent.agentId,
         apiKeyHash,
+        deviceKey,
       );
 
       await repository.releaseCurrentActivations(machine.id);

@@ -12,6 +12,7 @@ import { createCodeGeneratorService } from "../../core/services/service.factory"
 
 import { BadRequestError } from "../../core/errors/BadRequestError";
 import { NotFoundError } from "../../core/errors/NotFoundError";
+import { ConflictError } from "../../core/errors/ConflictError";
 
 import PaymentRepository from "./payment.repository";
 
@@ -47,6 +48,35 @@ export default class PaymentService {
         data.ownerType === SubscriptionOwnerType.CSP
           ? (data.machineCount ?? 1)
           : 1;
+
+      await repository.lockOwner(data.ownerId);
+
+      // A retried request with the same Idempotency-Key gets the payment the
+      // first request created, whatever its status.
+      if (data.idempotencyKey) {
+        const existing = await repository.findByIdempotencyKey(
+          data.ownerId,
+          data.idempotencyKey,
+        );
+
+        if (existing) {
+          if (
+            existing.planId !== data.planId ||
+            existing.billingCycle !== data.billingCycle ||
+            existing.machineCount !== machineCount
+          ) {
+            throw new ConflictError(
+              "This Idempotency-Key was already used for a different order.",
+            );
+          }
+
+          return {
+            success: true,
+            message: "Payment order already exists for this Idempotency-Key.",
+            data: existing,
+          };
+        }
+      }
 
       const pendingPayment = await repository.findPendingPayment(
         data.ownerType,
@@ -104,6 +134,8 @@ export default class PaymentService {
 
         machineCount,
 
+        idempotencyKey: data.idempotencyKey,
+
         amount,
 
         taxAmount: 0,
@@ -134,6 +166,16 @@ export default class PaymentService {
     tx: PrismaDb,
   ) {
     const repository = new PaymentRepository(tx);
+
+    const usedBy = await repository.findByGatewayTransactionId(
+      gatewayTransactionId,
+    );
+
+    if (usedBy && usedBy.id !== payment.id) {
+      throw new ConflictError(
+        "This gateway transaction is already linked to another payment.",
+      );
+    }
 
     const subscriptionService = new SubscriptionService(prisma);
 
@@ -190,6 +232,8 @@ export default class PaymentService {
     return withTransaction(async (tx) => {
       const repository = new PaymentRepository(tx);
 
+      await repository.lockPayment(data.paymentId);
+
       const payment = await repository.findPaymentById(data.paymentId);
 
       // Users can only verify their own payments.
@@ -198,6 +242,19 @@ export default class PaymentService {
       }
 
       if (payment.status === PaymentStatus.SUCCESS) {
+        // A retry after a lost response (slow network, app killed) with the
+        // same gateway transaction gets the original result, not an error.
+        if (payment.gatewayTransactionId === data.gatewayTransactionId) {
+          return {
+            success: true,
+            message: "Payment already verified.",
+            data: {
+              paymentId: payment.id,
+              subscriptionId: payment.subscriptionId,
+            },
+          };
+        }
+
         throw new BadRequestError("Payment is already verified.");
       }
 
@@ -249,6 +306,8 @@ export default class PaymentService {
   async webhook(data: PaymentWebhookDto) {
     return withTransaction(async (tx) => {
       const repository = new PaymentRepository(tx);
+
+      await repository.lockPayment(data.paymentId);
 
       const payment = await repository.findPaymentByIdForWebhook(
         data.paymentId,

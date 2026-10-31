@@ -21,6 +21,8 @@ export interface ActivateMachineInput {
     deviceName?: string;
 
     ipAddress?: string;
+
+    devicePublicKey?: string;
   };
 }
 

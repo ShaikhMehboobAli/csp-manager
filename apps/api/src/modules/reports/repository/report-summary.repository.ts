@@ -7,8 +7,22 @@ import { ReportFilter } from "../report.dto";
 import {
   AgentType,
   ReceiptStatus,
+  ReceiptType,
   TransactionCategory,
 } from "../../../generated/prisma/enums";
+
+export type SocialSecurityScheme = "PMJJBY" | "PMSBY" | "APY" | "OTHER";
+
+function socialSecurityScheme(receiptType: ReceiptType): SocialSecurityScheme {
+  switch (receiptType) {
+    case ReceiptType.PMJJBY:
+    case ReceiptType.PMSBY:
+    case ReceiptType.APY:
+      return receiptType;
+    default:
+      return "OTHER";
+  }
+}
 
 export interface ReportSummaryRow {
   agentId: string;
@@ -22,6 +36,9 @@ export interface ReportSummaryRow {
       amount: number;
     }
   >;
+
+  // SOCIAL_SECURITY counts split by scheme (receiptType).
+  socialSecurity: Record<SocialSecurityScheme, number>;
 
   success: number;
 
@@ -81,6 +98,8 @@ export default class ReportSummaryRepository extends ReportCommonRepository {
         agentId: true,
 
         transactionCategory: true,
+
+        receiptType: true,
 
         status: true,
 
@@ -152,6 +171,8 @@ export default class ReportSummaryRepository extends ReportCommonRepository {
 
         services,
 
+        socialSecurity: { PMJJBY: 0, PMSBY: 0, APY: 0, OTHER: 0 },
+
         success: 0,
 
         failed: 0,
@@ -177,6 +198,10 @@ export default class ReportSummaryRepository extends ReportCommonRepository {
       const service = row.services[receipt.transactionCategory];
 
       service.count++;
+
+      if (receipt.transactionCategory === TransactionCategory.SOCIAL_SECURITY) {
+        row.socialSecurity[socialSecurityScheme(receipt.receiptType)]++;
+      }
 
       if (receipt.status === ReceiptStatus.SUCCESS) {
         service.amount += Number(receipt.amount);

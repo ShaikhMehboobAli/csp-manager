@@ -10,6 +10,18 @@ import {
 import { validate } from "../../core/middlewares/validate";
 import { asyncHandler } from "../../core/utils/asyncHandler";
 import { authMiddleware } from "../../core/middlewares/auth.middleware";
+import { machineRuntimeRateLimit } from "../../core/middlewares/rate-limit.middleware";
+import {
+  machineHeaderCredentials,
+  verifyMachineSignature,
+} from "../../core/middlewares/machine-credentials.middleware";
+
+// Desktop upload routes: header credentials, rate limit, request signature.
+const machineAuth = [
+  machineHeaderCredentials,
+  machineRuntimeRateLimit,
+  verifyMachineSignature,
+];
 
 const router = Router();
 
@@ -17,12 +29,14 @@ const controller = new ReceiptController();
 
 router.post(
   "/upload",
+  ...machineAuth,
   validate(uploadReceiptSchema),
   asyncHandler(controller.upload.bind(controller)),
 );
 
 router.post(
   "/upload-counts",
+  ...machineAuth,
   validate(uploadReceiptCountsSchema),
   asyncHandler(controller.uploadCounts.bind(controller)),
 );

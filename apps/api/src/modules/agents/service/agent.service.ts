@@ -1,3 +1,4 @@
+import { TRANSACTION_OPTIONS } from "../../../core/database/transaction";
 import { BadRequestError } from "../../../core/errors/BadRequestError";
 import { ForbiddenError } from "../../../core/errors/ForbiddenError";
 import { NotFoundError } from "../../../core/errors/NotFoundError";
@@ -126,7 +127,7 @@ export class AgentService {
         csp: mapAgent(csp),
         kos: createdKOs.map(mapAgent),
       };
-    });
+    }, TRANSACTION_OPTIONS);
   }
 
   /*  TODO we will se if we can add the subscription restriction here in fileURLToPathBuffer 
@@ -180,7 +181,7 @@ export class AgentService {
       return {
         ko: mapAgent(ko),
       };
-    });
+    }, TRANSACTION_OPTIONS);
   }
 
   private async requestCspLink(

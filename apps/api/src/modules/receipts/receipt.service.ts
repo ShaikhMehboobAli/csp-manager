@@ -16,7 +16,6 @@ import { withTransaction, withReadOnly } from "../../core/database/transaction";
 
 import {
   ActivationStatus,
-  FloatLedgerType,
   MachineStatus,
   ReceiptStatus,
   SubscriptionStatus,
@@ -36,6 +35,8 @@ import {
   DesktopFeature,
 } from "../subscriptions/subscription-entitlement.service";
 import SubscriptionEntitlementService from "../subscriptions/subscription-entitlement.service";
+import { resolveReceiptWatcher } from "../machines/runtime/receipt-watcher-policy";
+import { MinimalReceipt, parseMinimalReceipt } from "./receipt.validation";
 
 export default class ReceiptService {
   async upload(request: UploadReceiptRequest) {
@@ -60,6 +61,16 @@ export default class ReceiptService {
       });
 
       MachineRuntimeValidator.validateReceiptUpload(authenticated);
+
+      // Full receipts come only from the background watcher, which is limited
+      // to BC plans whose CSP has no subscription of its own.
+      const watcher = await resolveReceiptWatcher(tx, authenticated);
+
+      if (!watcher.receiptWatcherAllowed) {
+        throw new ForbiddenError(
+          "Receipt watcher is not allowed for this machine. Receipts are counted by CSP Manager.",
+        );
+      }
 
       // const machine = authenticated.machine;
       // const activation = authenticated.activation;
@@ -111,9 +122,9 @@ export default class ReceiptService {
 
       const processedReceiptIds = new Set<string>();
 
-      const existingReceiptIds = await repository.findExistingReceiptIds(
-        request.receipts.map((receipt) => receipt.receiptId),
-      );
+      const agentId = authenticated.machine.currentAgentId;
+
+      const toCreate: typeof request.receipts = [];
 
       for (const receipt of request.receipts) {
         if (processedReceiptIds.has(receipt.receiptId)) {
@@ -127,7 +138,44 @@ export default class ReceiptService {
 
         processedReceiptIds.add(receipt.receiptId);
 
-        if (existingReceiptIds.has(receipt.receiptId)) {
+        toCreate.push(receipt);
+      }
+
+      // One insert for the batch; existing (agentId, receiptId) are skipped.
+      const created = await repository.createManyAndReturnIfAbsent(
+        toCreate.map((receipt) => ({
+          receiptId: receipt.receiptId,
+          machineId: authenticated.machine.id,
+          machineSessionId: session.machineSessionId,
+          agentId,
+          receiptType: receipt.receiptType,
+          transactionCategory: receipt.transactionCategory,
+          transactionType: receipt.transactionType,
+          status: receipt.status,
+          transactionAt: receipt.transactionAt,
+          amount: receipt.amount,
+          charges: receipt.charges,
+          stan: receipt.stan,
+          rrn: receipt.rrn,
+          terminalId: receipt.terminalId,
+          customerName: receipt.customerName,
+          customerAccount: receipt.customerAccount,
+          location: receipt.location,
+        })),
+      );
+
+      const createdById = new Map(
+        created.map((receipt) => [receipt.receiptId, receipt]),
+      );
+
+      const ledgerReceipts: Parameters<
+        FloatLedgerService["recordReceiptBatch"]
+      >[1] = [];
+
+      for (const receipt of toCreate) {
+        const savedReceipt = createdById.get(receipt.receiptId);
+
+        if (!savedReceipt) {
           skippedReceipts.push({
             receiptId: receipt.receiptId,
             reason: "Receipt already exists.",
@@ -136,81 +184,28 @@ export default class ReceiptService {
           continue;
         }
 
-        const savedReceipt = await repository.create({
-          receiptId: receipt.receiptId,
-
-          machine: {
-            connect: {
-              id: authenticated.machine.id,
-            },
-          },
-
-          machineSession: {
-            connect: {
-              machineSessionId: session.machineSessionId,
-            },
-          },
-
-          agent: {
-            connect: {
-              agentId: authenticated.machine.currentAgentId,
-            },
-          },
-
-          receiptType: receipt.receiptType,
-
-          transactionCategory: receipt.transactionCategory,
-
-          transactionType: receipt.transactionType,
-
-          status: receipt.status,
-
-          transactionAt: receipt.transactionAt,
-
-          amount: receipt.amount,
-
-          charges: receipt.charges,
-
-          stan: receipt.stan,
-
-          rrn: receipt.rrn,
-
-          terminalId: receipt.terminalId,
-
-          customerName: receipt.customerName,
-
-          customerAccount: receipt.customerAccount,
-
-          location: receipt.location,
-        });
-
-        let ledgerCreated = savedReceipt.status === ReceiptStatus.SUCCESS;
+        const ledgerCreated = savedReceipt.status === ReceiptStatus.SUCCESS;
 
         if (ledgerCreated) {
-          await floatLedgerService.record({
-            agentId: authenticated.machine.currentAgentId,
-
-            receiptId: savedReceipt.receiptId,
-
-            ledgerType: FloatLedgerType.RECEIPT,
-
+          ledgerReceipts.push({
+            receiptRecordId: savedReceipt.id,
             transactionCategory: savedReceipt.transactionCategory,
-
             amount: Number(savedReceipt.amount),
-
-            remarks: "Receipt uploaded from ReceiptWatcher",
           });
-
-          ledgerCreated = true;
         }
 
-        // uploadedReceipts.push(savedReceipt);
         uploadedReceipts.push({
           receipt: savedReceipt,
 
-          ledgerCreated: ledgerCreated,
+          ledgerCreated,
         });
       }
+
+      await floatLedgerService.recordReceiptBatch(
+        agentId,
+        ledgerReceipts,
+        "Receipt uploaded from ReceiptWatcher",
+      );
 
       // Update Machine
       await heartbeatRepository.updateLastTransactionAt(
@@ -280,24 +275,42 @@ export default class ReceiptService {
       }
 
       const acceptedReceipts: Array<{ receiptId: string; count: 1 }> = [];
-      const skippedReceipts: Array<{ receiptId: string; reason: string }> = [];
+      const skippedReceipts: Array<{
+        receiptId: string | null;
+        reason: string;
+      }> = [];
       const processedReceiptIds = new Set<string>();
+      const valid: MinimalReceipt[] = [];
 
-      for (const receipt of request.receipts) {
-        if (processedReceiptIds.has(receipt.receiptId)) {
+      for (const raw of request.receipts) {
+        const parsed = parseMinimalReceipt(raw);
+
+        if (!parsed.success) {
           skippedReceipts.push({
-            receiptId: receipt.receiptId,
+            receiptId: parsed.receiptId,
+            reason: parsed.reason,
+          });
+          continue;
+        }
+
+        if (processedReceiptIds.has(parsed.receipt.receiptId)) {
+          skippedReceipts.push({
+            receiptId: parsed.receipt.receiptId,
             reason: "Duplicate receipt in request.",
           });
           continue;
         }
 
-        processedReceiptIds.add(receipt.receiptId);
+        processedReceiptIds.add(parsed.receipt.receiptId);
+        valid.push(parsed.receipt);
+      }
 
-        // PostgreSQL enforces receiptId uniqueness. createMany + skipDuplicates
-        // makes concurrent retries idempotent without leaving this transaction
-        // in an error state after a unique-constraint conflict.
-        const wasCreated = await repository.createIfAbsent({
+      // One insert for the whole batch. PostgreSQL enforces (agentId,
+      // receiptId) uniqueness; skipDuplicates leaves existing receipts out
+      // of the result (so concurrent retries stay idempotent) without putting
+      // the transaction in an error state.
+      const created = await repository.createManyIfAbsent(
+        valid.map((receipt) => ({
           receiptId: receipt.receiptId,
           machineId: authenticated.machine.id,
           machineSessionId: session.machineSessionId,
@@ -313,9 +326,19 @@ export default class ReceiptService {
           rrn: receipt.rrn,
           location: receipt.location,
           count: receipt.count,
-        });
+        })),
+      );
 
-        if (!wasCreated) {
+      const createdIds = new Map(
+        created.map((receipt) => [receipt.receiptId, receipt.id]),
+      );
+
+      const saved: { receipt: MinimalReceipt; id: string }[] = [];
+
+      for (const receipt of valid) {
+        const id = createdIds.get(receipt.receiptId);
+
+        if (!id) {
           skippedReceipts.push({
             receiptId: receipt.receiptId,
             reason: "Receipt already exists.",
@@ -323,33 +346,29 @@ export default class ReceiptService {
           continue;
         }
 
-        const savedReceipt = await repository.findByReceiptId(receipt.receiptId);
+        saved.push({ receipt, id });
 
-        if (!savedReceipt) {
-          throw new Error("Accepted receipt could not be read after creation.");
-        }
-
-        if (receipt.cashDenomination) {
-          await repository.createCashDenomination(
-            savedReceipt.id,
-            receipt.cashDenomination,
-          );
-        }
-
-        await floatLedgerService.record({
-          agentId: request.agentId,
-          receiptId: savedReceipt.receiptId,
-          ledgerType: FloatLedgerType.RECEIPT,
-          transactionCategory: savedReceipt.transactionCategory,
-          amount: receipt.amount,
-          remarks: "Minimal receipt uploaded from CSP Manager",
-        });
-
-        acceptedReceipts.push({
-          receiptId: savedReceipt.receiptId,
-          count: 1,
-        });
+        acceptedReceipts.push({ receiptId: receipt.receiptId, count: 1 });
       }
+
+      await repository.createCashDenominations(
+        saved.flatMap(({ receipt, id }) =>
+          receipt.cashDenomination
+            ? [{ receiptRecordId: id, ...receipt.cashDenomination }]
+            : [],
+        ),
+      );
+
+      // In request order, so running balances follow the upload order.
+      await floatLedgerService.recordReceiptBatch(
+        request.agentId,
+        saved.map(({ receipt, id }) => ({
+          receiptRecordId: id,
+          transactionCategory: receipt.transactionCategory,
+          amount: receipt.amount,
+        })),
+        "Minimal receipt uploaded from CSP Manager",
+      );
 
       if (acceptedReceipts.length > 0) {
         await heartbeatRepository.updateLastTransactionAt(

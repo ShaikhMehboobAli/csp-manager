@@ -3,7 +3,7 @@
 **Audience:** the React Native team building the CSP Manager mobile app for **BC** and **CSP** users.
 **Not covered here:** the Super Admin console (React / Next.js) → `docs/admin-web-kt.md`; the Windows desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api` (Express + Prisma + PostgreSQL).
-**Last updated:** 2026-10-25 (rev 3)
+**Last updated:** 2026-10-30 (rev 6)
 
 > Describes the backend once PRs #3–#8 are merged into `development`. Where an older build behaves differently it says so.
 
@@ -85,8 +85,11 @@ Config per environment: `API_BASE_URL` (HTTPS in production), `APP_ENV`. Use `re
 | 401 | missing/invalid/expired token (`Token has expired.`, `Invalid token.`, `Authorization token is required.`) | clear tokens, go to Login with "Session expired" |
 | 403 | role not allowed, or subscription/feature (section 7) | subscription messages → Paywall screen; otherwise toast |
 | 404 | not found (also "not in your scope") | toast + go back |
-| 409 | conflict (already pending, already reviewed, OTP errors) | show `message` |
+| 409 | conflict (already pending, already reviewed, OTP errors, reused `Idempotency-Key` / gateway transaction) | show `message` |
+| 429 | rate limit: `Too many requests. Please try again later.` | show `message`; wait for the `RateLimit-Reset` header (seconds) before retrying; never auto-retry in a loop |
 | 5xx / network | server/network problem | retry button; keep cached data visible |
+
+**Rate limits** (per process; may change): every request 600/min per IP; `/auth/*` 20 per 15 min per IP (login, signup, OTP); `create-order` + `verify` together 10/min per user.
 
 **Axios setup (sketch):**
 
@@ -180,6 +183,8 @@ Errors (409 unless noted): `Invalid OTP.`, `OTP has expired. Please request a ne
 }
 ```
 
+Login errors (all **403**, show `message`): `Invalid credentials.` (unknown ID **or** wrong password; the server doesn't say which), then, only after a correct password: `Please verify your account first.` (→ OTP screen), `Your account has been blocked.`, `Your account has been suspended.` Not 401, so the session-expired interceptor (§3) doesn't fire on the login screen.
+
 Errors: 404 `User not found.`; 403 `Please verify your account first.` (→ OTP screen), `Your account has been blocked.`, `Your account has been suspended.`, `Invalid credentials.`
 
 ### 5.2 Planned auth endpoints — PENDING (not built yet)
@@ -211,7 +216,7 @@ When `/auth/refresh` exists, the 401 interceptor should call it once, retry the 
 | `GET /subscriptions/plans?ownerType=CSP\|BC` | public; only active plans and active billing cycles |
 | `GET /subscriptions/current` | `data: null` when there's no active subscription |
 | `GET /subscriptions/history` | all past subscriptions |
-| `POST /payments/create-order` `{ planId, billingCycle, machineCount? }` | creates a pending payment; `machineCount` 1–100 for **CSP plans** (default 1), not allowed for BC plans |
+| `POST /payments/create-order` `{ planId, billingCycle, machineCount? }` + header `Idempotency-Key` | creates a pending payment; `machineCount` 1–100 for **CSP plans** (default 1), not allowed for BC plans |
 | `POST /payments/verify` `{ paymentId, gatewayTransactionId, transactionReference? }` | completes it, creates/extends the subscription |
 | `GET /payments/history`, `GET /payments/:paymentId` | own payments only |
 
@@ -230,6 +235,14 @@ Current subscription: `{ id, subscriptionNumber, status, subscriptionType, machi
 
 - `create-order` errors: 400 `Machine count can only be chosen for CSP plans.`; validation `Too small: expected number to be >=1` / `Too big: expected number to be <=100`; 403 for roles other than CSP/BC.
 - A pending order is reused only if plan, cycle **and** machine count match; otherwise a new order is created.
+- **`Idempotency-Key` header (send it):** generate a UUID when the user taps **Pay** and reuse it for every retry of that same attempt (timeout, app resumed, double tap). A retry with the same key returns the **same payment** (even after it succeeded), so the user is never charged twice. A new attempt (different plan/cycle/machines) needs a new key; reusing a key for a different order → 409 `This Idempotency-Key was already used for a different order.` Format: 8–128 of `A–Z a–z 0–9 - _ : .`; otherwise 400.
+- **Retries and slow internet** (axios `timeout: 15000`):
+  - `create-order` timed out / network error → retry up to **3 times** (backoff 2 s, 4 s, 8 s) with the **same** `Idempotency-Key`. Never generate a new key for the same tap.
+  - `verify` timed out / network error / 5xx → retry up to **5 times** (2, 4, 8, 16, 30 s) with the **same body**. A retry after the server already completed it returns **200** `Payment already verified.` with the same `subscriptionId`, so it's safe.
+  - Still failing → show "Payment is being confirmed. We'll update your plan shortly." and poll `GET /payments/:paymentId` every 10 s for 2 min (and on app resume) until `status` is `SUCCESS`; then refresh `GET /subscriptions/current`. Don't send the user back to checkout while a payment is `PENDING`.
+  - 429 → wait for `RateLimit-Reset` seconds, then one retry. 400/403/404/409 → don't retry; show `message`.
+  - Persist `{ paymentId, idempotencyKey }` of an unfinished checkout (AsyncStorage) so a killed app resumes with the same values.
+- The server also serialises orders per user and completes a payment only once: a second `verify` with a **different** `gatewayTransactionId` for an already paid payment → 400 `Payment is already verified.`; a `gatewayTransactionId` already used by another payment → 409 `This gateway transaction is already linked to another payment.` Disable the Pay button while a request is in flight anyway.
 - Machine slots in use: count activations on the current subscription (`GET /activations`).
 
 **Purchase rules (server):**
@@ -279,6 +292,10 @@ Buying a machine plan creates one activation per machine (`machineLimit`; for a 
 | `GET /activations/:activationId` | owner | adds `canRegenerate` |
 | `POST /activations/assign` `{ activationId, assignedAgentId }` | owner | returns `{ activationCode, activationPassword }` **once** |
 | `POST /activations/:activationId/regenerate-password` | owner | only while `NOT_ACTIVATED`; returns a new password once |
+| `POST /activations/:activationId/revoke-requests` `{ reason? }` | owner (CSP / BC) | asks the super admin to revoke it: see **Revoke** below |
+| `GET /activations/revoke-requests?status=&activationId=&page=&limit=` | owner | own requests, newest first |
+| `GET /activations/revoke-requests/:requestId` | owner | one request |
+| `POST /activations/revoke-requests/:requestId/cancel` | owner | only while `PENDING` |
 
 Activation: `{ id, activationCode (XXXX-XXXX-XXXX-XXXX), activationPassword (DEV ONLY, below), status, expiresAt, assignedAgentId, assignedAt, activatedAt, isCurrent, machine: { machineCode, machineName, status, isOnline, lastHeartbeatAt } | null, subscription: { subscriptionNumber, endDate } }`. `status`: `NOT_ACTIVATED`, `ACTIVE`, `INACTIVE`, `REVOKED`, `TRANSFERRED`.
 
@@ -287,6 +304,27 @@ Activation: `{ id, activationCode (XXXX-XXXX-XXXX-XXXX), activationPassword (DEV
 - **BC owner:** any agent whose BC is this BC (`Agent does not belong to this BC.`).
 
 Other errors: `Activation not found.` (404), `Activation has already been used.`, `Activation is already assigned.`, `Agent is inactive.`, `Activation password cannot be regenerated.`
+
+**Revoke** (replace a PC, move a code to another agent) **needs super admin approval**. The CSP or BC raises a request; the activation keeps working until the super admin approves it.
+
+```
+Activation detail → [Revoke]  → confirm sheet (optional reason, max 500 chars)
+   → POST /activations/:id/revoke-requests { reason }        → 201, request PENDING
+   → detail shows "Revoke requested (RVK-2026-000001)" + [Cancel request]
+super admin approves → activation NOT_ACTIVATED, unassigned, PC stopped   → assign it again (new password)
+super admin rejects  → request REJECTED (reviewRemarks = why); activation unchanged
+```
+
+- Allowed when the activation is `ACTIVE` (in use on a PC) or `NOT_ACTIVATED` but assigned. Otherwise 400 `Only an activation that is in use or assigned can be revoked.`
+- One open request per activation: a second one → 409 `A revoke request for this activation is already pending.`
+- `GET /activations` and `GET /activations/:id` now include **`pendingRevokeRequest`**: `{ id, requestNumber, createdAt }` or `null`. Use it to show the "Revoke requested" badge and hide the Revoke button.
+- Request object: `{ id, requestNumber (RVK-YYYY-NNNNNN), status: PENDING|APPROVED|REJECTED|CANCELLED, activationId, activationCode, activationStatus, assignedAgentId, ownerType, ownerId, machineCode (PC holding it when requested), currentMachine { machineCode, machineName } | null, reason, reviewRemarks, reviewedAt, createdAt, updatedAt }`.
+- Create returns 201 with message `Revoke request sent. The activation keeps working until the super admin approves it.`
+- Cancel: 200 `CANCELLED`; on a reviewed request → 409 `Only pending requests can be cancelled.` Other users' requests → 404 `Revoke request not found.`
+- After approval the code keeps its **same expiry** (no extra days); assign it again to get a new password and activate it on any PC.
+- **Notifications:** push for "approved / rejected" isn't built yet (pre-production checklist 2.14). Until then refresh the request list on screen focus and pull-to-refresh, and poll `GET /activations/revoke-requests?status=PENDING` every 60 s while that screen is open.
+- **Screens:** "Revoke requests" list (tabs Pending / Approved / Rejected / Cancelled) reachable from Activations; each row shows activation code, machine, status chip, reason and the admin's `reviewRemarks`.
+- **Not needed after a Windows reinstall/format:** the same PC re-activates with the same code and password (the desktop handles it). Revoke only when the PC itself is replaced or the code should go to someone else.
 
 **DEV ONLY — removed before production:** until activation emails exist, `GET /activations` and `GET /activations/:id` include **`activationPassword`** (the latest assigned/regenerated password, or `null`). Production builds won't get this field (pre-production checklist 2.11), so don't depend on it: treat it as optional.
 
@@ -318,6 +356,8 @@ Agent: `{ id, agentId, name, type, mobile, email, address, bcId, parentAgentId, 
 | pending request exists | 409 `A link request for this CSP is already pending.` |
 
 Handle **202 separately**: `csp` is `null`; show a success toast and open "Link requests" (§10). The CSP and its KOs appear in your data only after approval.
+
+Validation (400, first problem): `agentId` 1–50 chars, `name` 2–100, `mobile` 10–15 chars, valid `email`, `cashLimit` / `openingCash` ≥ 0, `kos` ≤ 50. `machineCount` is optional (default 0) and no longer used: machines come from the owner's activations.
 
 **`POST /agents/ko` (CSP)** body: `{ agentId, name, mobile?, email?, address?, cashLimit?, openingCash?, machineCount }` → 201 `KO created successfully.` `data: { ko }`. Works for every CSP (with or without a BC). Errors: `KO is already linked with this CSP.`, `KO is already linked with another CSP.`, `Provided Agent ID does not belong to a KO.`
 
@@ -440,15 +480,17 @@ Item: `{ receiptId, receiptType, transactionCategory, status, amount, transactio
 `GET /receipts/export` (same filters) → Excel file (§17).
 
 Enums for filters:
-- `transactionCategory`: `CASH_DEPOSIT`, `CASH_WITHDRAWAL`, `MONEY_TRANSFER`, `FUND_TRANSFER`, `BALANCE_ENQUIRY`, `MINI_STATEMENT`, `ACCOUNT_OPENING`, `BBPS`, `MICRO_ATM`, `SOCIAL_SECURITY`, `LOAN`, `OTHER`
-- `receiptType`: `AEPS`, `ACCOUNT`, `CARD`, `BBPS`, `MICRO_ATM`, `ACCOUNT_OPENING`, `APY`, `PMJJBY`, `PMSBY`, `MUDRA_LOAN`, `UNKNOWN`
+- `transactionCategory`: `CASH_DEPOSIT`, `CASH_WITHDRAWAL`, `MONEY_TRANSFER`, `FUND_TRANSFER`, `BALANCE_ENQUIRY`, `MINI_STATEMENT`, `ACCOUNT_OPENING`, `BBPS`, `MICRO_ATM`, `SOCIAL_SECURITY`, `PASSBOOK_PRINTING`, `LOAN`, `OTHER`
+- `receiptType`: `AEPS`, `ACCOUNT`, `CARD`, `BBPS`, `MICRO_ATM`, `ACCOUNT_OPENING`, `APY`, `PMJJBY`, `PMSBY`, `MUDRA_LOAN`, `PASSBOOK`, `UNKNOWN`
+
+`receiptId` is unique **per agent** (two agents can have the same value). Open a receipt from the list item you have; `GET /receipts/:receiptId` is limited to your scope.
 
 `amount` is `null` for non-cash categories (balance enquiry, mini statement…): show "—", not ₹0. Only cash deposit, cash withdrawal and money transfer move the float.
 
 ## 14. Reports
 
-`GET /reports/summary?period=TODAY|YESTERDAY|CURRENT_MONTH|LAST_MONTH|CUSTOM&from=&to=&cspAgentId=&agentId=` (default `TODAY`). Sending `from`/`to` overrides `period`; `CUSTOM` without dates = all time. `CURRENT_MONTH` = 1st of this month → today, `LAST_MONTH` = the whole previous month (UTC days, §18). Older builds ignored `period` and returned all-time totals.
-→ array, one row per agent: `{ agentId, agentName, cashDepositCount, cashDepositAmount, cashWithdrawalCount, cashWithdrawalAmount, moneyTransferCount, moneyTransferAmount, fundTransferCount, fundTransferAmount, miniStatement, balanceEnquiry, accountOpening, successTransactions, failedTransactions, totalTransactions, openingBalance, closingBalance }`.
+`GET /reports/summary?period=TODAY|YESTERDAY|CURRENT_MONTH|LAST_MONTH|CUSTOM&from=&to=&cspAgentId=&agentId=` (default `TODAY`). Sending `from`/`to` overrides `period`; `CUSTOM` without dates = all time. `CURRENT_MONTH` = 1st of this month → today, `LAST_MONTH` = the whole previous month (IST days, §18). Older builds ignored `period` and returned all-time totals.
+→ array, one row per agent: `{ agentId, agentName, cashDepositCount, cashDepositAmount, cashWithdrawalCount, cashWithdrawalAmount, moneyTransferCount, moneyTransferAmount, fundTransferCount, fundTransferAmount, miniStatement, balanceEnquiry, passbookPrint, socialSecurity, pmjjby, pmsby, apy, otherSocialSecurity, accountOpening, successTransactions, failedTransactions, totalTransactions, openingBalance, closingBalance }`.
 
 `GET /reports/export` (same query) → Excel (§17).
 
@@ -533,6 +575,10 @@ await Sharing.shareAsync(res.uri, { mimeType: "application/vnd.openxmlformats-of
 | `cashLimit`/`openingCash` are ignored when an existing CSP is requested via `POST /agents/csp` | the CSP keeps its own values | by design for now |
 
 ## 20. Changelog
+
+- 2026-10-30 (rev 6) — Login errors documented (unknown ID and wrong password both `403 Invalid credentials.`); `POST /agents/csp` / `/agents/ko` validate the body (400); invalid query strings / malformed JSON now 400 instead of 500.
+- 2026-10-30 (rev 5) — Revoke now needs super admin approval: `POST /activations/:id/revoke-requests`, list/detail/cancel, `pendingRevokeRequest` on activations (the direct `/revoke` is super admin only). Payment retry policy (§6); `verify` retries return 200.
+- 2026-10-30 (rev 4) — `create-order` takes an `Idempotency-Key` header (no double payments); 429 rate limits; `POST /activations/:id/revoke`; new receipt values `PASSBOOK` / `PASSBOOK_PRINTING`; `receiptId` unique per agent; report rows add `passbookPrint`, `socialSecurity`, `pmjjby`, `pmsby`, `apy`, `otherSocialSecurity`.
 
 - 2026-10-25 (rev 3) — CSP plans are **per machine** (`machineCount` on create-order; renewal needs the same count). Activation list/detail include `activationPassword` in dev (removed before production). Day boundaries are IST. Planned endpoints listed (§5.2): resend OTP, forgot/reset password, refresh token, push devices, activation email. Activation code format `XXXX-XXXX-XXXX-XXXX`.
 - 2026-10-25 (rev 2) — Rewritten as the full React Native KT (was `frontend-integration-changes.md`): architecture, every BC/CSP API with validation, errors and UI logic. Approval links the CSP **and its KOs** (`linkedKoAgentIds` in the admin response, `koCount` in search). CSPs without a BC can create KOs. ₹799-linked CSPs are view-only for the BC. Activation responses no longer include the password hash. CSP visit photos with owner-folder keys are accepted. Reports now apply `period` (was ignored: every period returned all-time totals). Super Admin parts moved to `docs/admin-web-kt.md`.

@@ -229,7 +229,7 @@ export default class CspActivityService {
 
   private async authenticate(
     tx: PrismaDb,
-    request: { machineCode: string; apiKey: string; fingerprint: string },
+    request: { machineCode: string; apiKey?: string; fingerprint: string },
   ) {
     const authenticated = await new MachineAuthenticationService(
       tx,

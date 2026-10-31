@@ -3,7 +3,7 @@
 **Audience:** the web team building the **Super Admin** console in React / Next.js.
 **Not covered here:** the BC/CSP mobile app → `docs/mobile-app-kt.md` (read its sections 3 and 18 for API conventions, errors and dates; they apply here too); the desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api`.
-**Last updated:** 2026-10-25 (rev 2)
+**Last updated:** 2026-10-30 (rev 4)
 
 > Describes the backend once PRs #3–#8 are merged into `development`.
 
@@ -93,6 +93,24 @@ Errors: 409 `This request has already been reviewed.`; 400 `The CSP is no longer
 - **Conflict approval:** red banner "CSP is linked to `cspCurrentBcId`. Approving moves the CSP and its KOs to `bcId`; `cspCurrentBcId` loses access." Require remarks, and a confirm dialog typing the CSP id.
 - After approve/reject: invalidate the list queries; toast the message (it includes the KO count).
 
+## 4A. Activation revoke requests (review) — READY
+
+A CSP or BC can't revoke an activation themselves: they raise a **revoke request** from the mobile app, and only the super admin approves or rejects it. Until approval the activation keeps working.
+
+| Call | Notes |
+|---|---|
+| `GET /activations/revoke-requests?status=PENDING&ownerId=&activationId=&page=1&limit=20` | all owners' requests (filter by `ownerId` = the CSP/BC agent id) |
+| `GET /activations/revoke-requests/:requestId` | one request |
+| `POST /activations/revoke-requests/:requestId/approve` `{ remarks? }` | revokes now: the PC (`machineCode`) stops working at once, the code goes back to unused and unassigned with the same expiry. Response: the request (`APPROVED`) plus `revoked { activationId, activationCode, status, expiresAt, releasedMachineCode }` |
+| `POST /activations/revoke-requests/:requestId/reject` `{ remarks? }` | `REJECTED`, activation unchanged. Put the reason in `remarks`; the owner sees it as `reviewRemarks` |
+| `POST /activations/:activationId/revoke` | direct revoke without a request (support cases) |
+
+Request: `{ id, requestNumber (RVK-…), status, activationId, activationCode, activationStatus, assignedAgentId, ownerType (CSP|BC), ownerId, machineCode, currentMachine { machineCode, machineName } | null, reason, reviewRemarks, reviewedAt, createdAt, updatedAt }`.
+
+Errors: 409 `This request has already been reviewed.` (another admin was faster, or it was cancelled); 400 `Only an activation that is in use or assigned can be revoked.` on approve when the activation changed since the request (reject it instead); 404 `Revoke request not found.`
+
+**UI:** a "Revoke requests" queue next to link requests (Pending first, badge count), showing owner, activation code, machine, how long the machine has been online (`/machines/:id` → `lastHeartbeatAt`) and the owner's reason. Approve asks for confirmation: "PC `<machineCode>` will stop working immediately." Poll the pending list every 60 s until push notifications exist (pre-production checklist 2.14).
+
 ## 5. Plans and pricing
 
 | Call | Notes |
@@ -151,12 +169,45 @@ Same endpoints and shapes as the mobile KT §11–§14; for the super admin they
 - Day boundaries are IST (mobile KT §18).
 - `GET /activations` returns only the caller's **own** activations (none for an admin); there's no admin-wide activation list yet (G3).
 
-## 9. Other endpoints the console can use
+## 9. Desktop settings and machine controls — READY
+
+Super admin only (others get 403). The desktop reads the result on every heartbeat (60 s) and before every service start, so a change reaches the PCs within about a minute.
+
+| Call | Body / notes |
+|---|---|
+| `GET /admin/desktop-settings` | current global settings |
+| `PATCH /admin/desktop-settings` | any of the fields below; omitted fields keep their value, `null` clears a version/URL |
+| `GET /admin/machines/:machineCode/desktop-controls` | `{ machineCode, override, effective }` |
+| `PATCH /admin/machines/:machineCode/desktop-controls` | `{ "desktopControls": { services?, receiptCashDenominationConfirm? } }`, or `{ "desktopControls": null }` to remove the override |
+| `POST /activations/:activationId/revoke` | revoke **any** activation directly, without an owner request (§4A); it also closes an open request for it as approved |
+
+Global settings body (all optional):
+
+```json
+{
+  "services": { "CASH_WITHDRAWAL": false, "PASSBOOK_PRINTING": true },
+  "receiptCashDenominationConfirm": true,
+  "minimumVersion": "1.0.0",
+  "latestWatcherVersion": "1.2.0",
+  "downloadUrl": "https://…/CSPManagerSetup.exe",
+  "portalUrl": null
+}
+```
+
+- **Service codes** (only these are accepted; anything else → 400): `BALANCE_ENQUIRY`, `MINI_STATEMENT`, `CASH_WITHDRAWAL`, `CASH_DEPOSIT`, `MONEY_TRANSFER`, `PASSBOOK_PRINTING` (automated today), `FUND_TRANSFER`, `TRANSACTION_HISTORY`, `KYC_UPDATION`, `ACCOUNT_OPENING`, `AADHAAR_SEEDING`, `AEPS_REGISTRATION` (not automated yet).
+- **How switches combine:** a service is off on a machine when the **global** switch **or** that machine's override turns it off. Use the global switch for maintenance (all machines); a machine override can only turn things off further, not back on.
+- `receiptCashDenominationConfirm = false` hides the desktop popup where the operator confirms the cash counts after printing; the counts entered before the transaction are still required.
+- Versions are `1.0.0`-style. Below `minimumVersion` the desktop blocks automation and offers `downloadUrl`. `portalUrl` is the subscription page for the desktop's "Renew" button; leave it `null` until the web portal exists.
+- The PATCH response returns the full stored settings; `GET …/desktop-controls` returns `effective`, all 12 codes as the PC sees them.
+
+**UI:** a "Desktop" settings page with one toggle per service (a banner while any is off: "Maintenance: Cash Withdrawal is off on all machines"), the popup toggle, and the version fields. On a machine's detail page, an "Overrides" panel with the same toggles and a "Clear overrides" button.
+
+## 10. Other endpoints the console can use
 
 - `POST /csp-visits`, `GET /csp-visits/:id`, `GET /csp-visits/csp/:cspAgentId` — allowed for SUPER_ADMIN (mobile KT §16). Upload works the same from the browser (presigned POST via `FormData` / `fetch`).
 - `GET /uploads/presigned-url?key=…` — a super admin can fetch any stored file (signed URL, 5 minutes).
 
-## 10. Known backend gaps (admin console)
+## 11. Known backend gaps (admin console)
 
 | # | Gap | Effect | Proposed fix |
 |---|---|---|---|
@@ -168,7 +219,10 @@ Same endpoints and shapes as the mobile KT §11–§14; for the super admin they
 | G6 | No unlink endpoint for BC↔CSP | a wrong approval can't be undone from the console | `POST /bc-links/unlink` |
 | G7 | No push/realtime | poll the pending list (e.g. every 60 s) for new requests | future |
 
-## 11. Changelog
+## 12. Changelog
+
+- 2026-10-30 (rev 4) — New §4A: activation revoke requests (owners request, super admin approves/rejects); direct revoke stays admin-only.
+- 2026-10-30 (rev 3) — New §9: desktop settings (global service switches for maintenance, denomination popup, `minimumVersion` / `latestWatcherVersion` / `downloadUrl` / `portalUrl`) and per-machine desktop controls; revoke any activation. Rate limits (429).
 
 - 2026-10-25 (rev 2) — Super admin account (`npm run seed:super-admin`) and access without a subscription: global dashboards, machines, transactions, reports and agent edit/delete now work (G1, G2 fixed). Reports return all CSPs for the admin. IST day boundaries.
 - 2026-10-25 (rev 1) — Initial version: auth/BFF guidance, link-request review (CSP + KOs, conflicts), plan pricing, metric definitions, agents directory, blocked global views (G1) and other gaps.

@@ -1,6 +1,7 @@
 import { PrismaDb } from "../../core/database/prisma.types";
 import { storablePlainPassword } from "./activation-password-exposure";
 import {
+  ActivationRevokeRequestStatus,
   ActivationStatus,
   SubscriptionOwnerType,
 } from "../../generated/prisma/enums";
@@ -10,6 +11,19 @@ import { AssignActivationInput } from "./types/service.types";
 import { BadRequestError } from "../../core/errors/BadRequestError";
 import { AssignActivationCodesRepositoryInput } from "./types/repository.types";
 import { Prisma, PrismaClient } from "../../generated/prisma/client";
+
+// The owner's open revoke request for an activation, if any.
+const pendingRevokeRequest = {
+  where: {
+    status: ActivationRevokeRequestStatus.PENDING,
+  },
+  select: {
+    id: true,
+    requestNumber: true,
+    createdAt: true,
+  },
+  take: 1,
+} as const;
 
 export default class ActivationRepository {
   // constructor(private readonly db: PrismaDb) {}
@@ -163,6 +177,7 @@ export default class ActivationRepository {
             endDate: true,
           },
         },
+        revokeRequests: pendingRevokeRequest,
       },
       orderBy: {
         createdAt: "desc",
@@ -198,6 +213,7 @@ export default class ActivationRepository {
             endDate: true,
           },
         },
+        revokeRequests: pendingRevokeRequest,
       },
     });
   }
@@ -229,6 +245,62 @@ export default class ActivationRepository {
       },
       include: {
         subscription: true,
+      },
+    });
+  }
+
+  findActivationForRevoke(activationId: string) {
+    return this.db.activation.findUnique({
+      where: {
+        id: activationId,
+      },
+      include: {
+        subscription: true,
+        machine: {
+          select: {
+            id: true,
+            machineCode: true,
+          },
+        },
+      },
+    });
+  }
+
+  // The machine's key stops working and it no longer belongs to any agent.
+  releaseMachine(machineId: string, updatedBy: string) {
+    return this.db.machine.update({
+      where: {
+        id: machineId,
+      },
+      data: {
+        apiKeyHash: null,
+        apiKeyIssuedAt: null,
+        currentAgentId: null,
+        updatedBy,
+      },
+    });
+  }
+
+  // Back to an unused, unassigned code. expiresAt is kept, so days already
+  // used are not credited back.
+  resetActivation(activationId: string, remarks: string) {
+    return this.db.activation.update({
+      where: {
+        id: activationId,
+      },
+      data: {
+        status: ActivationStatus.NOT_ACTIVATED,
+        machineId: null,
+        isCurrent: true,
+        activatedAt: null,
+        deactivatedAt: new Date(),
+        assignedAgentId: null,
+        assignedByOwnerType: null,
+        assignedByOwnerId: null,
+        assignedAt: null,
+        activationPasswordHash: null,
+        activationPasswordPlain: null,
+        remarks,
       },
     });
   }

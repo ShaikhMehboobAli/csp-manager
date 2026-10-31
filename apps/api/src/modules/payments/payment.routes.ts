@@ -6,6 +6,7 @@ import * as PaymentController from "./payment.controller";
 import { authMiddleware } from "../../core/middlewares/auth.middleware";
 import { authorize } from "../../core/middlewares/authorize.middleware";
 import { UserRole } from "../../generated/prisma/enums";
+import { paymentRateLimit } from "../../core/middlewares/rate-limit.middleware";
 
 import { createOrderSchema } from "./validations/create-order.validation";
 import { validate } from "../../core/middlewares/validate";
@@ -19,6 +20,7 @@ router.post(
   authMiddleware,
   // Only a CSP or BC buys plans (KOs have no login; SUPER_ADMIN has none).
   authorize(UserRole.CSP_ADMIN, UserRole.BC_ADMIN),
+  paymentRateLimit,
   validate(createOrderSchema),
   PaymentController.createOrder,
 );
@@ -26,6 +28,7 @@ router.post(
 router.post(
   "/verify",
   authMiddleware,
+  paymentRateLimit,
   validate(verifyPaymentSchema),
   PaymentController.verifyPayment,
 );
