@@ -15,6 +15,7 @@ export interface CreateKOInput {
 
   cashLimit?: number;
   openingCash?: number;
+  openingCashInAccount?: number;
 
   machineCount: number;
 }
@@ -61,6 +62,7 @@ export interface CreateCSPInput {
 
   cashLimit?: Prisma.Decimal | number;
   openingCash?: Prisma.Decimal | number;
+  openingCashInAccount?: Prisma.Decimal | number;
   //   cashLimit: string | null;
   //   openingCash: string | null;
 
@@ -85,6 +87,7 @@ export interface CreateAgentInternalInput {
 
   cashLimit?: Prisma.Decimal | number;
   openingCash?: Prisma.Decimal | number;
+  openingCashInAccount?: Prisma.Decimal | number;
 
   machineCount: number;
 
@@ -119,6 +122,7 @@ export interface AgentResponse {
   //   openingCash: Prisma.Decimal | null;
   cashLimit: string | null;
   openingCash: string | null;
+  openingCashInAccount: string | null;
 
   linkedAt: Date | null;
 

@@ -6,8 +6,36 @@ import AgentScopeService from "../agents/service/agent-scope.service";
 
 import ReceiptService from "./receipt.service";
 
-import { receiptListSchema } from "./receipt.validation";
+import { ReceiptListQuery, receiptListSchema } from "./receipt.validation";
 import { ReceiptParams } from "./receipt.dto";
+import { CurrentUser } from "../../core/types/auth.types";
+import { resolveDateRange } from "../reports/helper/report.helper";
+
+/**
+ * Agents and dates for the receipt list, stats and export. `agentIds` picks
+ * agents inside the caller's scope (each is checked); without it the whole
+ * scope is used. `period` sets the dates unless from/to are given.
+ */
+async function resolveReceiptFilter(
+  scopeService: AgentScopeService,
+  user: CurrentUser,
+  query: ReceiptListQuery,
+) {
+  const scope = await scopeService.getAgentScope(user);
+
+  scopeService.ensureAgentAccessible(query.agentId, scope);
+
+  if (query.agentIds) {
+    scopeService.ensureAgentsAccessible(query.agentIds, scope);
+  }
+
+  return {
+    agentIds: query.agentIds ?? scope,
+    ...(query.period
+      ? resolveDateRange(query.period, query.from, query.to)
+      : { from: query.from, to: query.to }),
+  };
+}
 
 export default class ReceiptController {
   private readonly service = new ReceiptService();
@@ -30,12 +58,16 @@ export default class ReceiptController {
     return withReadOnly(async (tx) => {
       const scopeService = new AgentScopeService(tx);
 
-      const agentIds = await scopeService.getAgentScope(req.user!);
-
-      scopeService.ensureAgentAccessible(query.agentId, agentIds);
+      const { agentIds, ...dates } = await resolveReceiptFilter(
+        scopeService,
+        req.user!,
+        query,
+      );
 
       const result = await this.service.getReceipts({
         ...query,
+
+        ...dates,
 
         currentAgentId: req.user!.agentId,
 
@@ -80,12 +112,16 @@ export default class ReceiptController {
     return withReadOnly(async (tx) => {
       const scopeService = new AgentScopeService(tx);
 
-      const agentIds = await scopeService.getAgentScope(req.user!);
-
-      scopeService.ensureAgentAccessible(query.agentId, agentIds);
+      const { agentIds, ...dates } = await resolveReceiptFilter(
+        scopeService,
+        req.user!,
+        query,
+      );
 
       const result = await this.service.getStats({
         ...query,
+
+        ...dates,
 
         currentAgentId: req.user!.agentId,
 
@@ -108,11 +144,16 @@ export default class ReceiptController {
     return withReadOnly(async (tx) => {
       const scopeService = new AgentScopeService(tx);
 
-      const agentIds = await scopeService.getAgentScope(req.user!);
-      scopeService.ensureAgentAccessible(query.agentId, agentIds);
+      const { agentIds, ...dates } = await resolveReceiptFilter(
+        scopeService,
+        req.user!,
+        query,
+      );
 
       const workbook = await this.service.export({
         ...query,
+
+        ...dates,
 
         currentAgentId: req.user!.agentId,
 

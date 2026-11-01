@@ -45,3 +45,33 @@ export const addressValidator = z
 export const accountTypeValidator = z.enum(["BC", "CSP"], {
   message: "Account type must be BC or CSP.",
 });
+
+// Fits the float columns (Decimal(12, 2)).
+const MAX_MONEY = 9_999_999_999.99;
+
+/**
+ * A rupee amount ≥ 0 with at most 2 decimals. Accepts a number or a numeric
+ * string (form input); an empty string counts as missing, never as 0.
+ */
+export const moneyValidator = (label: string) =>
+  z.preprocess(
+    (value) => {
+      if (typeof value === "string") {
+        const trimmed = value.trim();
+
+        return trimmed === "" ? undefined : Number(trimmed);
+      }
+
+      return value;
+    },
+    z
+      .number({ message: `${label} must be a number.` })
+      .finite(`${label} must be a number.`)
+      .min(0, `${label} can't be negative.`)
+      .max(MAX_MONEY, `${label} is too large.`)
+      .refine(
+        (amount) => Math.round(amount * 100) === amount * 100,
+        `${label} can have at most 2 decimal places.`,
+      )
+      .optional(),
+  );

@@ -548,8 +548,11 @@ model Agent {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  cashLimit   Decimal? @db.Decimal(18, 2)
-  openingCash Decimal? @db.Decimal(18, 2)
+  // CSP limit (the CSP's float limit). Not a balance.
+  cashLimit            Decimal? @db.Decimal(18, 2)
+  // Opening float: cash in hand and cash in the account (holding).
+  openingCash          Decimal? @db.Decimal(18, 2)
+  openingCashInAccount Decimal? @db.Decimal(18, 2)
 
   linkedAt DateTime?
 
@@ -559,7 +562,8 @@ model Agent {
 
   bcLinkRequests BcLinkRequest[]
 
-  receipts Receipt[]
+  receipts           Receipt[]
+  receiptDailyCounts ReceiptDailyCount[]
 
   users User?
 
@@ -923,6 +927,7 @@ model Machine {
   sessions            MachineSession[]
   cspActivitySessions CspActivitySession[]
   receipts            Receipt[]
+  receiptDailyCounts  ReceiptDailyCount[]
 
   apiKeyHash      String?
   apiKeyIssuedAt  DateTime?
@@ -1177,6 +1182,42 @@ model Receipt {
   @@index([status])
   @@index([receiptType])
   @@index([transactionCategory])
+}
+
+/// Receipt counts per IST day. Receipts are kept for 60 days; these rows
+/// keep the counts for a year, so dashboards and reports read from here.
+model ReceiptDailyCount {
+  /// IST calendar day of transactionAt.
+  date DateTime @db.Date
+
+  agentId String
+
+  machineId String
+
+  receiptType ReceiptType
+
+  transactionCategory TransactionCategory
+
+  transactionType String
+
+  status ReceiptStatus
+
+  count Int @default(0)
+
+  amount Decimal @default(0) @db.Decimal(14, 2)
+
+  firstTransactionAt DateTime
+
+  lastTransactionAt DateTime
+
+  updatedAt DateTime @updatedAt
+
+  agent   Agent   @relation(fields: [agentId], references: [agentId], onDelete: Cascade)
+  machine Machine @relation(fields: [machineId], references: [id], onDelete: Cascade)
+
+  @@id([date, agentId, machineId, receiptType, transactionCategory, transactionType, status])
+  @@index([agentId, date])
+  @@index([machineId, date])
 }
 
 model ReceiptCashDenomination {

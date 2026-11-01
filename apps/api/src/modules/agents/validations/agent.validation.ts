@@ -10,6 +10,7 @@ const agentFields = {
   address: z.string().trim().max(500).optional(),
   cashLimit: z.coerce.number().nonnegative().optional(),
   openingCash: z.coerce.number().nonnegative().optional(),
+  openingCashInAccount: z.coerce.number().nonnegative().optional(),
   // Kept for older clients; machines come from the owner's activations.
   machineCount: z.number().int().min(0).max(100).default(0),
 };

@@ -13,6 +13,7 @@ import {
   mapMachineSummary,
   mapRecentTransactions,
   mapServiceSummary,
+  mapServicesByCategory,
   mapServiceTrend,
   mapStatusSummary,
   mapSuccessFailureTrend,
@@ -218,6 +219,8 @@ export default class DashboardService {
 
       services: mapServiceSummary(serviceSummary),
 
+      servicesByCategory: mapServicesByCategory(serviceSummary),
+
       statusSummary: mapStatusSummary(statusSummary),
 
       // machine: mapMachineSummary(machineSummary),
@@ -382,7 +385,7 @@ export default class DashboardService {
       for (const key of keys) {
         const mapKey = `${dateKey}:${key}`;
 
-        receiptMap.set(mapKey, (receiptMap.get(mapKey) ?? 0) + 1);
+        receiptMap.set(mapKey, (receiptMap.get(mapKey) ?? 0) + receipt.count);
       }
     }
 
@@ -441,47 +444,40 @@ export default class DashboardService {
 
       const dayReceipts = result.receipts.filter(
         (receipt) =>
-          receipt.transactionAt && istDateKey(receipt.transactionAt) === dateKey,
+          receipt.transactionAt &&
+          istDateKey(receipt.transactionAt) === dateKey,
       );
+
+      const countOf = (category: string) =>
+        dayReceipts
+          .filter((receipt) => receipt.transactionCategory === category)
+          .reduce((total, receipt) => total + receipt.count, 0);
 
       rows.push({
         date: dateKey,
 
-        totalTxn: dayReceipts.length,
+        totalTxn: dayReceipts.reduce(
+          (total, receipt) => total + receipt.count,
+          0,
+        ),
 
-        passbookPrinter: 0,
+        passbookPrinter: countOf("PASSBOOK_PRINTING"),
 
-        cashWithdrawal: dayReceipts.filter(
-          (receipt) => receipt.transactionCategory === "CASH_WITHDRAWAL",
-        ).length,
+        cashWithdrawal: countOf("CASH_WITHDRAWAL"),
 
-        cashDeposit: dayReceipts.filter(
-          (receipt) => receipt.transactionCategory === "CASH_DEPOSIT",
-        ).length,
+        cashDeposit: countOf("CASH_DEPOSIT"),
 
-        microAtmTxn: dayReceipts.filter(
-          (receipt) => receipt.transactionCategory === "MICRO_ATM",
-        ).length,
+        microAtmTxn: countOf("MICRO_ATM"),
 
-        accountOpening: dayReceipts.filter(
-          (receipt) => receipt.transactionCategory === "ACCOUNT_OPENING",
-        ).length,
+        accountOpening: countOf("ACCOUNT_OPENING"),
 
-        miniStatement: dayReceipts.filter(
-          (receipt) => receipt.transactionCategory === "MINI_STATEMENT",
-        ).length,
+        miniStatement: countOf("MINI_STATEMENT"),
 
-        balanceInquiry: dayReceipts.filter(
-          (receipt) => receipt.transactionCategory === "BALANCE_ENQUIRY",
-        ).length,
+        balanceInquiry: countOf("BALANCE_ENQUIRY"),
 
-        moneyTransfer: dayReceipts.filter(
-          (receipt) => receipt.transactionCategory === "MONEY_TRANSFER",
-        ).length,
+        moneyTransfer: countOf("MONEY_TRANSFER"),
 
-        fundTransfer: dayReceipts.filter(
-          (receipt) => receipt.transactionCategory === "FUND_TRANSFER",
-        ).length,
+        fundTransfer: countOf("FUND_TRANSFER"),
       });
     }
 

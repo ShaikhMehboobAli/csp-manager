@@ -2,7 +2,7 @@
 
 **Audience:** the engineer/agent implementing changes in the C# desktop repo (`ReceiptWarcher/`).
 **Source of truth for the backend:** `csp-manager/apps/api` (Express + Prisma). This doc lists what the desktop must add, modify, or remove to match the backend.
-**Last updated:** 2026-10-30 (rev 11)
+**Last updated:** 2026-11-01 (rev 13)
 
 > Paths below are relative to the desktop project root (`ReceiptWarcher/`). The doc was written against `ReceiptWarcher.zip` (Downloads, 2026-10-24); verify each location against your current checkout before editing.
 
@@ -39,6 +39,7 @@
 | 17 | `desktopControls`: admin switches for services and the denomination popup | READY |
 | 18 | Versions (`minimumVersion`, `downloadUrl`), `portalUrl`, removed endpoints, rate limits | READY |
 | 19 | Machine credentials: HTTPS, DPAPI, header credentials, **signed requests with a device key** | READY (must ship before production) |
+| 20 | Receipts older than the retention period (default 60 days, at least 15) are refused on upload; `totalCount` covers the last 12 months | READY (handle the new skip reason) |
 | — | **Part 3: Endpoint quick reference** (URL, request, response, how to use) | READY |
 | — | **Part 2: Desktop API reference** (all endpoints, validation, logic) | READY |
 
@@ -498,6 +499,15 @@ Retries must be **re-signed** (new timestamp and nonce). Every call, signed or f
 
 If the device key can't ship at once, credentials can move to headers first: `X-Machine-Code`, `X-Machine-Fingerprint`, `Authorization: Machine <apiKey>`. The body then doesn't need them. If a value is in both the header and the body, they must match (400 `Machine credentials in the headers and the body don't match.`). This keeps the key out of body logs but is **not** enough for production; 19.2–19.3 are.
 
+## 20. Receipt retention: old receipts refused, `totalCount` for 12 months — READY
+
+The server keeps receipts for a retention period, by `transactionAt`: **60 days by default**, which the super admin can set anywhere from **15 to 365 days**. Per-day counts are kept for **1 year**. A daily job deletes older receipts. Raising the period never re-opens days that were already deleted.
+
+- Both upload endpoints skip a receipt whose `transactionAt` is before that window: `skippedReceipts: [{ receiptId, reason: "Receipt is older than the receipt retention period." }]`. The rest of the batch is saved. A missing `transactionAt` on `upload-counts` means "now", so it is never refused.
+- Queue action: **`Failed` ("too old"), no retry.** Retrying can't succeed, and it can't be counted: an accepted old receipt could already have been deleted and would be counted twice. With the 60-day default, the desktop's own 30-day queue limit (section G) makes this rare. If the period is set below 30 days, queued receipts older than it are refused this way. Treat that as the same "too old" case.
+- `totalCount` in the `upload-counts` response now comes from the daily counts. It is the agent's total for the **last 12 months**, not all time. Keep using it for the on-screen counters.
+- Nothing else changes: the same request and response shapes, ids, and duplicate handling.
+
 ---
 
 ## A. Conventions (all endpoints)
@@ -726,6 +736,7 @@ Per receipt, inside one DB transaction: duplicate id in the same request → ski
 | in `acceptedReceipts` | `Uploaded` |
 | in `skippedReceipts`, reason `Receipt already exists.` / `Duplicate receipt in request.` | `Uploaded` (it's on the server) |
 | in `skippedReceipts`, reason starts with `Invalid receipt` | `Failed` + reason; no auto-retry |
+| in `skippedReceipts`, reason `Receipt is older than the receipt retention period.` | `Failed` ("too old"); no auto-retry (item #20) |
 | 429 | `Pending`; retry with backoff |
 | 400 validation message | `Failed` + message; no auto-retry; show in an "upload problems" list |
 | 400 `No active machine session found.` | `Pending`; retry after the next successful heartbeat |
@@ -737,7 +748,7 @@ Per receipt, inside one DB transaction: duplicate id in the same request → ski
 - Upload in chunks of ≤ 20, oldest first, one request at a time (no parallel uploads).
 - Trigger: after enqueue, after each successful heartbeat, and on a 60 s timer when `Pending` rows exist.
 - Before uploading old queued rows, map legacy denomination keys (#2) and drop rows older than 30 days to `Failed` ("too old") so a broken row can't loop forever.
-- `totalCount` in the response = the agent's cumulative counts on the server; use it for the on-screen counters (don't add locally).
+- `totalCount` in the response = the agent's counts on the server for the last 12 months (item #20); use it for the on-screen counters (don't add locally).
 
 ## H. Error classification (all runtime endpoints)
 
@@ -987,7 +998,7 @@ Response 201:
 How to use:
 - 1–20 receipts, oldest first, one request at a time. `agentId` = `MachineConfig.AgentId`. Leave out null fields; `count` is always 1.
 - `amount` only for `CASH_DEPOSIT`, `CASH_WITHDRAWAL`, `MONEY_TRANSFER` (required there); never for passbook or social security.
-- Per receipt: in `acceptedReceipts` → Uploaded; skipped with `Receipt already exists.` / `Duplicate receipt in request.` → Uploaded; skipped with a reason starting `Invalid receipt` → Failed (keep reason, no retry); in neither list → keep queued and retry.
+- Per receipt: in `acceptedReceipts` → Uploaded; skipped with `Receipt already exists.` / `Duplicate receipt in request.` → Uploaded; skipped with a reason starting `Invalid receipt` or `Receipt is older than the receipt retention period.` → Failed (keep reason, no retry); in neither list → keep queued and retry.
 - Needs an active machine session (Q2 or Q5 in the last 180 s): 400 `No active machine session found.` → retry after the next heartbeat. Full rules: section G, item #16.
 
 ### Q8. `POST /api/v1/receipts/upload` (background watcher only)
@@ -1010,11 +1021,14 @@ How to use:
 - Only when the last `receiptWatcherAllowed` was `true`. Otherwise the server answers 403 `Receipt watcher is not allowed for this machine. Receipts are counted by CSP Manager.` → stop the watcher.
 - 1–20 receipts; `status`, `transactionAt` and `amount` required on each; one invalid receipt fails the whole request (400) here, unlike Q7. No `agentId` (the machine's assigned agent is used).
 - Don't send `customerName` / `customerAccount` unless the product asks for them (pre-production checklist 5C.6).
+- Skipped reasons: `Duplicate receipt in request.`, `Receipt already exists.` (both = on the server) and `Receipt is older than the receipt retention period.` (= drop it, item #20).
 
 ---
 
 ## Changelog
 
+- 2026-11-01 (rev 13) — Item #20: the retention period is set by the super admin (15–365 days, default 60); the skip reason and queue handling are unchanged.
+- 2026-10-31 (rev 12) — Item #20: receipts are kept 60 days; both upload endpoints skip receipts older than that (`Receipt is older than the receipt retention period.` → Failed, no retry); `totalCount` covers the last 12 months. Section G, Q7 and Q8 updated.
 - 2026-10-30 (rev 11) — Item #19 READY: device key (ECDSA P-256, `machine.devicePublicKey` at activation), signed requests (`X-Machine-Code`, `X-Machine-Fingerprint`, `X-Timestamp`, `X-Nonce`, `X-Signature`), header credentials (`Authorization: Machine <apiKey>`). Backward compatible until the server sets `MACHINE_SIGNATURE_REQUIRED=true` (production).
 - 2026-10-30 (rev 10) — Added Part 3: endpoint quick reference (Q1–Q8) with URL, request, response and how to use. Revoke is now requested by the owner in the mobile app and approved by the super admin (item #15). Added item #19 (machine credential security plan: HTTPS + DPAPI now, signed requests later).
 - 2026-10-30 (rev 9) — Answers the desktop requirements doc (audit 2026-10-29). Items #14–#18: `receiptWatcherAllowed` / `receiptWatcherReason` / `ownerType`; same-PC re-activation and web-app revoke; `PASSBOOK` / `PASSBOOK_PRINTING`, per-agent `receiptId`, per-receipt validation, report columns; `desktopControls`; `minimumVersion`, `downloadUrl`, `portalUrl` (null for now); removed `/events`, `/api/auth/activate`, `/api/config/sync`, `/receipt`; rate limits (429). Sections C, D, E, G, H updated.

@@ -27,6 +27,7 @@ import JwtService from "../../core/services/jwt.service";
 import { LoginDto } from "./validations/login.validation";
 import { AccountType } from "./types/auth.types";
 import { BadRequestError } from "../../core/errors/BadRequestError";
+import FloatLedgerService from "../float/float-ledger.service";
 
 // bcrypt hash of a random value, compared when the agent ID is unknown.
 const LOGIN_TIMING_HASH =
@@ -121,6 +122,25 @@ export default class AuthService {
 
       await this.createAgentIfNeeded(repository, data);
 
+      // Validation requires these for CSP signups.
+      const cash = {
+        openingCash: data.cashInHand!,
+        openingCashInAccount: data.cashInAccount!,
+        cashLimit: data.cspLimit!,
+      };
+
+      const openingFloat = await new FloatLedgerService(tx).setOpeningFloat(
+        data.agentId,
+        cash.openingCash,
+        cash.openingCashInAccount,
+      );
+
+      // A float already in use keeps its opening values and limit; they
+      // change through cash management.
+      if (openingFloat !== "KEPT") {
+        await repository.updateAgentCash(data.agentId, cash);
+      }
+
       const user = await this.createPendingAccount(repository, {
         agentId: data.agentId,
         email: data.email,
@@ -134,6 +154,7 @@ export default class AuthService {
         message: "Signup successful. OTP sent for verification.",
         data: {
           userId: user.id,
+          openingFloat,
         },
       };
     });

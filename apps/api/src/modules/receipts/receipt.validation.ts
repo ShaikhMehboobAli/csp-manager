@@ -117,6 +117,28 @@ export const uploadReceiptCountsSchema = z.object({
     .max(MAX_RECEIPTS_PER_UPLOAD, `At most ${MAX_RECEIPTS_PER_UPLOAD} receipts per upload.`),
 });
 
+/**
+ * A list filter given as `a,b` or repeated (`?x=a&x=b`). Empty means no
+ * filter.
+ */
+function listFilter<T extends z.ZodType<string>>(item: T) {
+  return z.preprocess(
+    (value) => {
+      if (value === undefined || value === "") {
+        return undefined;
+      }
+
+      const values = (Array.isArray(value) ? value : [value])
+        .flatMap((entry) => String(entry).split(","))
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+
+      return values.length > 0 ? [...new Set(values)] : undefined;
+    },
+    z.array(item).max(100).optional(),
+  );
+}
+
 export const receiptListSchema = z.object({
   page: z.coerce.number().int().positive().default(1),
 
@@ -137,6 +159,18 @@ export const receiptListSchema = z.object({
   search: z.string().trim().optional(),
 
   agentId: z.string().optional(),
+
+  // Several at once; each must be in the caller's scope. Omit for all.
+  agentIds: listFilter(z.string().min(1).max(50)),
+
+  receiptTypes: listFilter(z.nativeEnum(ReceiptType)),
+
+  transactionCategories: listFilter(z.nativeEnum(TransactionCategory)),
+
+  // from/to win over the period; no period and no dates = no date filter.
+  period: z
+    .enum(["TODAY", "YESTERDAY", "CURRENT_MONTH", "LAST_MONTH", "CUSTOM"])
+    .optional(),
 
   sortBy: z
     .enum(["transactionAt", "createdAt", "amount"])

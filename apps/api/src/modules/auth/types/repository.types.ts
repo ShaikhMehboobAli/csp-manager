@@ -38,4 +38,7 @@ export interface CreateAgentInput {
   selfRegistered: boolean;
   bcId?: string;
   isProfileCompleted?: boolean;
+  openingCash?: number;
+  openingCashInAccount?: number;
+  cashLimit?: number;
 }

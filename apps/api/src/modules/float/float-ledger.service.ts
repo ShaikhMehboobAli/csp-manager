@@ -288,6 +288,65 @@ export default class FloatLedgerService {
   //     return agentFloat;
   //   }
 
+  /**
+   * Sets the agent's opening float (CSP signup). Creates the float and its
+   * OPENING ledger entry; if the float exists but nothing has been recorded on
+   * it yet (signup sent again before verifying), resets it to the new values.
+   * Once receipts or adjustments exist the balances are kept (KEPT): changes go
+   * through cash management. Run inside the signup transaction.
+   */
+  async setOpeningFloat(
+    agentId: string,
+    cashInHand: number,
+    cashInAccount: number,
+  ): Promise<"CREATED" | "UPDATED" | "KEPT"> {
+    const current = await this.lockAgentFloat(agentId);
+
+    const opening = {
+      ledgerType: FloatLedgerType.OPENING,
+      cashInHandChange: cashInHand,
+      cashInAccountChange: cashInAccount,
+      balanceCashInHand: cashInHand,
+      balanceCashInAccount: cashInAccount,
+      remarks: "Opening float at signup",
+    };
+
+    if (!current) {
+      await this.agentFloatRepository.initialize(
+        agentId,
+        cashInHand,
+        cashInAccount,
+      );
+
+      await this.createLedger({ agentId, ...opening });
+
+      return "CREATED";
+    }
+
+    const used = await this.db.floatLedger.count({
+      where: { agentId, ledgerType: { not: FloatLedgerType.OPENING } },
+    });
+
+    if (used > 0) {
+      return "KEPT";
+    }
+
+    await this.agentFloatRepository.update(agentId, {
+      openingFloat: cashInHand + cashInAccount,
+      currentCashInHand: cashInHand,
+      currentCashInAccount: cashInAccount,
+      currentTotalFloat: cashInHand + cashInAccount,
+    });
+
+    await this.db.floatLedger.deleteMany({
+      where: { agentId, ledgerType: FloatLedgerType.OPENING },
+    });
+
+    await this.createLedger({ agentId, ...opening });
+
+    return "UPDATED";
+  }
+
   private async getOrCreateAgentFloat(agentId: string) {
     let agentFloat = await this.agentFloatRepository.findByAgentId(agentId);
 
@@ -303,7 +362,8 @@ export default class FloatLedgerService {
 
     const cashInHand = Number(agent.openingCash ?? 0);
 
-    const cashInAccount = Number(agent.cashLimit ?? 0);
+    // cashLimit is the CSP limit, not a balance.
+    const cashInAccount = Number(agent.openingCashInAccount ?? 0);
 
     agentFloat = await this.agentFloatRepository.initialize(
       agentId,

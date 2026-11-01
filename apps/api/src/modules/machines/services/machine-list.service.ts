@@ -18,6 +18,10 @@ import SubscriptionEntitlementService from "../../subscriptions/subscription-ent
 import MachineListRepository from "../repository/machine-list.repository";
 import MachineSessionRepository from "../runtime/machine-session.repository";
 import CspActivityService from "../runtime/csp-activity.service";
+import {
+  asReceiptGroups,
+  buildDailyCountWhere,
+} from "../../receipts/repository/receipt-daily-count.repository";
 import { MachineDetailFilter, MachineListFilter } from "../types/machine.types";
 
 export default class MachineListService {
@@ -695,82 +699,77 @@ export default class MachineListService {
               },
             }),
 
+        // Counts and the last receipt time come from the daily counts.
         isEmptyUnit
           ? []
-          : tx.receipt.groupBy({
-              by: ["agentId", "status"],
+          : tx.receiptDailyCount
+              .groupBy({
+                by: ["agentId", "status"],
 
-              where: {
-                agentId: {
-                  in: scopedAgentIds,
+                where: {
+                  ...buildDailyCountWhere({ from, to }),
+
+                  agentId: {
+                    in: scopedAgentIds,
+                  },
                 },
 
-                transactionAt: {
-                  gte: from,
-                  lte: to,
+                _sum: {
+                  count: true,
+                  amount: true,
                 },
-              },
-
-              _count: {
-                id: true,
-              },
-
-              _sum: {
-                amount: true,
-              },
-            }),
+              })
+              .then(asReceiptGroups),
 
         isEmptyUnit
           ? null
-          : tx.receipt.findFirst({
-              where: {
-                agentId: {
-                  in: scopedAgentIds,
+          : tx.receiptDailyCount
+              .aggregate({
+                where: {
+                  ...buildDailyCountWhere({ from, to }),
+
+                  agentId: {
+                    in: scopedAgentIds,
+                  },
                 },
 
-                transactionAt: {
-                  gte: from,
-                  lte: to,
+                _max: {
+                  lastTransactionAt: true,
                 },
-              },
-
-              orderBy: {
-                transactionAt: "desc",
-              },
-
-              select: {
-                transactionAt: true,
-              },
-            }),
+              })
+              .then((result) => ({
+                transactionAt: result._max.lastTransactionAt,
+              })),
 
         isEmptyUnit
           ? []
-          : tx.receipt.groupBy({
-              by: ["agentId", "transactionCategory", "receiptType", "status"],
+          : tx.receiptDailyCount
+              .groupBy({
+                by: [
+                  "agentId",
+                  "transactionCategory",
+                  "receiptType",
+                  "status",
+                ],
 
-              where: {
-                agentId: {
-                  in: scopedAgentIds,
+                where: {
+                  ...buildDailyCountWhere({ from, to }),
+
+                  agentId: {
+                    in: scopedAgentIds,
+                  },
                 },
 
-                transactionAt: {
-                  gte: from,
-                  lte: to,
+                _sum: {
+                  count: true,
+                  amount: true,
                 },
-              },
 
-              _count: {
-                id: true,
-              },
-
-              _sum: {
-                amount: true,
-              },
-
-              orderBy: {
-                transactionCategory: "asc",
-              },
-            }),
+                orderBy: {
+                  transactionCategory: "asc",
+                },
+              })
+              .then(asReceiptGroups),
 
         isEmptyUnit
           ? []

@@ -267,6 +267,7 @@ export class AgentService {
         linkedAt: new Date(),
         cashLimit: input.cashLimit,
         openingCash: input.openingCash,
+        openingCashInAccount: input.openingCashInAccount,
         updatedBy: createdBy,
       });
     } else {
@@ -283,6 +284,7 @@ export class AgentService {
 
         cashLimit: input.cashLimit,
         openingCash: input.openingCash,
+        openingCashInAccount: input.openingCashInAccount,
 
         linkedAt: new Date(),
 
@@ -354,6 +356,7 @@ export class AgentService {
 
         cashLimit: input.cashLimit,
         openingCash: input.openingCash,
+        openingCashInAccount: input.openingCashInAccount,
 
         updatedBy: createdBy,
       });
@@ -373,6 +376,7 @@ export class AgentService {
 
         cashLimit: input.cashLimit,
         openingCash: input.openingCash,
+        openingCashInAccount: input.openingCashInAccount,
 
         linkedAt: new Date(),
 

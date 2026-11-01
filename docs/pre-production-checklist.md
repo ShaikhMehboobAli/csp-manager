@@ -2,7 +2,7 @@
 
 **Audience:** whoever prepares the backend (`apps/api`) for a production release.
 **Purpose:** items that are acceptable in development but must be resolved or consciously accepted before go-live. Desktop-side items live in `docs/desktop-integration-changes.md`.
-**Last updated:** 2026-10-30
+**Last updated:** 2026-11-01
 
 Status: `OPEN` (must do), `DECIDE` (needs an owner decision), `DONE`.
 
@@ -56,6 +56,7 @@ Status: `OPEN` (must do), `DECIDE` (needs an owner decision), `DONE`.
 | 3.11 | Legacy BC plans (`BC_BASIC`, `BC_PRO`) carry the four desktop features as explicit plan features; `BC_CSP_LINK` has `CSP_LINKING` + `CASH_MANAGEMENT`. Run `npx prisma db seed` after deploying so these plan-feature links exist. | OPEN | `prisma/seeds/data/plans.ts` |
 | 3.12 | Desktop settings (`AppSetting` key `desktop`: global service switches, `minimumVersion`, `latestWatcherVersion`, `downloadUrl`, `portalUrl`) are cached in-process for 60 s; other instances pick up a super admin change within a minute. Set `latestWatcherVersion` / `downloadUrl` for the production installer; `portalUrl` stays null until the web portal exists. | OPEN | `modules/settings/desktop-settings.service.ts` |
 | 3.13 | **Database timeouts.** On 2026-10-30 a Neon pooled connection dropped in the middle of a `create-order` transaction; the server-side transaction stayed open holding the payment running-number row lock, and the next `create-order` waited ~4 minutes (500). Set on the production app role: `ALTER ROLE <app> SET idle_in_transaction_session_timeout = '30s'; ALTER ROLE <app> SET lock_timeout = '10s'; ALTER ROLE <app> SET statement_timeout = '20s';` (and the same on the dev database once agreed), so an orphaned transaction is killed quickly and waiters fail fast instead of hanging. | OPEN | Neon / DB role |
+| 3.15 | **Receipt retention + daily counts** (built 2026-10-31; configurable 2026-11-01). Receipts are kept for **N IST days** (today + the previous N). The super admin sets N with `PATCH /admin/receipt-retention` (15–365, default `RECEIPT_RETENTION_DAYS`, 60). Each run first **repairs counts** for receipts that were saved without them (raises, never lowers a count). It then records a **deleted-before mark** before deleting, so raising N later never re-accepts deleted days. Batches delete **oldest first**; the run's result, including a failure and its error, shows in `GET /admin/receipt-retention` → `lastRun`, and the next run continues. Uploads hold a shared advisory lock while writing counts, and the repair step takes it exclusively only when a mismatch is found. `ReceiptDailyCount` keeps per-day counts (agent × machine × receipt type × category × transaction type × status: count, amount, first/last time) for **365 days**. Every dashboard / report / stats / machine count and the desktop `totalCount` read the daily counts, so deleting receipts doesn't change them (verified: old vs new code on 96 endpoint calls identical; counts unchanged after a real retention run). Uploads write the counts in the same transaction, only for newly inserted receipts (retries and races don't double count). Uploads **refuse receipts older than the retention period** (`Receipt is older than the receipt retention period.`) so a deleted receipt can't be re-uploaded and counted twice. Job `ReceiptRetentionJob` runs daily at 03:30 IST, deletes in batches of 5,000 (cash denominations cascade; float-ledger rows stay with an empty receipt link), then deletes counts older than a year. Before production: (a) set `RECEIPT_RETENTION_DAYS=60`, `RECEIPT_COUNT_RETENTION_DAYS=365`, `CLEANUP_DRY_RUN=false` (dev runs in dry-run: it only logs what it would delete; `CLEANUP_DRY_RUN` also gates the session cleanup); (b) run the migration `20261031090000_receipt_daily_counts`, which backfills counts from existing receipts. Receipts uploaded by the old code between the backfill and the new deploy are repaired by the first nightly run before anything is deleted, but stopping the old API during the deploy is still cleaner; (c) with several API instances, the job runs on each (deletes are idempotent, but run it on one instance if possible); (d) if receipts are ever **updated** (e.g. a status change), the daily counts must be adjusted in the same transaction — today receipts are insert-only. Still on receipts, so limited to 60 days: receipt list/detail/export, `recentTransactions`, hourly charts (`groupBy=hour`, `hourlyDistribution`) and `GET /receipts/stats?search=`. | OPEN | `modules/receipts/receipt-retention.service.ts`, `repository/receipt-daily-count.repository.ts`, `jobs/receipt-retention.job.ts` |
 | 3.14 | Every interactive transaction uses the shared 15 s limit (`withTransaction` / `TRANSACTION_OPTIONS`). `agent.service.ts` used Prisma's 5 s default and failed KO/CSP creation intermittently from a remote DB; fixed 2026-10-30. Use `withTransaction` for any new transaction. | DONE | `core/database/transaction.ts` |
 | 3.6 | Subscription expiry runs hourly in-process (`node-cron`). If the API runs as multiple instances, make sure only one runs jobs (or the jobs are safe to run concurrently — current ones are idempotent). | DECIDE | `src/jobs/*`, `src/server.ts` |
 
@@ -63,7 +64,7 @@ Status: `OPEN` (must do), `DECIDE` (needs an owner decision), `DONE`.
 
 | # | Item | Status |
 |---|---|---|
-| 4.1 | Grace period after subscription end (currently none). | DECIDE |
+| 4.1 | Grace period after subscription end (currently 0: `graceEndsAt` is never set, so a subscription stops on its end date). Planned: a super admin setting for the grace days; new subscriptions get `graceEndsAt = endDate + grace`. Access already runs until `graceEndsAt`; admin KT §12 counts grace subscriptions separately and uses `graceEndsAt` as the stop date. | DECIDE |
 | 4.2 | Upgrade gives no credit/refund for unused days of the old plan. | DECIDE |
 | 4.4 | No RM / Network Manager role exists. Metric definitions are SUPER_ADMIN-only until it does. | DECIDE |
 | 4.6 | A BC linking an **existing** CSP always needs SUPER_ADMIN approval: `POST /agents/csp` with an existing CSP now returns 202 and creates a `BC_MANAGED` link request (KOs must be added after approval); `/bc-links/requests` creates `SUBSCRIBED_CSP` requests. Only CSPs the BC creates are linked immediately. SUPER_ADMIN calling `POST /agents/csp` still links directly. | DONE |
@@ -72,8 +73,10 @@ Status: `OPEN` (must do), `DECIDE` (needs an owner decision), `DONE`.
 | 4.9 | SUPER_ADMIN account: `npm run seed:super-admin` with `SUPER_ADMIN_EMAIL`, `SUPER_ADMIN_PASSWORD` (≥12 chars), optional `SUPER_ADMIN_AGENT_ID` (default `SUPERADMIN`) and `SUPER_ADMIN_RESET_PASSWORD=true`; also runs from `prisma db seed` when the env vars are set. Created in dev on 2026-10-25. **Create production credentials separately; never reuse dev ones.** | DONE |
 | 4.10 | Day boundaries are IST (`Asia/Kolkata`) for dashboards, reports, CSP monthly detail, analytics labels, machine analytics and the one-visit-per-month rule (`core/utils/ist.ts`). | DONE |
 | 4.11 | CSP plans are priced **per machine**: `create-order` takes `machineCount` (1–100), amount = price × machines, the subscription gets that many activations. Buying a different machine count while a plan runs starts a new subscription now (old one ends, activated machines carry over, no credit). Confirm the no-credit rule for adding machines mid-term. | DECIDE |
-| 4.12 | `GET /reports/summary` accepts `cspAgentId` but never applied it. | OPEN |
+| 4.12 | `GET /reports/summary` accepted `cspAgentId` but never applied it, and KO transactions were left out of their CSP's row. Fixed 2026-11-01: rows count the CSP + its KOs; `agentId`/`cspAgentId` select a CSP (with KOs) or one KO. | DONE |
 | 4.5 | Uploads created before 2026-10-25 have keys without the owner folder (`csp-visits/<year>/...`). Only SUPER_ADMIN can fetch them directly; visit detail still serves them. Re-key or accept for any non-test data. | DECIDE |
+| 4.13 | **Receipt retention period.** Receipts (customer name/account, RRN, amount, denominations) are deleted after the period the super admin sets (default 60, minimum 15 days); only counts stay (1 year). Confirm this meets the bank / BC agreement and any record-keeping duty; if receipts must be kept longer, archive them (e.g. to S3) before the job deletes them, or raise `RECEIPT_RETENTION_DAYS`. The desktop's own queue drops rows older than 30 days, so the 60-day upload limit rarely applies. | DECIDE |
+| 4.14 | **CSP opening float and limit** (2026-11-01). CSP signup requires cash in hand, cash in account and the CSP limit; the float and its OPENING ledger entry are created at signup. New `Agent.openingCashInAccount`; `cashLimit` is only the limit (older code used it as the opening cash in account for BC-created CSPs and KOs, so floats opened before this used the limit as account cash: review them before go-live). To decide: (a) should the opening total be refused, or warned about, when it is above the CSP limit? Nothing enforces the limit yet; (b) should `POST /agents/csp` / `/agents/ko` (BC) also require the three values? They're optional there today. | DECIDE |
 | 4.3 | Money Transfer and Fund Transfer shown as separate columns in dashboard CSP summary, CSP monthly detail, and reports (JSON + Excel). | DONE |
 
 ## 5. Security hardening plan (before go-live)
@@ -120,7 +123,7 @@ Owner request 2026-10-30: secure the desktop ↔ server channel, keep the app ou
 | 5C.4 | Rotate the database password before go-live (the dev URL has been on developer machines and in tools). | must | OPEN |
 | 5C.5 | Backups: confirm point-in-time restore window on the Neon plan, and do one restore drill into a scratch branch. | must | OPEN |
 | 5C.6 | Sensitive data: customer name / account number on receipts, agent mobile/email. Store only what's needed (the desktop's minimal upload sends none); mask account numbers (last 4) if stored; consider column encryption for any full account numbers. Remove plaintext activation passwords (2.11). | must | OPEN |
-| 5C.7 | Retention: the session/receipt retention jobs (`SESSION_RETENTION_DAYS`, `RECEIPT_RETENTION_DAYS`, `CLEANUP_DRY_RUN`) set deliberately for production. | should | DECIDE |
+| 5C.7 | Retention: `SESSION_RETENTION_DAYS`, `RECEIPT_RETENTION_DAYS` (60, item 3.15), `RECEIPT_COUNT_RETENTION_DAYS` (365) and `CLEANUP_DRY_RUN=false` set deliberately for production. Deleting old receipts also limits how much customer data a breach could expose. | should | DECIDE |
 | 5C.8 | Access: only named people get console access to the production project, with 2FA on the Neon account; no shared logins. | must | OPEN |
 
 ## 6. Infrastructure, plans and subscriptions to buy before release
@@ -159,7 +162,7 @@ Everything runs on local computers today (local API, Neon free/dev project, test
 | `PAYMENT_WEBHOOK_SECRET` + Razorpay keys | from Razorpay (1.7) |
 | `AWS_*` | production bucket credentials (least privilege: that bucket only) |
 | `LATEST_WATCHER_VERSION` | fallback only; the super admin sets versions in the console |
-| `CLEANUP_DRY_RUN`, `*_RETENTION_DAYS` | chosen retention (5C.7) |
+| `CLEANUP_DRY_RUN`, `*_RETENTION_DAYS` | `false`; `RECEIPT_RETENTION_DAYS=60`, `RECEIPT_COUNT_RETENTION_DAYS=365`, sessions as chosen (3.15, 5C.7) |
 
 ### 6B. Go-live order (suggested)
 
@@ -175,6 +178,10 @@ Everything runs on local computers today (local API, Neon free/dev project, test
 
 ## Changelog
 
+- 2026-11-01 — Added 4.14 (CSP opening float and limit at signup).
+- 2026-11-01 — 4.12 DONE (report KO rows, `cspAgentId`).
+- 2026-11-01 — 3.15: retention period set by the super admin (15–365), count repair before deletion, deleted-before mark, recorded failures.
+- 2026-10-31 — Added 3.15 (receipt retention 60 days + daily counts for a year; deploy steps) and 4.13 (confirm the retention period); 5C.7 / 6A updated.
 - 2026-10-25 — Initial version.
 - 2026-10-25 — 4.3 DONE: money/fund transfer columns added.
 - 2026-10-25 — Added 3.7 (co-locate API with DB) and 3.8 (per-receipt query count) after a P2028 transaction timeout on `upload-counts`.

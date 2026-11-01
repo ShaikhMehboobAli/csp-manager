@@ -1,6 +1,7 @@
 import { PrismaDb } from "../../../core/database/prisma.types";
 import { normalizeDateRange } from "../../../core/utils/date-range.helper";
 import { Prisma } from "../../../generated/prisma/client";
+import { buildDailyCountWhere } from "../../receipts/repository/receipt-daily-count.repository";
 
 import { DashboardFilter } from "../dashboard.types";
 
@@ -95,5 +96,22 @@ export default abstract class DashboardCommonRepository {
     };
 
     return where;
+  }
+
+  /** The same filter over the daily receipt counts. */
+  protected buildCountWhere(
+    filter: DashboardFilter,
+  ): Prisma.ReceiptDailyCountWhereInput {
+    const { from, to } = normalizeDateRange(filter?.from, filter?.to);
+
+    return buildDailyCountWhere({
+      agentId: filter.agentId,
+      agentIds: filter.agentIds,
+      machineId: filter.machineId,
+      receiptType: filter.receiptType,
+      transactionCategory: filter.transactionCategory,
+      from,
+      to,
+    });
   }
 }

@@ -13,6 +13,7 @@ export const updateAgentSchema = z.object({
   cashLimit: z.coerce.number().nonnegative().optional(),
 
   openingCash: z.coerce.number().nonnegative().optional(),
+  openingCashInAccount: z.coerce.number().nonnegative().optional(),
 
   status: z.nativeEnum(AgentStatus).optional(),
 });

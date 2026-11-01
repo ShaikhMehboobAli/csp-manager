@@ -3,7 +3,7 @@
 **Audience:** the React Native team building the CSP Manager mobile app for **BC** and **CSP** users.
 **Not covered here:** the Super Admin console (React / Next.js) → `docs/admin-web-kt.md`; the Windows desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api` (Express + Prisma + PostgreSQL).
-**Last updated:** 2026-10-30 (rev 6)
+**Last updated:** 2026-11-01 (rev 10)
 
 > Describes the backend once PRs #3–#8 are merged into `development`. Where an older build behaves differently it says so.
 
@@ -166,8 +166,18 @@ Show/hide by plan: read the current plan's features (section 7).
 | `phone` | 10–15 chars |
 | `address` | required |
 | `password`, `confirmPassword` | 8–100 chars, must match (`Passwords do not match.`) |
+| `cashInHand` | **CSP: required.** Opening cash in hand, ₹ ≥ 0, max 2 decimals (`Cash in hand is required.`) |
+| `cashInAccount` | **CSP: required.** Opening cash in the bank account (holding) (`Cash in account is required.`) |
+| `cspLimit` | **CSP: required.** The CSP limit (`CSP limit is required.`). It's a limit, not a balance |
 
-→ 201 `Signup successful. OTP sent for verification.` `data: { userId }`.
+The three cash fields are ignored for `BC`. Send numbers (a numeric string like `"2500.50"` also works). An empty field counts as missing, never as 0. Other messages: `… can't be negative.`, `… must be a number.`, `… can have at most 2 decimal places.`, `… is too large.` (max 9,999,999,999.99).
+
+What the server does with them (CSP): stores them on the agent (`openingCash`, `openingCashInAccount`, `cashLimit`) and opens the **float** (cash in hand + cash in account = total float) with an `OPENING` entry in the float ledger. Cash management and every later ledger entry start from these balances.
+
+→ 201 `Signup successful. OTP sent for verification.` `data: { userId, openingFloat }`. `openingFloat` (CSP only):
+- `CREATED`: the float was opened with these values.
+- `UPDATED`: signup was sent again (resend OTP) before anything was recorded, so the new values replaced the old ones.
+- `KEPT`: the agent already exists and its float is in use (receipts or adjustments recorded), so balances, opening values and limit stay as they are. Changes go through cash management.
 Errors: 409 `Account already exists. Please login.`; 403 `KO cannot create login account.`
 
 **`POST /auth/verify-otp`** (public) `{ agentId, otp }` — `otp` exactly 6 digits. OTP is valid **10 minutes**, **5 attempts**.
@@ -338,16 +348,16 @@ super admin rejects  → request REJECTED (reviewRemarks = why); activation unch
 | `GET /agents/:agentId` | any | in scope only |
 | `POST /agents/csp` | BC | create a new CSP, or request to link an existing one |
 | `POST /agents/ko` | CSP | create a KO, or link an existing unlinked KO |
-| `PATCH /agents/:agentId` | owner | `{ name?, mobile?, email?, address?, cashLimit?, openingCash?, status? (ACTIVE\|INACTIVE) }` |
+| `PATCH /agents/:agentId` | owner | `{ name?, mobile?, email?, address?, cashLimit?, openingCash?, openingCashInAccount?, status? (ACTIVE\|INACTIVE) }` (opening values don't change a float that is already open) |
 | `DELETE /agents/:agentId` | owner | soft delete |
 
-Agent: `{ id, agentId, name, type, mobile, email, address, bcId, parentAgentId, cashLimit (string\|null), openingCash (string\|null), linkedAt, createdAt, updatedAt }`.
+Agent: `{ id, agentId, name, type, mobile, email, address, bcId, parentAgentId, cashLimit (string\|null; the CSP limit), openingCash (string\|null; opening cash in hand), openingCashInAccount (string\|null; opening cash in account), linkedAt, createdAt, updatedAt }`.
 
-**`POST /agents/csp` (BC)** body: `{ agentId, name, mobile?, email?, address?, cashLimit?, openingCash?, machineCount, kos?: [{ agentId, name, mobile?, email?, address?, cashLimit?, openingCash?, machineCount }] }`
+**`POST /agents/csp` (BC)** body: `{ agentId, name, mobile?, email?, address?, cashLimit?, openingCash?, openingCashInAccount?, machineCount, kos?: [{ agentId, name, mobile?, email?, address?, cashLimit?, openingCash?, openingCashInAccount?, machineCount }] }`. The opening float = `openingCash` (in hand) + `openingCashInAccount` (in account); `cashLimit` is only the limit. Older builds used `cashLimit` as the opening cash in account.
 
 | Case | Response |
 |---|---|
-| new CSP id | **201** `CSP created successfully.` `data: { csp, kos }` (opening float recorded from `openingCash`) |
+| new CSP id | **201** `CSP created successfully.` `data: { csp, kos }` (opening float recorded from `openingCash` + `openingCashInAccount`) |
 | existing, unlinked CSP | **202** `This CSP already exists. A link request was sent to the admin for approval.` `data: { csp: null, kos: [], linkRequest }` |
 | CSP linked to another BC | **202** `This CSP is linked to another BC. A link request was sent to the admin for review.` (`linkRequest.isConflict = true`) |
 | already linked to you | 400 `CSP is already linked with this Business Correspondent.` |
@@ -359,7 +369,7 @@ Handle **202 separately**: `csp` is `null`; show a success toast and open "Link 
 
 Validation (400, first problem): `agentId` 1–50 chars, `name` 2–100, `mobile` 10–15 chars, valid `email`, `cashLimit` / `openingCash` ≥ 0, `kos` ≤ 50. `machineCount` is optional (default 0) and no longer used: machines come from the owner's activations.
 
-**`POST /agents/ko` (CSP)** body: `{ agentId, name, mobile?, email?, address?, cashLimit?, openingCash?, machineCount }` → 201 `KO created successfully.` `data: { ko }`. Works for every CSP (with or without a BC). Errors: `KO is already linked with this CSP.`, `KO is already linked with another CSP.`, `Provided Agent ID does not belong to a KO.`
+**`POST /agents/ko` (CSP)** body: `{ agentId, name, mobile?, email?, address?, cashLimit?, openingCash?, openingCashInAccount?, machineCount }` → 201 `KO created successfully.` `data: { ko }`. Works for every CSP (with or without a BC). Errors: `KO is already linked with this CSP.`, `KO is already linked with another CSP.`, `Provided Agent ID does not belong to a KO.`
 
 **Edit/delete rules:**
 - A BC **can't edit or delete** CSPs linked through a ₹799 link request, or their KOs → 403 `This CSP is linked for viewing only. It manages its own account.` Hide edit/delete for those (`linkType` on the link request; or catch the 403).
@@ -407,13 +417,23 @@ Link request:
 
 ## 11. Dashboard
 
-**`GET /dashboard/summary`** query (all optional): `from`, `to` (ISO dates; default today), `agentId` (one agent in scope), `machineId`, `receiptType`, `transactionCategory`, `search`. `from` must be ≤ `to`.
+> **Data retention (from rev 7).** The server keeps individual receipts for **60 days by default** (today + the previous N IST days; the super admin can set N from 15 to 365) and per-day **counts for 1 year**. Every count and amount on this screen (overview, services, status, machine monitoring, CSP summary, analytics day/week/month/year, CSP monthly detail, reports) comes from the daily counts, so ranges up to a year back stay correct. Only these need the receipts themselves and so cover the retention period: `recentTransactions`, hourly charts (`groupBy=hour`, `hourlyDistribution`) and the transaction list/detail/export (§13). Limit date pickers to the last 12 months; for hourly charts and the transaction list, assume at least the last 15 days and show the empty state for older ranges.
+
+**`GET /dashboard/summary`** query (all optional): `from`, `to` (ISO dates; **default today**: send a range to see older days), `agentId`, `machineId`, `receiptType`, `transactionCategory`, `search`. `from` must be ≤ `to`.
+
+`agentId` picks whose numbers to show, inside your scope (else 403):
+- **A KO** → that KO only (single-agent view: `float` + `machine`).
+- **A CSP** → the CSP **and all its KOs** (same as the CSP's own login). A CSP without KOs gets the single-agent view.
+- **Omitted** → your whole scope (BC: all its CSPs and KOs; CSP: itself + its KOs).
+
+The same rule applies to `GET /dashboard/analytics`, which used to ignore `agentId`.
 
 Common fields:
 
 ```
 overview:          { totalTransactions, successfulTransactions, failedTransactions, totalTransactionAmount, lastTransactionAt, successRate, failureRate }
 services:          [{ transactionCategory, receiptType, successCount, failedCount, successAmount, failedAmount }]
+servicesByCategory:[{ transactionCategory, totalCount, successCount, failedCount, pendingCount, successAmount }]   // all receipt types together, most-used first; use for the "services" tiles
 statusSummary:     { success, failed, total }
 activationSummary: { total, used, unused }
 recentTransactions:[{ receiptId, receiptType, transactionCategory, status, amount, transactionAt, customerName, customerAccount, rrn, stan }]
@@ -470,14 +490,25 @@ Detail: `{ machineId, machineCode, machineName, agent, status: { machineStatus, 
 
 ## 13. Transactions (receipts)
 
-`GET /receipts` query: `page`, `limit` (≤100, default 20), `from`, `to`, `machineId`, `receiptType`, `transactionCategory`, `status` (`SUCCESS|FAILED|PENDING`), `search`, `agentId`, `sortBy` (`transactionAt|createdAt|amount`), `sortOrder`.
+`GET /receipts` query: `page`, `limit` (≤100, default 20), `from`, `to`, `period`, `machineId`, `agentIds`, `receiptTypes`, `transactionCategories`, `status` (`SUCCESS|FAILED|PENDING`), `search`, `sortBy` (`transactionAt|createdAt|amount`), `sortOrder`. Older single-value `agentId`, `receiptType` and `transactionCategory` still work.
+
+| Filter | How to send | Notes |
+|---|---|---|
+| `agentIds` | `agentIds=KO1,KO2` or `agentIds=KO1&agentIds=KO2` | exact agents (a CSP id means that CSP's own receipts); each must be in your scope (403 `You are not allowed to access this CSP.`); omit for **all** |
+| `receiptTypes` | `receiptTypes=AEPS,PASSBOOK` | any of the `receiptType` values below; unknown → 400 |
+| `transactionCategories` | `transactionCategories=CASH_DEPOSIT,MONEY_TRANSFER` | any of the `transactionCategory` values below |
+| `period` | `TODAY` \| `YESTERDAY` \| `CURRENT_MONTH` \| `LAST_MONTH` \| `CUSTOM` | IST days; `from`/`to` win over it (use them for a custom range); no period and no dates = no date filter |
+
+At most 100 values per list. For "all agents of a CSP", omit `agentIds` (CSP login) or send the CSP and its KO ids.
 
 Item: `{ receiptId, receiptType, transactionCategory, status, amount, transactionAt, createdAt, customerName, customerAccount, rrn, stan, agentId, machineCode, machineName }`.
 
 `GET /receipts/:receiptId` (use **`receiptId`**) → `{ …, cashDenomination: { notes500, notes200, notes100, notes50, notes20, notes10, notes5, coins20, coins10, coins5, coins2, coins1 } | null, machine: { machineCode, machineName }, agent: { agentId, name, type } }`. `cashDenomination` is `null` when none was captured or the CSP plan lacks `CASH_MANAGEMENT`.
 
-`GET /receipts/stats` (same filters) → `{ total, success, failed, totalAmount }`.
-`GET /receipts/export` (same filters) → Excel file (§17).
+`GET /receipts/stats` (same filters) → `{ total, success, failed, totalAmount }`. Without `search` it reads the daily counts (up to a year back); with `search` it counts receipts (last 60 days). With `status=SUCCESS`, `failed` is now `0` (older builds ignored the filter for `failed`).
+
+**Retention:** the list, detail and export return receipts from the retention period only (60 days by default, set by the super admin, at least 15). Older ones are deleted on the server; their counts stay in dashboards and reports. When a range returns nothing, show "Older transactions aren't kept; counts are in Reports".
+`GET /receipts/export` (same filters, including `agentIds`, `receiptTypes`, `transactionCategories` and `period`) → Excel file (§17). Example: yesterday's withdrawals of two KOs: `/receipts/export?period=YESTERDAY&agentIds=KO1,KO2&transactionCategories=CASH_WITHDRAWAL`. `/receipts/stats` takes the same filters.
 
 Enums for filters:
 - `transactionCategory`: `CASH_DEPOSIT`, `CASH_WITHDRAWAL`, `MONEY_TRANSFER`, `FUND_TRANSFER`, `BALANCE_ENQUIRY`, `MINI_STATEMENT`, `ACCOUNT_OPENING`, `BBPS`, `MICRO_ATM`, `SOCIAL_SECURITY`, `PASSBOOK_PRINTING`, `LOAN`, `OTHER`
@@ -490,6 +521,8 @@ Enums for filters:
 ## 14. Reports
 
 `GET /reports/summary?period=TODAY|YESTERDAY|CURRENT_MONTH|LAST_MONTH|CUSTOM&from=&to=&cspAgentId=&agentId=` (default `TODAY`). Sending `from`/`to` overrides `period`; `CUSTOM` without dates = all time. `CURRENT_MONTH` = 1st of this month → today, `LAST_MONTH` = the whole previous month (IST days, §18). Older builds ignored `period` and returned all-time totals.
+
+Rows: **one per CSP, counting the CSP and all its KOs** (older builds left the KOs' transactions out). `agentId` / `cspAgentId`: a CSP → that CSP's row (with its KOs); a KO → a row for that KO only. `/reports/export` follows the same rules.
 → array, one row per agent: `{ agentId, agentName, cashDepositCount, cashDepositAmount, cashWithdrawalCount, cashWithdrawalAmount, moneyTransferCount, moneyTransferAmount, fundTransferCount, fundTransferAmount, miniStatement, balanceEnquiry, passbookPrint, socialSecurity, pmjjby, pmsby, apy, otherSocialSecurity, accountOpening, successTransactions, failedTransactions, totalTransactions, openingBalance, closingBalance }`.
 
 `GET /reports/export` (same query) → Excel (§17).
@@ -576,6 +609,10 @@ await Sharing.shareAsync(res.uri, { mimeType: "application/vnd.openxmlformats-of
 
 ## 20. Changelog
 
+- 2026-11-01 (rev 10) — CSP signup requires `cashInHand`, `cashInAccount` (holding) and `cspLimit`; the server opens the float and its OPENING ledger entry (`data.openingFloat`). New agent field `openingCashInAccount`; `cashLimit` is only the CSP limit (it was used as the opening cash in account before).
+- 2026-11-01 (rev 9) — Dashboard/analytics `agentId`: a CSP shows itself + all its KOs, a KO only itself (analytics ignored it before). New `servicesByCategory` in the summary. Reports count KO transactions on their CSP's row; `agentId`/`cspAgentId` now applied. `passbookPrinter` is counted (was always 0). Receipts list/stats/export: `agentIds`, `receiptTypes`, `transactionCategories` (several values) and `period`.
+- 2026-11-01 (rev 8) — The receipt retention period is set by the super admin (15–365 days, default 60); texts in §11 and §13 no longer assume 60.
+- 2026-10-31 (rev 7) — Receipt retention: receipts kept 60 days, daily counts 1 year. Dashboards, analytics (day and longer), CSP detail, reports, machine stats and `/receipts/stats` (without `search`) read the counts; transaction list/detail/export, recent transactions and hourly charts cover 60 days (§11, §13).
 - 2026-10-30 (rev 6) — Login errors documented (unknown ID and wrong password both `403 Invalid credentials.`); `POST /agents/csp` / `/agents/ko` validate the body (400); invalid query strings / malformed JSON now 400 instead of 500.
 - 2026-10-30 (rev 5) — Revoke now needs super admin approval: `POST /activations/:id/revoke-requests`, list/detail/cancel, `pendingRevokeRequest` on activations (the direct `/revoke` is super admin only). Payment retry policy (§6); `verify` retries return 200.
 - 2026-10-30 (rev 4) — `create-order` takes an `Idempotency-Key` header (no double payments); 429 rate limits; `POST /activations/:id/revoke`; new receipt values `PASSBOOK` / `PASSBOOK_PRINTING`; `receiptId` unique per agent; report rows add `passbookPrint`, `socialSecurity`, `pmjjby`, `pmsby`, `apy`, `otherSocialSecurity`.

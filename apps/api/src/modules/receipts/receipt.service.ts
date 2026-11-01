@@ -13,6 +13,8 @@ import {
   UploadReceiptRequest,
 } from "./receipt.dto";
 import { withTransaction, withReadOnly } from "../../core/database/transaction";
+import ReceiptDailyCountRepository from "./repository/receipt-daily-count.repository";
+import { receiptUploadCutoff } from "./receipt-retention.service";
 
 import {
   ActivationStatus,
@@ -31,12 +33,13 @@ import { BadRequestError } from "../../core/errors/BadRequestError";
 import MachineRuntimeValidator from "../machines/runtime/machine-runtime-validator";
 import SubscriptionResolver from "../subscriptions/subscription-validator/subscription-resolver.service";
 import SubscriptionAccessValidator from "../subscriptions/subscription-validator/subscription-access-validator";
-import {
-  DesktopFeature,
-} from "../subscriptions/subscription-entitlement.service";
+import { DesktopFeature } from "../subscriptions/subscription-entitlement.service";
 import SubscriptionEntitlementService from "../subscriptions/subscription-entitlement.service";
 import { resolveReceiptWatcher } from "../machines/runtime/receipt-watcher-policy";
 import { MinimalReceipt, parseMinimalReceipt } from "./receipt.validation";
+
+const RECEIPT_TOO_OLD_REASON =
+  "Receipt is older than the receipt retention period.";
 
 export default class ReceiptService {
   async upload(request: UploadReceiptRequest) {
@@ -126,7 +129,18 @@ export default class ReceiptService {
 
       const toCreate: typeof request.receipts = [];
 
+      const retentionCutoff = await receiptUploadCutoff(tx);
+
       for (const receipt of request.receipts) {
+        if (receipt.transactionAt < retentionCutoff) {
+          skippedReceipts.push({
+            receiptId: receipt.receiptId,
+            reason: RECEIPT_TOO_OLD_REASON,
+          });
+
+          continue;
+        }
+
         if (processedReceiptIds.has(receipt.receiptId)) {
           skippedReceipts.push({
             receiptId: receipt.receiptId,
@@ -163,6 +177,8 @@ export default class ReceiptService {
           location: receipt.location,
         })),
       );
+
+      await new ReceiptDailyCountRepository(tx).record(created);
 
       const createdById = new Map(
         created.map((receipt) => [receipt.receiptId, receipt]),
@@ -280,7 +296,9 @@ export default class ReceiptService {
         reason: string;
       }> = [];
       const processedReceiptIds = new Set<string>();
-      const valid: MinimalReceipt[] = [];
+      const valid: (MinimalReceipt & { transactionAt: Date })[] = [];
+      const receivedAt = new Date();
+      const retentionCutoff = await receiptUploadCutoff(tx, receivedAt);
 
       for (const raw of request.receipts) {
         const parsed = parseMinimalReceipt(raw);
@@ -301,8 +319,20 @@ export default class ReceiptService {
           continue;
         }
 
+        // Dashboards and reports filter by transactionAt, so fall back to
+        // receive time; the desktop uploads right after bank confirmation.
+        const transactionAt = parsed.receipt.transactionAt ?? receivedAt;
+
+        if (transactionAt < retentionCutoff) {
+          skippedReceipts.push({
+            receiptId: parsed.receipt.receiptId,
+            reason: RECEIPT_TOO_OLD_REASON,
+          });
+          continue;
+        }
+
         processedReceiptIds.add(parsed.receipt.receiptId);
-        valid.push(parsed.receipt);
+        valid.push({ ...parsed.receipt, transactionAt });
       }
 
       // One insert for the whole batch. PostgreSQL enforces (agentId,
@@ -319,15 +349,15 @@ export default class ReceiptService {
           transactionCategory: receipt.transactionCategory,
           transactionType: receipt.transactionType,
           status: ReceiptStatus.SUCCESS,
-          // Dashboards and reports filter by transactionAt, so fall back to
-          // receive time; the desktop uploads right after bank confirmation.
-          transactionAt: receipt.transactionAt ?? new Date(),
+          transactionAt: receipt.transactionAt,
           amount: receipt.amount,
           rrn: receipt.rrn,
           location: receipt.location,
           count: receipt.count,
         })),
       );
+
+      await new ReceiptDailyCountRepository(tx).record(created);
 
       const createdIds = new Map(
         created.map((receipt) => [receipt.receiptId, receipt.id]),

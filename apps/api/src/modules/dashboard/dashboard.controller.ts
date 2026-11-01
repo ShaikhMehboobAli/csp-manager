@@ -15,6 +15,28 @@ import { AppError } from "../../core/errors/AppError";
 import { DashboardCspDetailRepository } from "./repository/dashboard-csp-detail.repository";
 import { BadRequestError } from "../../core/errors/BadRequestError";
 
+/**
+ * `agentId` narrows the caller's scope: a CSP shows the CSP and all its KOs, a
+ * KO only itself. `agentId` stays set only for a single agent, which is what
+ * switches the summary to the single-agent view (float, one machine).
+ */
+async function selectAgents(
+  scopeService: AgentScopeService,
+  agentId: string | undefined,
+  scope: string[],
+) {
+  if (!agentId) {
+    return { agentId: undefined, agentIds: scope };
+  }
+
+  const agentIds = await scopeService.expandSelection(agentId, scope);
+
+  return {
+    agentId: agentIds.length === 1 ? agentIds[0] : undefined,
+    agentIds,
+  };
+}
+
 export default class DashboardController {
   async getSummary(req: Request, res: Response) {
     return withReadOnly(async (tx) => {
@@ -73,8 +95,9 @@ export default class DashboardController {
 
       const scopeService = new AgentScopeService(tx);
 
-      const agentIds = await scopeService.getAgentScope(req.user!);
-      scopeService.ensureAgentAccessible(query.agentId, agentIds);
+      const scope = await scopeService.getAgentScope(req.user!);
+      const selection = await selectAgents(scopeService, query.agentId, scope);
+      const agentIds = selection.agentIds;
 
       console.log("Dashboard Scope:", {
         role: req.user!.role,
@@ -89,7 +112,7 @@ export default class DashboardController {
 
         currentAgentId: req.user!.agentId,
 
-        agentIds,
+        ...selection,
       });
 
       return res.status(200).json({
@@ -124,8 +147,8 @@ export default class DashboardController {
 
       const scopeService = new AgentScopeService(tx);
 
-      const agentIds = await scopeService.getAgentScope(req.user!);
-      scopeService.ensureAgentAccessible(query.agentId, agentIds);
+      const scope = await scopeService.getAgentScope(req.user!);
+      const selection = await selectAgents(scopeService, query.agentId, scope);
 
       const result = await service.getAnalytics({
         ...query,
@@ -134,7 +157,7 @@ export default class DashboardController {
 
         currentAgentId: req.user!.agentId,
 
-        agentIds,
+        ...selection,
       });
 
       return res.json({

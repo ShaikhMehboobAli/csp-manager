@@ -165,6 +165,7 @@ export class AgentRepository {
 
         cashLimit: input.cashLimit,
         openingCash: input.openingCash,
+        openingCashInAccount: input.openingCashInAccount,
 
         bcId: input.bcId,
         parentAgentId: input.parentAgentId,
@@ -190,6 +191,7 @@ export class AgentRepository {
 
         cashLimit: input.cashLimit,
         openingCash: input.openingCash,
+        openingCashInAccount: input.openingCashInAccount,
 
         linkedAt: input.linkedAt,
 
@@ -231,6 +233,7 @@ export class AgentRepository {
 
         cashLimit: input.cashLimit,
         openingCash: input.openingCash,
+        openingCashInAccount: input.openingCashInAccount,
 
         updatedBy: input.updatedBy,
       },

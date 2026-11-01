@@ -3,7 +3,7 @@
 **Audience:** the web team building the **Super Admin** console in React / Next.js.
 **Not covered here:** the BC/CSP mobile app → `docs/mobile-app-kt.md` (read its sections 3 and 18 for API conventions, errors and dates; they apply here too); the desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api`.
-**Last updated:** 2026-10-30 (rev 4)
+**Last updated:** 2026-11-01 (rev 8)
 
 > Describes the backend once PRs #3–#8 are merged into `development`.
 
@@ -162,12 +162,13 @@ Agent: `{ id, agentId, name, type, mobile, email, address, bcId, parentAgentId, 
 
 ## 8. Global data views — READY
 
-Same endpoints and shapes as the mobile KT §11–§14; for the super admin they cover **all agents** (narrow with `agentId`):
+Same endpoints and shapes as the mobile KT §11–§14; for the super admin they cover **all agents**. Narrow with `agentId`: a CSP means the CSP + its KOs, a KO only itself. Receipts take several `agentIds`, `receiptTypes` and `transactionCategories`, plus `period` (mobile KT §13):
 
 `GET /dashboard/summary` (multi-agent view: `machineMonitoring` across all machines), `/dashboard/analytics`, `/dashboard/csp/:agentId/detail`, `/machines/list`, `/machines/:id`, `/machines/:id/analytics`, `/machines/:id/activity-sessions`, `/receipts`, `/receipts/:receiptId`, `/receipts/stats`, `/receipts/export`, `/reports/summary` (one row per CSP), `/reports/export`.
 
 - Day boundaries are IST (mobile KT §18).
 - `GET /activations` returns only the caller's **own** activations (none for an admin); there's no admin-wide activation list yet (G3).
+- **Retention:** receipts are kept for 60 days, per-day counts for 1 year. Counts and amounts (dashboards, analytics day and longer, reports, machine stats, `/receipts/stats` without `search`) cover a year; the transaction list/detail/export, `recentTransactions` and hourly charts cover the last 60 days (mobile KT §11, §13).
 
 ## 9. Desktop settings and machine controls — READY
 
@@ -202,6 +203,38 @@ Global settings body (all optional):
 
 **UI:** a "Desktop" settings page with one toggle per service (a banner while any is off: "Maintenance: Cash Withdrawal is off on all machines"), the popup toggle, and the version fields. On a machine's detail page, an "Overrides" panel with the same toggles and a "Clear overrides" button.
 
+## 9A. Receipt retention — READY
+
+How long the server keeps individual receipts. Per-day counts are kept for 365 days whatever this is set to, so dashboards and reports aren't affected (§8).
+
+| Call | Body / notes |
+|---|---|
+| `GET /admin/receipt-retention` | current setting and the last cleanup run |
+| `PATCH /admin/receipt-retention` | `{ "receiptRetentionDays": 30 }` |
+
+`GET` / `PATCH` → `data`:
+
+```json
+{
+  "receiptRetentionDays": 30,
+  "minimumDays": 15,
+  "maximumDays": 365,
+  "countRetentionDays": 365,
+  "receiptsDeletedBefore": "2026-09-30T18:30:00.000Z",
+  "uploadCutoff": "2026-10-01T18:30:00.000Z",
+  "lastRun": { "status": "SUCCESS", "startedAt": "…", "finishedAt": "…", "receiptCutoff": "…", "receiptsDeleted": 1250, "countsDeleted": 0, "countsRepaired": 0 }
+}
+```
+
+- **Rules:** whole days, **15 to 365** (`Receipt retention must be at least 15 days.`, `Receipt retention can't be more than 365 days (the daily count retention).`). Unknown fields → 400. Non-admins → 403. Default until set: 60.
+- **When it applies:** uploads use the new value within a minute (receipts older than the period are refused). Older receipts are **deleted at the next daily run (03:30 IST)**, not at once.
+- **Lowering it deletes receipts permanently** at the next run. Confirm first: "Receipts older than N days will be deleted tonight at 03:30. Counts in dashboards and reports are kept."
+- **Raising it doesn't bring deleted receipts back.** `receiptsDeletedBefore` is when the last cleanup deleted up to. Uploads stay refused before it, so a deleted receipt can't be uploaded and counted twice. `uploadCutoff` is the effective limit: the later of the period's cutoff and `receiptsDeletedBefore`. Show it as "Receipts are kept from <date>".
+- **`lastRun`:** `null` until the first run. `status: "FAILED"` comes with `error`; the next run continues from where it stopped (nothing is lost). Show a warning banner on a failed run. `countsRepaired` > 0 means some receipts were missing from the counts and were added before deletion, which is worth reporting to the backend team.
+- Dev runs in dry-run mode (`CLEANUP_DRY_RUN=true`): nothing is deleted and `lastRun` stays as it was.
+
+**UI:** a number input (15–365) with Save, the effective "kept from" date, and the last run (time, status, receipts deleted).
+
 ## 10. Other endpoints the console can use
 
 - `POST /csp-visits`, `GET /csp-visits/:id`, `GET /csp-visits/csp/:cspAgentId` — allowed for SUPER_ADMIN (mobile KT §16). Upload works the same from the browser (presigned POST via `FormData` / `fetch`).
@@ -213,13 +246,94 @@ Global settings body (all optional):
 |---|---|---|---|
 | G1 | ~~Super admin blocked by subscription checks~~ | — | **fixed 2026-10-25** |
 | G2 | ~~No way to create a super admin~~ | — | **fixed 2026-10-25**: `npm run seed:super-admin` |
-| G3 | No admin APIs for users (block/suspend), subscriptions (grant/extend/cancel) or payments (list all) | those pages can't be built | backend |
+| G3 | No admin APIs for users (block/suspend), subscriptions (grant/extend/cancel) or payments (list all) | those pages can't be built | backend; the read-only lists and count cards are planned in §12 |
 | G4 | 15-minute access token, no refresh endpoint | frequent re-login | `POST /auth/refresh` |
 | G5 | `POST /agents/csp` as SUPER_ADMIN uses the admin's own id as the BC | creating a CSP from the console fails or links to a non-BC | add a `bcId` body field for admins |
 | G6 | No unlink endpoint for BC↔CSP | a wrong approval can't be undone from the console | `POST /bc-links/unlink` |
 | G7 | No push/realtime | poll the pending list (e.g. every 60 s) for new requests | future |
 
-## 12. Changelog
+## 12. Planned: subscribers, revenue and pricing console — NOT BUILT
+
+Owner request (2026-10-31). **Neither the backend APIs nor the screens exist yet.** The backend builds the APIs below first, then the console. The endpoint names and shapes are a draft; this KT will be updated when they're built.
+
+### 12.1 Home: count cards (click a card → its list)
+
+Decided by the owner on 2026-11-01. Everything counts **per subscription** (12.6).
+
+| Card | Meaning | List behind the card |
+|---|---|---|
+| **Total revenue** | all `SUCCESS` payments since launch | the payments (columns below) |
+| **This month's revenue** | `SUCCESS` payments with `paidAt` in the current IST month | the same, for this month |
+| **Active subscriptions** | `ACTIVE` and today is **on or before the end date**. Subscriptions in a grace period are **not** included | owner (BC/CSP), plan, cycle, machines (`machineLimit`), start, end, amount paid |
+| **In grace period** | past the end date but on or before `graceEndsAt`: still working, not paid. Counted and listed **separately** | owner, plan, machines, ended on, grace ends on, days left, contact |
+| **Stopped, not renewed** | the subscription has **stopped** and the owner has **no** newer subscription. Second figure: the machines those subscriptions covered | owner, plan, machines, stopped on, days since, last amount paid, contact (mobile/email) |
+
+**Revenue figures** are shown **before tax** (`amount`), **tax** (`taxAmount`) and **after tax** (`totalAmount`), with the payment count. Payment list columns: payment number, owner, plan, billing cycle, machines, before tax, tax, after tax, paid at.
+
+**Any month or any period:** the revenue page has a month picker (any past month) and a custom from–to range. It also shows a month-by-month table and chart (12.4, `GET /admin/revenue/summary`). The two cards are fixed: all time, and the current month.
+
+**When a subscription stops:** on its **stop date** = `graceEndsAt` if set, otherwise `endDate`.
+- **Grace is 0 today.** No subscription gets a `graceEndsAt`, so it stops on the end date and the "In grace period" card shows 0.
+- **When a grace period is added later** (a super admin setting, not built: checklist 4.1), new subscriptions get `graceEndsAt = endDate + grace`. The stop date then moves to the end of grace, and those subscriptions appear under "In grace period" until then. The backend already keeps a subscription working until `graceEndsAt`, so only the setting and these lists need the change.
+- **Lists:** "stopped on" is the stop date. Ranges filter on it.
+
+**Renewed or not:** an owner with any newer subscription (any plan) counts as renewed (proposed, 12.5).
+
+Filters on every list: date range (IST days), owner type (BC / CSP / all), plan. Lists are paginated and searchable by agent ID / name.
+
+### 12.2 Subscribers
+
+- **List:** every BC and CSP that has bought a subscription (current or past): agent ID, name, type, current plan and cycle, status, machines, end date, total paid.
+- **Detail (click a row):** subscription history, payments, activations / machines, and the **agents under them**: BC → its CSPs → their KOs (including CSPs linked through the ₹799 plan), CSP → its KOs.
+
+### 12.3 Plan pricing (all plans, all billing cycles)
+
+Editing already works: `PATCH /subscriptions/plans/:planId/pricing` sets the price for `MONTHLY`, `QUARTERLY`, `HALF_YEARLY` or `YEARLY` on any plan (§5). What's missing is an admin list that also returns **inactive** plans and cycles (the public list hides them), so the pricing page can show and re-enable them.
+
+### 12.4 Draft backend APIs (SUPER_ADMIN only)
+
+| Draft endpoint | Returns |
+|---|---|
+| `GET /admin/overview?ownerType=` | the five cards: `{ revenue: { total: R, currentMonth: R }, activeSubscriptions: { count, machines }, inGrace: { count, machines }, notRenewed: { count, machines }, machinesDropped }`, where `R = { beforeTax, tax, afterTax, paymentCount }` |
+| `GET /admin/revenue/summary?month=YYYY-MM` or `?from=&to=` (optional `ownerType`, `planId`, `groupBy=month\|day`) | revenue for **any month or any period**: `{ from, to, total: R, byPlan: [{ planId, planCode, ...R }], byOwnerType: { BC: R, CSP: R }, series: [{ label, ...R }] }`. No `month` and no dates = all time |
+| `GET /admin/revenue/payments?month=` or `?from=&to=` (`ownerType`, `planId`, `search`, `page`, `limit`) | the payments behind the revenue figures |
+| `GET /admin/subscriptions?status=ACTIVE\|IN_GRACE\|NOT_RENEWED&ownerType=&planId=&from=&to=&search=&page=&limit=` | the lists behind the other cards; `from` / `to` filter `NOT_RENEWED` by the stop date |
+| `GET /admin/subscribers?ownerType=&search=&page=&limit=` | owners with a subscription summary |
+| `GET /admin/subscribers/:ownerId` | owner, subscriptions, payments, activations, agent tree |
+| `GET /admin/plans` | all plans and pricings, including inactive |
+
+Rules for the revenue APIs:
+- Months and days are **IST**, by `paidAt`.
+- `month` can't be in the future: 400 `Future month is not allowed.`
+- `from` must be ≤ `to`.
+- Money is returned as strings with 2 decimals (like `price`). Add them up with a decimal library, not floats.
+- Refunds (Razorpay, later) will be subtracted and shown as their own figure.
+
+The data exists today: `Subscription` (`ownerType`, `ownerId`, `planId`, `status`, `startDate`, `endDate`, `graceEndsAt`, `machineLimit`, `amountPaid`) and `Payment` (`status`, `amount`, `taxAmount`, `totalAmount`, `paidAt`, `billingCycle`, `machineCount`).
+
+### 12.5 Decisions
+
+1. Revenue: before tax, tax and after tax; total and current month on the cards; any month or period through the API (owner, 2026-11-01). Open: how refunds are shown (none exist yet).
+2. "Stopped, not renewed": per subscription, machines as the second figure (owner, 2026-11-01).
+3. Stop date = end of grace (`graceEndsAt`), or the end date while grace is 0 (owner, 2026-11-01).
+4. "Active" excludes the grace period; grace has its own count and list (owner, 2026-11-01).
+5. Open: does a renewal on a different plan count as renewed? (Proposed: yes, any newer subscription.)
+
+### 12.6 Per subscription or per activation? (recommendation)
+
+**Decided (owner, 2026-11-01): per subscription, with machines (activations) next to it.**
+
+- **The subscription is what gets renewed and paid for.** An owner decides once, and all its activations end together. Counting activations would make one BC with 20 machines look like 20 lost customers.
+- **Per subscription is per owner.** Only the owner's latest subscription is looked at, so an owner is counted once, however many times they renewed before.
+- **Activations still matter for money.** A CSP plan is priced per machine, so the card also shows "machines" (the activations those subscriptions covered).
+- **Machines dropped:** a renewal with fewer machines (5 → 3) isn't a lost subscription but does lose 2 machines. This shows on the home page as its own figure, `machinesDropped`, with a list of the owners who reduced.
+
+## 13. Changelog
+
+- 2026-11-01 (rev 8) — §8: `agentId` selection rule (CSP = CSP + KOs), multi-value receipt filters and `period`; reports count KOs on their CSP's row.
+- 2026-11-01 (rev 7) — §12 decisions: per subscription; stop date = end of grace (grace 0 today, adapts when a grace period is added); active excludes grace, with a separate "In grace period" card and list; revenue cards for total and current month; `GET /admin/revenue/summary` and `/admin/revenue/payments` for any month or period (draft).
+- 2026-11-01 (rev 6) — New §9A: receipt retention setting (15–365 days, default 60), effective upload cutoff, last cleanup run. §12: revenue shown before and after tax; "not renewed" counted per subscription with machines as a second figure, plus machines dropped on downsized renewals (12.6).
+- 2026-10-31 (rev 5) — New §12 (planned, not built): subscribers list with their agents, revenue / active / not-renewed count cards with lists, admin plan list for pricing; draft APIs and open questions. §8: receipt retention (60 days; counts 1 year).
 
 - 2026-10-30 (rev 4) — New §4A: activation revoke requests (owners request, super admin approves/rejects); direct revoke stays admin-only.
 - 2026-10-30 (rev 3) — New §9: desktop settings (global service switches for maintenance, denomination popup, `minimumVersion` / `latestWatcherVersion` / `downloadUrl` / `portalUrl`) and per-machine desktop controls; revoke any activation. Rate limits (429).

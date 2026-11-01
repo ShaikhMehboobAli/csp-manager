@@ -103,6 +103,27 @@ export default class AgentScopeService {
     );
   }
 
+  /**
+   * The agents a selected agent stands for, inside the caller's scope: a CSP
+   * means the CSP and its KOs; a KO (or any other agent) means itself.
+   */
+  async expandSelection(agentId: string, scope: string[]): Promise<string[]> {
+    this.ensureAgentAccessible(agentId, scope);
+
+    const kos = await this.repository.getChildAgents([agentId], AgentType.KO);
+
+    const unit = [agentId, ...kos.map((agent) => agent.agentId)];
+
+    // Empty scope = SUPER_ADMIN (all agents).
+    return scope.length === 0 ? unit : unit.filter((id) => scope.includes(id));
+  }
+
+  ensureAgentsAccessible(requestedAgentIds: string[], allowedAgentIds: string[]) {
+    for (const agentId of requestedAgentIds) {
+      this.ensureAgentAccessible(agentId, allowedAgentIds);
+    }
+  }
+
   ensureAgentAccessible(
     requestedAgentId: string | undefined,
     allowedAgentIds: string[],
