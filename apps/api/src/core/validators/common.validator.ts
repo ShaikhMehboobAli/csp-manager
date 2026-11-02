@@ -51,27 +51,39 @@ const MAX_MONEY = 9_999_999_999.99;
 
 /**
  * A rupee amount ≥ 0 with at most 2 decimals. Accepts a number or a numeric
- * string (form input); an empty string counts as missing, never as 0.
+ * string (form input); an empty string counts as missing, never as 0. With
+ * `required`, a missing value fails with "<label> is required." (a refine
+ * wouldn't run: zod skips absent keys whose schema accepts undefined).
  */
+function moneyNumber(label: string, required: boolean) {
+  return z
+    .number({
+      error: (issue) =>
+        issue.input === undefined && required
+          ? `${label} is required.`
+          : `${label} must be a number.`,
+    })
+    .finite(`${label} must be a number.`)
+    .min(0, `${label} can't be negative.`)
+    .max(MAX_MONEY, `${label} is too large.`)
+    .refine(
+      (amount) => Math.round(amount * 100) === amount * 100,
+      `${label} can have at most 2 decimal places.`,
+    );
+}
+
+function toMoneyInput(value: unknown) {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+
+    return trimmed === "" ? undefined : Number(trimmed);
+  }
+
+  return value;
+}
+
 export const moneyValidator = (label: string) =>
-  z.preprocess(
-    (value) => {
-      if (typeof value === "string") {
-        const trimmed = value.trim();
+  z.preprocess(toMoneyInput, moneyNumber(label, false).optional());
 
-        return trimmed === "" ? undefined : Number(trimmed);
-      }
-
-      return value;
-    },
-    z
-      .number({ message: `${label} must be a number.` })
-      .finite(`${label} must be a number.`)
-      .min(0, `${label} can't be negative.`)
-      .max(MAX_MONEY, `${label} is too large.`)
-      .refine(
-        (amount) => Math.round(amount * 100) === amount * 100,
-        `${label} can have at most 2 decimal places.`,
-      )
-      .optional(),
-  );
+export const requiredMoneyValidator = (label: string) =>
+  z.preprocess(toMoneyInput, moneyNumber(label, true));

@@ -57,6 +57,23 @@ export const signupSchema = z
         ctx.addIssue({ code: "custom", path: [field], message });
       }
     }
+
+    const { cashInHand, cashInAccount, cspLimit } = data;
+
+    // Compared in paise, so 0.1 + 0.2 = 0.3.
+    if (
+      cashInHand !== undefined &&
+      cashInAccount !== undefined &&
+      cspLimit !== undefined &&
+      Math.round(cashInHand * 100) + Math.round(cashInAccount * 100) !==
+        Math.round(cspLimit * 100)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["cspLimit"],
+        message: "Cash in hand + cash in account must equal the CSP limit.",
+      });
+    }
   });
 
 export type SignupDto = z.infer<typeof signupSchema>;

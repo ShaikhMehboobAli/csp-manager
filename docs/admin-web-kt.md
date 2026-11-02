@@ -3,7 +3,7 @@
 **Audience:** the web team building the **Super Admin** console in React / Next.js.
 **Not covered here:** the BC/CSP mobile app → `docs/mobile-app-kt.md` (read its sections 3 and 18 for API conventions, errors and dates; they apply here too); the desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api`.
-**Last updated:** 2026-11-01 (rev 8)
+**Last updated:** 2026-11-02 (rev 11)
 
 > Describes the backend once PRs #3–#8 are merged into `development`.
 
@@ -168,6 +168,7 @@ Same endpoints and shapes as the mobile KT §11–§14; for the super admin they
 
 - Day boundaries are IST (mobile KT §18).
 - `GET /activations` returns only the caller's **own** activations (none for an admin); there's no admin-wide activation list yet (G3).
+- **Cash management (read-only for the admin):** `GET /cash-management?agentId=<CSP or KO>`, `GET /cash-management/ledger?agentId=…`, `GET /cash-management/requests?agentId=…`, `GET /cash-management/settlements?agentId=…` (KO settlements; mobile KT §13A). `agentId` is required for the admin; settling, adjusting and approving are the CSP's (403 for the admin).
 - **Retention:** receipts are kept for 60 days, per-day counts for 1 year. Counts and amounts (dashboards, analytics day and longer, reports, machine stats, `/receipts/stats` without `search`) cover a year; the transaction list/detail/export, `recentTransactions` and hourly charts cover the last 60 days (mobile KT §11, §13).
 
 ## 9. Desktop settings and machine controls — READY
@@ -330,6 +331,11 @@ The data exists today: `Subscription` (`ownerType`, `ownerId`, `planId`, `status
 
 ## 13. Changelog
 
+- 2026-11-02 (rev 11) — §8: pool views show `cashLeftInBank` (left in bank by partly delivered KO settlements) next to `cashInTransit`; settlement items have `leftInBank`.
+
+- 2026-11-02 (rev 10) — §8: KO settlements feed (read-only).
+
+- 2026-11-02 (rev 9) — §8: cash management views for the admin (read-only).
 - 2026-11-01 (rev 8) — §8: `agentId` selection rule (CSP = CSP + KOs), multi-value receipt filters and `period`; reports count KOs on their CSP's row.
 - 2026-11-01 (rev 7) — §12 decisions: per subscription; stop date = end of grace (grace 0 today, adapts when a grace period is added); active excludes grace, with a separate "In grace period" card and list; revenue cards for total and current month; `GET /admin/revenue/summary` and `/admin/revenue/payments` for any month or period (draft).
 - 2026-11-01 (rev 6) — New §9A: receipt retention setting (15–365 days, default 60), effective upload cutoff, last cleanup run. §12: revenue shown before and after tax; "not renewed" counted per subscription with machines as a second figure, plus machines dropped on downsized renewals (12.6).

@@ -564,6 +564,11 @@ model Agent {
 
   receipts           Receipt[]
   receiptDailyCounts ReceiptDailyCount[]
+  cashPool           CashPool?
+  agentCash          AgentCash?
+  cashLedgerEntries  CashLedger[]        @relation("CashLedgerAgent")
+  cashRequests       CashRequest[]
+  cashSettlements    CashSettlement[]
 
   users User?
 
@@ -1174,6 +1179,8 @@ model Receipt {
 
   cashDenomination ReceiptCashDenomination?
 
+  cashLedgerEntries CashLedger[]
+
   @@unique([agentId, receiptId])
   @@index([machineId])
   @@index([machineSessionId])
@@ -1771,4 +1778,253 @@ model ActivationRevokeRequest {
   @@index([status])
   @@index([ownerId])
   @@index([activationId])
+}
+
+// ---------------------------------------------------------------------------
+// Cash management. A CSP and its KOs share one cash limit and one cash in
+// account (the pool); each agent has its own cash in hand and drawer.
+// Invariant: cashInAccount + sum(cashInHand of the CSP and its KOs) = cashLimit.
+// ---------------------------------------------------------------------------
+
+enum CashLedgerType {
+  // Pool opened (CSP signup / BC creates the CSP / first setup).
+  OPENING
+  // A KO joined the pool with its cash in hand (taken from cash in account).
+  AGENT_ADDED
+  // Cash receipt applied to the balances.
+  RECEIPT
+  // Cash receipt saved but not applied (balance short or pool not set up).
+  RECEIPT_NOT_APPLIED
+  // CSP moved cash between cash in account and an agent's cash in hand.
+  SETTLEMENT
+  // CSP set balances / limit / drawer manually.
+  ADJUSTMENT
+  // CSP approved a KO's change request.
+  REQUEST_APPROVED
+  // A KO's bank → cash in hand settlement took its amount out of left in bank (held).
+  SETTLEMENT_HELD
+  // Cash in hand and drawer counted when the agent's PC was activated.
+  ACTIVATION
+  // KO settlement, step 1: money leaves cash in account / cash in hand and
+  // is held "in bank" (in transit).
+  SETTLEMENT_TO_BANK
+  // KO settlement, step 2: money held in bank reaches cash in hand / account.
+  SETTLEMENT_FROM_BANK
+  // An open settlement step was cancelled; money went back to where it came from.
+  SETTLEMENT_CANCELLED
+}
+
+enum CashSettlementDirection {
+  // Cash in account → bank → cash in hand (the KO needs cash).
+  ACCOUNT_TO_HAND
+  // Cash in hand → bank → cash in account.
+  HAND_TO_ACCOUNT
+  // Left in bank → cash in hand (one step: FROM_BANK only).
+  BANK_TO_HAND
+}
+
+enum CashSettlementStep {
+  TO_BANK
+  FROM_BANK
+}
+
+enum CashSettlementStatus {
+  PENDING
+  APPROVED
+  CANCELLED
+}
+
+enum CashRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum CashActorType {
+  USER
+  MACHINE
+  SYSTEM
+}
+
+model CashPool {
+  cspAgentId String @id
+
+  cashLimit Decimal @db.Decimal(14, 2)
+
+  cashInAccount Decimal @db.Decimal(14, 2)
+
+  /// Money held in bank by open KO settlements (between step 1 and step 2).
+  cashInTransit Decimal @default(0) @db.Decimal(14, 2)
+
+  /// Left in bank when a KO settlement's step 2 delivered less than the
+  /// amount; shown separately. Part of the pool: account + all cash in hand
+  /// + in transit + left in bank = limit.
+  cashLeftInBank Decimal @default(0) @db.Decimal(14, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  csp Agent @relation(fields: [cspAgentId], references: [agentId])
+}
+
+model AgentCash {
+  agentId String @id
+
+  cashInHand Decimal @default(0) @db.Decimal(14, 2)
+
+  // Drawer: note and coin counts (same keys as ReceiptCashDenomination).
+  notes500 Int @default(0)
+  notes200 Int @default(0)
+  notes100 Int @default(0)
+  notes50  Int @default(0)
+  notes20  Int @default(0)
+  notes10  Int @default(0)
+  notes5   Int @default(0)
+  coins20  Int @default(0)
+  coins10  Int @default(0)
+  coins5   Int @default(0)
+  coins2   Int @default(0)
+  coins1   Int @default(0)
+
+  updatedAt DateTime @updatedAt
+
+  agent Agent @relation(fields: [agentId], references: [agentId])
+}
+
+/// Audit of every change to a pool or an agent's cash.
+model CashLedger {
+  id String @id @default(cuid())
+
+  cspAgentId String
+
+  /// Whose cash in hand changed; null when only the pool changed.
+  agentId String?
+
+  type CashLedgerType
+
+  /// RECEIPT_NOT_APPLIED: NOT_SET_UP | INSUFFICIENT_CASH_IN_HAND | INSUFFICIENT_CASH_IN_ACCOUNT
+  reason String?
+
+  transactionCategory TransactionCategory?
+
+  /// Receipt / settlement amount.
+  amount Decimal? @db.Decimal(14, 2)
+
+  cashInHandChange    Decimal @default(0) @db.Decimal(14, 2)
+  cashInAccountChange Decimal @default(0) @db.Decimal(14, 2)
+  cashLimitChange     Decimal @default(0) @db.Decimal(14, 2)
+  cashInTransitChange Decimal @default(0) @db.Decimal(14, 2)
+  cashLeftInBankChange Decimal @default(0) @db.Decimal(14, 2)
+
+  /// Balances after the change (hand = the agent's).
+  balanceCashInHand    Decimal? @db.Decimal(14, 2)
+  balanceCashInAccount Decimal? @db.Decimal(14, 2)
+  balanceCashLimit     Decimal? @db.Decimal(14, 2)
+  balanceCashInTransit Decimal? @db.Decimal(14, 2)
+  balanceCashLeftInBank Decimal? @db.Decimal(14, 2)
+
+  /// Note/coin count changes, e.g. { "notes500": 2, "notes100": -1 }.
+  drawerChange Json?
+
+  receiptRecordId String?
+  requestId       String?
+  settlementId    String?
+  idempotencyKey  String?
+
+  actorType CashActorType
+  actorId   String?
+
+  remarks String?
+
+  createdAt DateTime @default(now())
+
+  agent   Agent?   @relation("CashLedgerAgent", fields: [agentId], references: [agentId])
+  receipt Receipt? @relation(fields: [receiptRecordId], references: [id], onDelete: SetNull)
+
+  @@unique([cspAgentId, idempotencyKey])
+  @@index([cspAgentId, createdAt])
+  @@index([agentId, createdAt])
+  @@index([receiptRecordId])
+}
+
+/// A KO's request (from the desktop) to change its cash in hand / drawer;
+/// the CSP approves or rejects it.
+model CashRequest {
+  id String @id @default(cuid())
+
+  cspAgentId String
+
+  agentId String
+
+  requestedCashInHand Decimal @db.Decimal(14, 2)
+
+  /// The agent's cash in hand when the request was made.
+  systemCashInHand Decimal @db.Decimal(14, 2)
+
+  requestedDrawer Json?
+
+  reason String
+
+  status CashRequestStatus @default(PENDING)
+
+  requestedBy String
+
+  reviewedBy    String?
+  reviewedAt    DateTime?
+  reviewRemarks String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  agent Agent @relation(fields: [agentId], references: [agentId])
+
+  @@index([cspAgentId, status])
+  @@index([agentId, status])
+}
+
+/// A KO's own settlement step (desktop). Step 1 (TO_BANK) moves the amount
+/// into "in bank" (CashPool.cashInTransit); approving it creates step 2
+/// (FROM_BANK), which delivers it. The CSP is only informed.
+model CashSettlement {
+  id String @id @default(cuid())
+
+  cspAgentId String
+
+  agentId String
+
+  direction CashSettlementDirection
+
+  step CashSettlementStep
+
+  status CashSettlementStatus @default(PENDING)
+
+  /// Amount held in bank by this step.
+  amount Decimal @db.Decimal(14, 2)
+
+  /// Step 2: amount that reached the destination, at most `amount`
+  /// (ACCOUNT_TO_HAND: the counted notes); the rest is left in bank.
+  settledAmount Decimal? @db.Decimal(14, 2)
+
+  /// Notes taken out of (step 1, HAND_TO_ACCOUNT) or put into (step 2,
+  /// ACCOUNT_TO_HAND) the drawer.
+  drawer Json?
+
+  /// Step 2 points to its step 1.
+  parentId String? @unique
+
+  remarks String?
+
+  requestedBy String
+  reviewedBy  String?
+  reviewedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  agent  Agent           @relation(fields: [agentId], references: [agentId])
+  parent CashSettlement? @relation("SettlementSteps", fields: [parentId], references: [id])
+  child  CashSettlement? @relation("SettlementSteps")
+
+  @@index([cspAgentId, status])
+  @@index([agentId, status, createdAt])
 }

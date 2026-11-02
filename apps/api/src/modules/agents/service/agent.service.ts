@@ -6,14 +6,12 @@ import { CurrentUser } from "../../../core/types/auth.types";
 import {
   Agent,
   AgentType,
-  FloatLedgerType,
   Prisma,
   PrismaClient,
   SubscriptionOwnerType,
 } from "../../../generated/prisma/client";
 import ActivationRepository from "../../activations/activation.repository";
-import FloatLedgerService from "../../float/float-ledger.service";
-import { mapOpeningBalance } from "../../float/opening-balance.mapper";
+import CashService from "../../cash/cash.service";
 import SubscriptionAccessValidator from "../../subscriptions/subscription-validator/subscription-access-validator";
 import SubscriptionResolver from "../../subscriptions/subscription-validator/subscription-resolver.service";
 import SubscriptionService from "../../subscriptions/subscription.service";
@@ -36,6 +34,25 @@ import {
 } from "../../bc-links/bc-link.service";
 import { UserRole } from "../../../generated/prisma/enums";
 import { UpdateAgentDto } from "../validations/update-agent.validation";
+
+/** A new CSP brings its cash limit, cash in hand and cash in account. */
+function requireNewCspCash(input: {
+  cashLimit?: unknown;
+  openingCash?: unknown;
+  openingCashInAccount?: unknown;
+}) {
+  const missing = [
+    ["cashLimit", "CSP limit is required."],
+    ["openingCash", "Cash in hand is required."],
+    ["openingCashInAccount", "Cash in account is required."],
+  ] as const;
+
+  for (const [field, message] of missing) {
+    if (input[field] === undefined || input[field] === null) {
+      throw new BadRequestError(message);
+    }
+  }
+}
 
 export class AgentService {
   //   private readonly subscriptionService: SubscriptionService;
@@ -271,6 +288,8 @@ export class AgentService {
         updatedBy: createdBy,
       });
     } else {
+      requireNewCspCash(input);
+
       csp = await agentRepository.createAgent({
         agentId: input.agentId,
         name: input.name,
@@ -291,16 +310,13 @@ export class AgentService {
         createdBy,
       });
 
-      const floatLedgerService = new FloatLedgerService(tx);
-
-      await floatLedgerService.record({
-        agentId: csp.agentId,
-
-        ledgerType: FloatLedgerType.OPENING,
-
-        openingBalance: mapOpeningBalance(csp),
-
-        remarks: "Opening balance",
+      // Shared cash limit and cash in account for the CSP and its KOs.
+      await new CashService(tx).openPool({
+        cspAgentId: csp.agentId,
+        cashLimit: Number(input.cashLimit),
+        cashInAccount: Number(input.openingCashInAccount),
+        cashInHand: Number(input.openingCash),
+        actor: { type: "USER", id: createdBy },
       });
     }
 
@@ -354,9 +370,7 @@ export class AgentService {
         parentAgentId,
         linkedAt: new Date(),
 
-        cashLimit: input.cashLimit,
         openingCash: input.openingCash,
-        openingCashInAccount: input.openingCashInAccount,
 
         updatedBy: createdBy,
       });
@@ -374,13 +388,23 @@ export class AgentService {
         bcId: bcId ?? undefined,
         parentAgentId,
 
-        cashLimit: input.cashLimit,
+        // A KO uses its CSP's limit and cash in account.
         openingCash: input.openingCash,
-        openingCashInAccount: input.openingCashInAccount,
 
         linkedAt: new Date(),
 
         createdBy,
+      });
+    }
+
+    // The KO's cash in hand comes out of the CSP's cash in account. If the
+    // CSP hasn't set up cash management yet, it's set during setup.
+    if (input.openingCash !== undefined) {
+      await new CashService(tx).addAgent({
+        cspAgentId: parentAgentId,
+        agentId: ko.agentId,
+        cashInHand: input.openingCash,
+        actor: { type: "USER", id: createdBy },
       });
     }
 
