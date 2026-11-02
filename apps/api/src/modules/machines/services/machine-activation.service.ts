@@ -12,8 +12,11 @@ import {
 import {
   ActivationStatus,
   AgentStatus,
+  AgentType,
   MachineStatus,
 } from "../../../generated/prisma/enums";
+import CashService from "../../cash/cash.service";
+import { Drawer, drawerOf, drawerTotal } from "../../cash/cash.constants";
 
 import { NotFoundError } from "../../../core/errors/NotFoundError";
 import { BadRequestError } from "../../../core/errors/BadRequestError";
@@ -39,6 +42,61 @@ function deviceKeyFields(devicePublicKey: string | undefined) {
     devicePublicKey: key,
     devicePublicKeyRegisteredAt: key ? new Date() : null,
   };
+}
+
+/**
+ * Cash in hand + drawer counted at activation. Required for a KO; a CSP may
+ * send them (both together). The denomination total must equal the cash in
+ * hand. Checked before anything is written.
+ */
+function activationCashOf(agent: Agent, data: ActivateMachineInput) {
+  const given = data.cashInHand !== undefined || data.cashDenomination !== undefined;
+
+  if (agent.type !== AgentType.KO && !given) {
+    return null;
+  }
+
+  if (data.cashInHand === undefined) {
+    throw new BadRequestError("Cash in hand is required.");
+  }
+
+  if (!data.cashDenomination) {
+    throw new BadRequestError("Cash denomination is required.");
+  }
+
+  const drawer = drawerOf(data.cashDenomination as Partial<Drawer>);
+  const total = drawerTotal(drawer);
+
+  if (Math.round(total * 100) !== Math.round(data.cashInHand * 100)) {
+    throw new BadRequestError(
+      `Cash denomination total (₹${total.toFixed(2)}) must equal cash in hand (₹${data.cashInHand.toFixed(2)}).`,
+    );
+  }
+
+  return { cashInHand: data.cashInHand, drawer };
+}
+
+/** Applies the counted cash (same transaction) and adds it to the response. */
+async function withActivationCash<
+  T extends { data: { machineCode?: string; apiKey: string } },
+>(
+  db: PrismaDb,
+  agentId: string,
+  cash: ReturnType<typeof activationCashOf>,
+  result: T,
+) {
+  if (!cash || !result.data.machineCode) {
+    return result;
+  }
+
+  const applied = await new CashService(db).setCashAtActivation({
+    agentId,
+    cashInHand: cash.cashInHand,
+    drawer: cash.drawer,
+    machineCode: result.data.machineCode,
+  });
+
+  return { ...result, data: { ...result.data, cash: applied } };
 }
 
 export default class MachineActivationService {
@@ -69,6 +127,8 @@ export default class MachineActivationService {
 
       // Rejects a malformed device key before anything is written.
       const deviceKey = deviceKeyFields(data.machine.devicePublicKey);
+
+      const cash = activationCashOf(agent, data);
 
       /**
        * STEP 2
@@ -101,13 +161,11 @@ export default class MachineActivationService {
 
       if (activation.status === ActivationStatus.ACTIVE) {
         // The same PC (e.g. after a Windows reinstall) activating again.
-        return this.reactivate(
-          repository,
+        return withActivationCash(
           db,
-          activation,
-          agent,
-          data,
-          deviceKey,
+          agent.agentId,
+          cash,
+          await this.reactivate(repository, db, activation, agent, data, deviceKey),
         );
       }
 
@@ -182,14 +240,14 @@ export default class MachineActivationService {
         deviceKey,
       );
 
-      return {
+      return withActivationCash(db, agent.agentId, cash, {
         success: true,
         message: "Machine registered and activated successfully.",
         data: {
           machineCode: result?.machine?.machineCode,
           apiKey,
         },
-      };
+      });
     };
 
     return withTransaction(execute);

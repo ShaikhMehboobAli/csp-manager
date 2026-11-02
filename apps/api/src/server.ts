@@ -6,6 +6,7 @@ import MachineSessionTimeoutJob from "./jobs/machine-session-timeout.job";
 import MachineSessionCleanupJob from "./jobs/machine-session-cleanup.job";
 import SubscriptionExpiryJob from "./jobs/subscription-expiry.job";
 import CspActivityTimeoutJob from "./jobs/csp-activity-timeout.job";
+import ReceiptRetentionJob from "./jobs/receipt-retention.job";
 import "./core/utils/event-loop-monitor";
 
 async function bootstrap() {
@@ -20,6 +21,8 @@ async function bootstrap() {
     SubscriptionExpiryJob.start();
 
     CspActivityTimeoutJob.start();
+
+    ReceiptRetentionJob.start();
 
     app.listen(env.port, "0.0.0.0", () => {
       Logger.success(`🚀 CSP Manager API running on port ${env.port}`);

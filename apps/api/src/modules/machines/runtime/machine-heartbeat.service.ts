@@ -11,6 +11,7 @@ import { HEARTBEAT_TIMEOUT_SECONDS } from "./machine-runtime.constants";
 import SubscriptionEntitlementService from "../../subscriptions/subscription-entitlement.service";
 import DesktopSettingsService from "../../settings/desktop-settings.service";
 import { resolveReceiptWatcher } from "./receipt-watcher-policy";
+import CashService from "../../cash/cash.service";
 
 export default class MachineHeartbeatService {
   private readonly authService: MachineAuthenticationService;
@@ -51,13 +52,16 @@ export default class MachineHeartbeatService {
       lastTransactionAt: input.lastTransactionAt,
     });
 
-    const [{ plan, features }, watcher, desktop] = await Promise.all([
+    const [{ plan, features }, watcher, desktop, cash] = await Promise.all([
       new SubscriptionEntitlementService(this.db).getPlanEntitlements(
         authenticated.subscription.planId,
       ),
       resolveReceiptWatcher(this.db, authenticated),
       new DesktopSettingsService(this.db).resolveForMachine(
         authenticated.machine.desktopControls,
+      ),
+      new CashService(this.db).getMachineCash(
+        authenticated.machine.currentAgentId,
       ),
     ]);
 
@@ -79,6 +83,7 @@ export default class MachineHeartbeatService {
       subscriptionEndDate: authenticated.subscription.endDate,
       graceEndsAt: authenticated.subscription.graceEndsAt,
       features: features.map((feature) => feature.code),
+      cash,
     };
   }
 }

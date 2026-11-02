@@ -41,3 +41,12 @@ export type DesktopControlsInput = z.infer<typeof desktopControlsSchema>;
 export type UpdateDesktopSettingsInput = z.infer<
   typeof updateDesktopSettingsSchema
 >;
+
+export const updateReceiptRetentionSchema = z
+  .object({
+    receiptRetentionDays: z
+      .number()
+      .int("Receipt retention must be a whole number of days.")
+      .min(15, "Receipt retention must be at least 15 days."),
+  })
+  .strict();

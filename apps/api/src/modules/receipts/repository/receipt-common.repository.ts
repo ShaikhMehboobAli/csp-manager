@@ -46,14 +46,18 @@ export default abstract class ReceiptCommonRepository {
     /**
      * Receipt Type
      */
-    if (filter.receiptType) {
+    if (filter.receiptTypes?.length) {
+      where.receiptType = { in: filter.receiptTypes };
+    } else if (filter.receiptType) {
       where.receiptType = filter.receiptType;
     }
 
     /**
      * Transaction Category
      */
-    if (filter.transactionCategory) {
+    if (filter.transactionCategories?.length) {
+      where.transactionCategory = { in: filter.transactionCategories };
+    } else if (filter.transactionCategory) {
       where.transactionCategory = filter.transactionCategory;
     }
 

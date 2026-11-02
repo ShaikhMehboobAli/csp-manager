@@ -65,6 +65,13 @@ export default class AuthRepository {
     });
   }
 
+  updateAgentCash(
+    agentId: string,
+    data: { openingCash: number; openingCashInAccount: number; cashLimit: number },
+  ) {
+    return this.db.agent.update({ where: { agentId }, data });
+  }
+
   updateAgent(
     agentId: string,
     data: {

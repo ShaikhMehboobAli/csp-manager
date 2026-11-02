@@ -100,6 +100,52 @@ export function mapServiceSummary(services: ServiceSummaryAggregate[]) {
   return Array.from(grouped.values());
 }
 
+/**
+ * One row per transaction category (all receipt types together), for the
+ * agents in view: a KO alone, or a CSP with all its KOs.
+ */
+export function mapServicesByCategory(services: ServiceSummaryAggregate[]) {
+  const grouped = new Map<
+    string,
+    {
+      transactionCategory: string;
+      totalCount: number;
+      successCount: number;
+      failedCount: number;
+      pendingCount: number;
+      successAmount: number;
+    }
+  >();
+
+  for (const service of services) {
+    const item = grouped.get(service.transactionCategory) ?? {
+      transactionCategory: service.transactionCategory,
+      totalCount: 0,
+      successCount: 0,
+      failedCount: 0,
+      pendingCount: 0,
+      successAmount: 0,
+    };
+
+    const count = service._count.id;
+
+    item.totalCount += count;
+
+    if (service.status === ReceiptStatus.SUCCESS) {
+      item.successCount += count;
+      item.successAmount += toNumber(service._sum.amount);
+    } else if (service.status === ReceiptStatus.FAILED) {
+      item.failedCount += count;
+    } else {
+      item.pendingCount += count;
+    }
+
+    grouped.set(service.transactionCategory, item);
+  }
+
+  return [...grouped.values()].sort((a, b) => b.totalCount - a.totalCount);
+}
+
 export function mapStatusSummary(
   statuses: Array<{
     status: ReceiptStatus | null;
@@ -194,10 +240,12 @@ type TrendBucket = {
   amount: number;
 };
 
+// `count` is set for daily count rows; a receipt counts as one.
 export function mapTransactionTrend(
   receipts: {
     transactionAt: Date | null;
     amount: unknown;
+    count?: number;
   }[],
   groupBy: "hour" | "day" | "week" | "month" | "year",
 ): TrendBucket[] {
@@ -222,7 +270,7 @@ export function mapTransactionTrend(
 
     const item = grouped.get(label)!;
 
-    item.count++;
+    item.count += receipt.count ?? 1;
 
     item.amount += toNumber(receipt.amount);
   }
@@ -257,6 +305,8 @@ export function mapSuccessFailureTrend(
     transactionAt: Date | null;
 
     status: ReceiptStatus | null;
+
+    count?: number;
   }[],
   groupBy: "hour" | "day" | "week" | "month" | "year",
 ) {
@@ -291,9 +341,9 @@ export function mapSuccessFailureTrend(
     const item = grouped.get(label)!;
 
     if (receipt.status === ReceiptStatus.SUCCESS) {
-      item.success++;
+      item.success += receipt.count ?? 1;
     } else if (receipt.status === ReceiptStatus.FAILED) {
-      item.failed++;
+      item.failed += receipt.count ?? 1;
     }
   }
 

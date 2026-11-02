@@ -1,11 +1,21 @@
 import { z } from "zod";
 
+import { moneyValidator } from "../../../core/validators/common.validator";
+import { drawerSchema } from "../../cash/cash.validation";
+
 export const activateMachineSchema = z.object({
   agentId: z.string().trim().min(1),
 
   activationCode: z.string().trim().min(1),
 
   activationPassword: z.string().trim().min(1),
+
+  // The agent's counted cash in hand and drawer (note/coin counts). Required
+  // for a KO, optional for a CSP (then both together); the total of the
+  // denomination must equal the cash in hand.
+  cashInHand: moneyValidator("Cash in hand"),
+
+  cashDenomination: drawerSchema.optional(),
 
   machine: z.object({
     fingerprint: z.string().trim().min(1),

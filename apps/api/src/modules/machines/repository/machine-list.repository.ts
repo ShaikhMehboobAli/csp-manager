@@ -1,4 +1,8 @@
 import { PrismaDb } from "../../../core/database/prisma.types";
+import {
+  asReceiptGroups,
+  buildDailyCountWhere,
+} from "../../receipts/repository/receipt-daily-count.repository";
 import { normalizeDateRange } from "../../../core/utils/date-range.helper";
 import { Prisma } from "../../../generated/prisma/client";
 import { buildAgentScope } from "../../dashboard/dashboard.helper";
@@ -415,31 +419,24 @@ export default class MachineListRepository {
 
     console.log("frpm---", from, "/n", to);
 
-    const result = await this.db.receipt.groupBy({
-      by: ["agentId", "status"],
+    const result = asReceiptGroups(
+      await this.db.receiptDailyCount.groupBy({
+        by: ["agentId", "status"],
 
-      where: {
-        agentId: {
-          in: agentIds,
+        where: {
+          ...buildDailyCountWhere({ from, to }),
+
+          agentId: {
+            in: agentIds,
+          },
         },
 
-        transactionAt: {
-          gte: from,
-
-          ...(to && {
-            lte: to,
-          }),
+        _sum: {
+          count: true,
+          amount: true,
         },
-      },
-
-      _count: {
-        id: true,
-      },
-
-      _sum: {
-        amount: true,
-      },
-    });
+      }),
+    );
 
     console.log("Transaction Summary Result", result);
 
@@ -449,27 +446,23 @@ export default class MachineListRepository {
   async getServiceSummary(agentIds: string[], filter?: MachineListFilter) {
     const { from, to } = normalizeDateRange(filter?.from, filter?.to);
 
-    const result = await this.db.receipt.groupBy({
-      by: ["agentId", "transactionCategory"],
+    const result = asReceiptGroups(
+      await this.db.receiptDailyCount.groupBy({
+        by: ["agentId", "transactionCategory"],
 
-      where: {
-        agentId: {
-          in: agentIds,
+        where: {
+          ...buildDailyCountWhere({ from, to }),
+
+          agentId: {
+            in: agentIds,
+          },
         },
 
-        transactionAt: {
-          gte: from,
-
-          ...(to && {
-            lte: to,
-          }),
+        _sum: {
+          count: true,
         },
-      },
-
-      _count: {
-        id: true,
-      },
-    });
+      }),
+    );
 
     console.log("Transaction service Result", result);
     return result;

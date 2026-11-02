@@ -13,6 +13,8 @@ import {
   UploadReceiptRequest,
 } from "./receipt.dto";
 import { withTransaction, withReadOnly } from "../../core/database/transaction";
+import ReceiptDailyCountRepository from "./repository/receipt-daily-count.repository";
+import { receiptUploadCutoff } from "./receipt-retention.service";
 
 import {
   ActivationStatus,
@@ -20,7 +22,7 @@ import {
   ReceiptStatus,
   SubscriptionStatus,
 } from "../../generated/prisma/enums";
-import FloatLedgerService from "../float/float-ledger.service";
+import CashService, { ReceiptCashResult } from "../cash/cash.service";
 import ReceiptListRepository from "./repository/receipt-list.repository";
 import { mapReceiptDetail, mapReceiptList } from "./receipt.mapper";
 import ReceiptDetailRepository from "./repository/receipt-detail.repository";
@@ -31,12 +33,13 @@ import { BadRequestError } from "../../core/errors/BadRequestError";
 import MachineRuntimeValidator from "../machines/runtime/machine-runtime-validator";
 import SubscriptionResolver from "../subscriptions/subscription-validator/subscription-resolver.service";
 import SubscriptionAccessValidator from "../subscriptions/subscription-validator/subscription-access-validator";
-import {
-  DesktopFeature,
-} from "../subscriptions/subscription-entitlement.service";
+import { DesktopFeature } from "../subscriptions/subscription-entitlement.service";
 import SubscriptionEntitlementService from "../subscriptions/subscription-entitlement.service";
 import { resolveReceiptWatcher } from "../machines/runtime/receipt-watcher-policy";
 import { MinimalReceipt, parseMinimalReceipt } from "./receipt.validation";
+
+const RECEIPT_TOO_OLD_REASON =
+  "Receipt is older than the receipt retention period.";
 
 export default class ReceiptService {
   async upload(request: UploadReceiptRequest) {
@@ -49,7 +52,6 @@ export default class ReceiptService {
 
       const heartbeatRepository = new MachineHeartbeatRepository(tx);
 
-      const floatLedgerService = new FloatLedgerService(tx);
 
       const codeGenerator = createCodeGeneratorService(tx);
 
@@ -126,7 +128,18 @@ export default class ReceiptService {
 
       const toCreate: typeof request.receipts = [];
 
+      const retentionCutoff = await receiptUploadCutoff(tx);
+
       for (const receipt of request.receipts) {
+        if (receipt.transactionAt < retentionCutoff) {
+          skippedReceipts.push({
+            receiptId: receipt.receiptId,
+            reason: RECEIPT_TOO_OLD_REASON,
+          });
+
+          continue;
+        }
+
         if (processedReceiptIds.has(receipt.receiptId)) {
           skippedReceipts.push({
             receiptId: receipt.receiptId,
@@ -164,13 +177,13 @@ export default class ReceiptService {
         })),
       );
 
+      await new ReceiptDailyCountRepository(tx).record(created);
+
       const createdById = new Map(
         created.map((receipt) => [receipt.receiptId, receipt]),
       );
 
-      const ledgerReceipts: Parameters<
-        FloatLedgerService["recordReceiptBatch"]
-      >[1] = [];
+      const cashReceipts: Parameters<CashService["applyReceipts"]>[1] = [];
 
       for (const receipt of toCreate) {
         const savedReceipt = createdById.get(receipt.receiptId);
@@ -184,28 +197,29 @@ export default class ReceiptService {
           continue;
         }
 
-        const ledgerCreated = savedReceipt.status === ReceiptStatus.SUCCESS;
-
-        if (ledgerCreated) {
-          ledgerReceipts.push({
+        // Only successful transactions move cash.
+        if (savedReceipt.status === ReceiptStatus.SUCCESS) {
+          cashReceipts.push({
             receiptRecordId: savedReceipt.id,
             transactionCategory: savedReceipt.transactionCategory,
-            amount: Number(savedReceipt.amount),
+            amount: savedReceipt.amount,
           });
         }
 
-        uploadedReceipts.push({
-          receipt: savedReceipt,
-
-          ledgerCreated,
-        });
+        uploadedReceipts.push({ receipt: savedReceipt });
       }
 
-      await floatLedgerService.recordReceiptBatch(
+      const cash = await new CashService(tx).applyReceipts(
         agentId,
-        ledgerReceipts,
-        "Receipt uploaded from ReceiptWatcher",
+        cashReceipts,
+        { type: "MACHINE", id: authenticated.machine.machineCode },
       );
+
+      const withCash = uploadedReceipts.map((item) => ({
+        ...item,
+        ledgerCreated: cash.get(item.receipt.id)?.status === "APPLIED",
+        cash: cash.get(item.receipt.id) ?? null,
+      }));
 
       // Update Machine
       await heartbeatRepository.updateLastTransactionAt(
@@ -220,7 +234,7 @@ export default class ReceiptService {
           total: request.receipts.length,
           uploaded: uploadedReceipts.length,
           skipped: skippedReceipts.length,
-          uploadedReceipts,
+          uploadedReceipts: withCash,
           skippedReceipts,
         },
       };
@@ -237,7 +251,6 @@ export default class ReceiptService {
       const authenticationService = new MachineAuthenticationService(tx);
       const sessionRepository = new MachineSessionRepository(tx);
       const heartbeatRepository = new MachineHeartbeatRepository(tx);
-      const floatLedgerService = new FloatLedgerService(tx);
 
       const authenticated = await authenticationService.authenticate({
         machineCode: request.machineCode,
@@ -274,13 +287,19 @@ export default class ReceiptService {
         throw new BadRequestError("No active machine session found.");
       }
 
-      const acceptedReceipts: Array<{ receiptId: string; count: 1 }> = [];
+      const acceptedReceipts: Array<{
+        receiptId: string;
+        count: 1;
+        cash?: ReceiptCashResult;
+      }> = [];
       const skippedReceipts: Array<{
         receiptId: string | null;
         reason: string;
       }> = [];
       const processedReceiptIds = new Set<string>();
-      const valid: MinimalReceipt[] = [];
+      const valid: (MinimalReceipt & { transactionAt: Date })[] = [];
+      const receivedAt = new Date();
+      const retentionCutoff = await receiptUploadCutoff(tx, receivedAt);
 
       for (const raw of request.receipts) {
         const parsed = parseMinimalReceipt(raw);
@@ -301,8 +320,20 @@ export default class ReceiptService {
           continue;
         }
 
+        // Dashboards and reports filter by transactionAt, so fall back to
+        // receive time; the desktop uploads right after bank confirmation.
+        const transactionAt = parsed.receipt.transactionAt ?? receivedAt;
+
+        if (transactionAt < retentionCutoff) {
+          skippedReceipts.push({
+            receiptId: parsed.receipt.receiptId,
+            reason: RECEIPT_TOO_OLD_REASON,
+          });
+          continue;
+        }
+
         processedReceiptIds.add(parsed.receipt.receiptId);
-        valid.push(parsed.receipt);
+        valid.push({ ...parsed.receipt, transactionAt });
       }
 
       // One insert for the whole batch. PostgreSQL enforces (agentId,
@@ -319,15 +350,15 @@ export default class ReceiptService {
           transactionCategory: receipt.transactionCategory,
           transactionType: receipt.transactionType,
           status: ReceiptStatus.SUCCESS,
-          // Dashboards and reports filter by transactionAt, so fall back to
-          // receive time; the desktop uploads right after bank confirmation.
-          transactionAt: receipt.transactionAt ?? new Date(),
+          transactionAt: receipt.transactionAt,
           amount: receipt.amount,
           rrn: receipt.rrn,
           location: receipt.location,
           count: receipt.count,
         })),
       );
+
+      await new ReceiptDailyCountRepository(tx).record(created);
 
       const createdIds = new Map(
         created.map((receipt) => [receipt.receiptId, receipt.id]),
@@ -360,15 +391,25 @@ export default class ReceiptService {
       );
 
       // In request order, so running balances follow the upload order.
-      await floatLedgerService.recordReceiptBatch(
+      const cash = await new CashService(tx).applyReceipts(
         request.agentId,
         saved.map(({ receipt, id }) => ({
           receiptRecordId: id,
           transactionCategory: receipt.transactionCategory,
           amount: receipt.amount,
+          cashDenomination: receipt.cashDenomination,
         })),
-        "Minimal receipt uploaded from CSP Manager",
+        { type: "MACHINE", id: authenticated.machine.machineCode },
       );
+
+      // Cash receipts say whether they changed the balances.
+      for (const [index, { id }] of saved.entries()) {
+        const result = cash.get(id);
+
+        if (result) {
+          acceptedReceipts[index].cash = result;
+        }
+      }
 
       if (acceptedReceipts.length > 0) {
         await heartbeatRepository.updateLastTransactionAt(

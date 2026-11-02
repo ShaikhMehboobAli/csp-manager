@@ -3,6 +3,10 @@ import { Prisma } from "../../../generated/prisma/client";
 export interface ActivateMachineInput {
   agentId: string;
 
+  cashInHand?: number;
+
+  cashDenomination?: Partial<Record<string, number>>;
+
   activationCode: string;
 
   activationPassword: string;

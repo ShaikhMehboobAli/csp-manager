@@ -9,6 +9,7 @@ import * as DesktopSettingsController from "./desktop-settings.controller";
 import {
   updateDesktopSettingsSchema,
   updateMachineDesktopControlsSchema,
+  updateReceiptRetentionSchema,
 } from "./desktop-settings.validation";
 
 const router = Router();
@@ -33,6 +34,17 @@ router.patch(
   "/machines/:machineCode/desktop-controls",
   validate(updateMachineDesktopControlsSchema),
   DesktopSettingsController.updateMachineDesktopControls,
+);
+
+router.get(
+  "/receipt-retention",
+  DesktopSettingsController.getReceiptRetention,
+);
+
+router.patch(
+  "/receipt-retention",
+  validate(updateReceiptRetentionSchema),
+  DesktopSettingsController.updateReceiptRetention,
 );
 
 export default router;

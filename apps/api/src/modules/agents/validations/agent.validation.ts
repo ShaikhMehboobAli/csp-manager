@@ -1,5 +1,10 @@
 import { z } from "zod";
 
+import {
+  moneyValidator,
+  requiredMoneyValidator,
+} from "../../../core/validators/common.validator";
+
 // Without these, a missing agentId reached Prisma as `where: { agentId:
 // undefined }`, which matches the first agent in the table.
 const agentFields = {
@@ -8,17 +13,37 @@ const agentFields = {
   mobile: z.string().trim().min(10).max(15).optional(),
   email: z.string().trim().email("Invalid email address.").optional(),
   address: z.string().trim().max(500).optional(),
-  cashLimit: z.coerce.number().nonnegative().optional(),
-  openingCash: z.coerce.number().nonnegative().optional(),
   // Kept for older clients; machines come from the owner's activations.
   machineCount: z.number().int().min(0).max(100).default(0),
 };
 
-export const createKoSchema = z.object(agentFields);
+/**
+ * A KO shares its CSP's cash limit and cash in account, so it only brings
+ * its own cash in hand (required). cashLimit / openingCashInAccount sent for
+ * a KO are ignored.
+ */
+const koFields = {
+  ...agentFields,
+  openingCash: requiredMoneyValidator("Cash in hand"),
+};
+
+/**
+ * A new CSP needs all three, and cash in hand + cash in account = CSP limit
+ * (checked when the CSP is created: for an existing CSP, a link request,
+ * they're ignored).
+ */
+const cspFields = {
+  ...agentFields,
+  cashLimit: moneyValidator("CSP limit"),
+  openingCash: moneyValidator("Cash in hand"),
+  openingCashInAccount: moneyValidator("Cash in account"),
+};
+
+export const createKoSchema = z.object(koFields);
 
 export const createCspSchema = z.object({
-  ...agentFields,
-  kos: z.array(z.object(agentFields)).max(50).optional(),
+  ...cspFields,
+  kos: z.array(z.object(koFields)).max(50).optional(),
 });
 
 export type CreateKoDto = z.infer<typeof createKoSchema>;

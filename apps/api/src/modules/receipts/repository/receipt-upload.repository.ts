@@ -84,6 +84,15 @@ export default class ReceiptRepository {
       select: {
         id: true,
         receiptId: true,
+        // Fields the daily counts need.
+        agentId: true,
+        machineId: true,
+        receiptType: true,
+        transactionCategory: true,
+        transactionType: true,
+        status: true,
+        transactionAt: true,
+        amount: true,
       },
     });
   }
@@ -151,20 +160,21 @@ export default class ReceiptRepository {
     });
   }
 
+  // From the daily counts, which outlive the receipts (kept for a year).
   async getCumulativeCounts(agentId: string) {
     const [byReceiptType, byTransactionCategory, byTransactionType] =
       await Promise.all([
-        this.db.receipt.groupBy({
+        this.db.receiptDailyCount.groupBy({
           by: ["receiptType"],
           where: { agentId },
           _sum: { count: true },
         }),
-        this.db.receipt.groupBy({
+        this.db.receiptDailyCount.groupBy({
           by: ["transactionCategory"],
           where: { agentId },
           _sum: { count: true },
         }),
-        this.db.receipt.groupBy({
+        this.db.receiptDailyCount.groupBy({
           by: ["transactionType"],
           where: { agentId },
           _sum: { count: true },

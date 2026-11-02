@@ -2,7 +2,7 @@
 
 **Audience:** the engineer/agent implementing changes in the C# desktop repo (`ReceiptWarcher/`).
 **Source of truth for the backend:** `csp-manager/apps/api` (Express + Prisma). This doc lists what the desktop must add, modify, or remove to match the backend.
-**Last updated:** 2026-10-30 (rev 11)
+**Last updated:** 2026-11-02 (rev 19)
 
 > Paths below are relative to the desktop project root (`ReceiptWarcher/`). The doc was written against `ReceiptWarcher.zip` (Downloads, 2026-10-24); verify each location against your current checkout before editing.
 
@@ -39,6 +39,8 @@
 | 17 | `desktopControls`: admin switches for services and the denomination popup | READY |
 | 18 | Versions (`minimumVersion`, `downloadUrl`), `portalUrl`, removed endpoints, rate limits | READY |
 | 19 | Machine credentials: HTTPS, DPAPI, header credentials, **signed requests with a device key** | READY (must ship before production) |
+| 21 | Cash management: `cash` in the heartbeat (check before each transaction), `cash` result per uploaded receipt, cash count at activation, today's cash screen, KO settlements, change requests | READY (build the cash screen + pre-check) |
+| 20 | Receipts older than the retention period (default 60 days, at least 15) are refused on upload; `totalCount` covers the last 12 months | READY (handle the new skip reason) |
 | — | **Part 3: Endpoint quick reference** (URL, request, response, how to use) | READY |
 | — | **Part 2: Desktop API reference** (all endpoints, validation, logic) | READY |
 
@@ -498,6 +500,201 @@ Retries must be **re-signed** (new timestamp and nonce). Every call, signed or f
 
 If the device key can't ship at once, credentials can move to headers first: `X-Machine-Code`, `X-Machine-Fingerprint`, `Authorization: Machine <apiKey>`. The body then doesn't need them. If a value is in both the header and the body, they must match (400 `Machine credentials in the headers and the body don't match.`). This keeps the key out of body logs but is **not** enough for production; 19.2–19.3 are.
 
+## 20. Receipt retention: old receipts refused, `totalCount` for 12 months — READY
+
+The server keeps receipts for a retention period, by `transactionAt`: **60 days by default**, which the super admin can set anywhere from **15 to 365 days**. Per-day counts are kept for **1 year**. A daily job deletes older receipts. Raising the period never re-opens days that were already deleted.
+
+- Both upload endpoints skip a receipt whose `transactionAt` is before that window: `skippedReceipts: [{ receiptId, reason: "Receipt is older than the receipt retention period." }]`. The rest of the batch is saved. A missing `transactionAt` on `upload-counts` means "now", so it is never refused.
+- Queue action: **`Failed` ("too old"), no retry.** Retrying can't succeed, and it can't be counted: an accepted old receipt could already have been deleted and would be counted twice. With the 60-day default, the desktop's own 30-day queue limit (section G) makes this rare. If the period is set below 30 days, queued receipts older than it are refused this way. Treat that as the same "too old" case.
+- `totalCount` in the `upload-counts` response now comes from the daily counts. It is the agent's total for the **last 12 months**, not all time. Keep using it for the on-screen counters.
+- Nothing else changes: the same request and response shapes, ids, and duplicate handling.
+
+---
+
+## 21. Cash management on the desktop — READY
+
+A CSP and its KOs share **one cash limit** and **one cash in account**; each agent (the CSP or a KO) has its **own cash in hand** and **drawer** (note/coin counts). On the desktop these are **read-only**. Any change is a request the CSP approves in the mobile app, and every change is in the CSP's cash ledger.
+
+### 21.1 Read the cash from the heartbeat (no extra call per transaction)
+
+`POST /machines/runtime/heartbeat` now returns `data.cash` for the machine's assigned agent:
+
+```json
+"cash": {
+  "setUp": true,
+  "cspAgentId": "CSP-001", "agentId": "KO-001",
+  "cashLimit": 100000, "cashInAccount": 45000, "cashInTransit": 0, "cashLeftInBank": 0, "cashInHand": 55000,
+  "drawer": { "notes500": 90, "notes200": 0, "notes100": 50, "notes50": 0, "notes20": 0, "notes10": 0, "notes5": 0, "coins20": 0, "coins10": 0, "coins5": 0, "coins2": 0, "coins1": 0 },
+  "drawerTotal": 50000,
+  "lastRequest": { "id": "…", "status": "PENDING", "requestedCashInHand": 54000, "reason": "…", "reviewRemarks": null, "createdAt": "…" },
+  "updatedAt": "…"
+}
+```
+
+- Save it to `machineConfig.json` on every heartbeat (60 s), and show it read-only on the cash screen: total cash limit, cash in account, cash in hand, drawer. `cash` is `null` when the agent isn't part of a CSP.
+- `setUp: false` (`cashLimit` / `cashInAccount` null): the CSP hasn't set up cash management yet. Don't block transactions; show "Cash management not set up by the CSP".
+
+### 21.2 Check before every cash transaction (from the saved config)
+
+| Transaction | Allowed when (from `machineConfig.json`) |
+|---|---|
+| Cash withdrawal | `amount` ≤ `cashInHand` |
+| Cash deposit, money transfer | `amount` ≤ `cashInAccount` |
+
+When it isn't allowed, stop before the SBI workflow: "Not enough cash in hand (₹55,000). Ask the CSP to settle cash." After a successful transaction, update the saved values locally until the next heartbeat (withdrawal: hand −, account +; deposit / money transfer: hand +, account −), so back-to-back transactions are checked correctly. The heartbeat is always the truth: overwrite the local values with it.
+
+### 21.3 Upload result per receipt
+
+`upload-counts` `acceptedReceipts[]` items for cash categories now carry `cash`:
+
+```json
+{ "receiptId": "R-1", "count": 1, "cash": { "status": "APPLIED" } }
+{ "receiptId": "R-2", "count": 1, "cash": { "status": "NOT_APPLIED", "reason": "INSUFFICIENT_CASH_IN_HAND" } }
+```
+
+`reason`: `INSUFFICIENT_CASH_IN_HAND`, `INSUFFICIENT_CASH_IN_ACCOUNT`, or `NOT_SET_UP`. Either way the receipt **is saved and counted**: mark it `Uploaded` in the queue as usual. `NOT_APPLIED` means the balances didn't change (they would have gone negative); the CSP sees it in the ledger and fixes it with a settlement or adjustment. Show a notice, but don't retry. Non-cash receipts have no `cash` field. The legacy `/receipts/upload` returns the same `cash` object on each `uploadedReceipts` item (`ledgerCreated` = `cash.status === "APPLIED"`).
+
+The `cashDenomination` you already send updates the agent's drawer: deposit and money transfer add notes, withdrawal takes them away (a count never goes below 0).
+
+### 21.5 Count the cash when activating the PC
+
+On the activation screen, ask the operator for the **cash in hand** and the **drawer** (note/coin counts), and send them with `POST /machines/activate` (Q1):
+
+| Field | Rule |
+|---|---|
+| `cashInHand` | **required for a KO** (`Cash in hand is required.`); ₹ ≥ 0, 2 decimals |
+| `cashDenomination` | **required with it** (`Cash denomination is required.`): the 12 keys of item #2, integers 0–100,000; the full drawer (keys left out = 0). Total must equal `cashInHand` (`Cash denomination total (₹…) must equal cash in hand (₹…).`) |
+
+For a CSP's own PC both are optional; send them together to set the CSP's cash in hand too.
+
+What the server does, in the same transaction as the activation:
+- Sets that agent's cash in hand and drawer to these values.
+- Changes the shared cash in account by the difference, so cash in account + all cash in hand still equals the cash limit. Example: KO had ₹5,000 and counts ₹6,000, so cash in account goes from ₹90,000 to ₹89,000.
+- Audits it as `ACTIVATION` in the CSP's cash ledger.
+
+If cash in account can't cover the increase, the activation is refused with 400 `Not enough cash in account for this cash in hand: …`, and nothing is activated. Show the message: the CSP must settle cash or raise the limit first. When the CSP hasn't set up cash management, the activation still succeeds and `data.cash` is `{ "status": "NOT_SET_UP" }`.
+
+Re-activating the same PC (after a format) asks for the count again; it replaces the stored values the same way. Then write `data.cash` to `machineConfig.json` straight away; the next heartbeat brings the full `cash` block (21.1).
+
+### 21.6 Today's cash screen: `GET /machines/runtime/cash`
+
+For the cash management screen of **this PC's agent only**. Send the machine credentials as headers (`X-Machine-Code`, `X-Machine-Fingerprint`, `Authorization: Machine <apiKey>`; signed requests as usual); `POST /machines/runtime/cash` with the credentials in the body returns the same thing. "Today" is the IST day.
+
+```json
+"data": {
+  "setUp": true,
+  "date": "2026-11-02T09:30:00.000Z",
+  "agent": { "agentId": "KO-001", "name": "…", "cspAgentId": "CSP-001" },
+  "cashLimit": 100000, "cashInAccount": 40000, "cashInTransit": 0, "cashLeftInBank": 2000, "cashInHand": 53000,
+  "drawer": { "notes500": 106, "notes200": 0, "notes100": 0, "…": 0 }, "drawerTotal": 53000, "drawerMatchesCashInHand": true,
+  "today": {
+    "totals": { "deposits": 0, "withdrawals": 0, "moneyTransfers": 0, "settlementsIn": 48000, "settlementsOut": 0 },
+    "transactions": [
+      { "id": "…", "type": "SETTLEMENT_FROM_BANK", "reason": null, "transactionCategory": null, "amount": 50000,
+        "cashInHandChange": 48000, "cashInAccountChange": 0, "balanceCashInHand": 53000, "balanceCashInAccount": 40000,
+        "drawerChange": { "notes500": 96 }, "receiptId": null, "settlementId": "…", "remarks": "Bank → cash in hand", "createdAt": "…" }
+    ],
+    "settlements": [ <today's finished settlement steps> ]
+  },
+  "openSettlements": [ <this agent's open steps, oldest first> ],
+  "lastRequest": { "id": "…", "status": "PENDING", "requestedCashInHand": 52500, "reviewRemarks": null, "createdAt": "…" } | null
+}
+```
+
+- Show all of it read-only: total cash limit, cash in account (holding, shared), in bank (open settlements), **left in bank** (`cashLeftInBank`, shown separately: what partly delivered settlements left at the bank), its own cash in hand and drawer, today's history (receipts, settlements, activation count, approved corrections; newest first, max 500), and the open settlements with their action buttons (21.7).
+- `transactions[].type`: `RECEIPT`, `RECEIPT_NOT_APPLIED` (+ `reason`), `ACTIVATION`, `SETTLEMENT_TO_BANK`, `SETTLEMENT_FROM_BANK`, `SETTLEMENT_HELD`, `SETTLEMENT_CANCELLED`, `REQUEST_APPROVED`, `ADJUSTMENT` (by the CSP), `AGENT_ADDED`, `OPENING`.
+- Refresh it when the screen opens and after every settlement action; the heartbeat `cash` (21.1) stays the source for the pre-check.
+- Errors: 400 `This agent isn't part of a CSP.`, 403 `No agent is currently assigned to this machine.`, machine-auth errors (section H).
+
+### 21.7 Settlement: the KO's own two steps (no CSP approval)
+
+The "Settlement" button. Two directions, each in two steps that **the KO approves itself**; the CSP only sees them in the app.
+
+| Direction | Step 1 — `TO_BANK` (create) | Step 2 — `FROM_BANK` (opens when step 1 is approved) |
+|---|---|---|
+| `ACCOUNT_TO_HAND` (KO needs cash) | "Cash in account → bank": `amount`. Taken out of the shared cash in account at once and held in bank (`cashInTransit`), so the other KOs already see the lower cash in account | "Bank → cash in hand": approve with `cashDenomination`, the notes received; total > 0 and ≤ amount. Added to this KO's drawer and cash in hand; any difference stays **left in bank** |
+| `HAND_TO_ACCOUNT` | "Cash in hand → bank": `amount` + `cashDenomination` (the notes taken out; total = amount). Taken out of cash in hand and the drawer, held in bank | "Bank → cash in account": approve with `amount`, what was credited (> 0 and ≤ amount; leave it out for the full amount); any difference stays **left in bank** |
+| `BANK_TO_HAND` (bring back what's left in bank) | — (no step 1) | "Left in bank → cash in hand": create with `amount` (≤ `cashLeftInBank`); it's taken out of left in bank at once and held (`cashInTransit`), so other KOs can't take it too. Approve with `cashDenomination`, the notes received (total > 0 and ≤ amount); added to this KO's drawer and cash in hand, any difference goes back to left in bank. Cancel puts it back in left in bank |
+
+Nothing goes beyond the limit: cash in account + all cash in hand + in bank + left in bank = cash limit at all times. **One open settlement per KO at a time**: while step 1 or step 2 is open, a new one gets 409 `This agent already has an open settlement. Approve or cancel it first.` Disable the Settlement button while `openSettlements` isn't empty.
+
+**Create step 1:** `POST /machines/runtime/cash/settlements`
+
+```json
+{ "machineCode": "…", "apiKey": "…", "fingerprint": "…",
+  "direction": "ACCOUNT_TO_HAND", "amount": 50000, "remarks": "Need cash for withdrawals" }
+{ "machineCode": "…", "apiKey": "…", "fingerprint": "…",
+  "direction": "HAND_TO_ACCOUNT", "amount": 3000, "cashDenomination": { "notes500": 6 } }
+{ "machineCode": "…", "apiKey": "…", "fingerprint": "…",
+  "direction": "BANK_TO_HAND", "amount": 2000 }
+```
+
+`BANK_TO_HAND` returns the step as `step: "FROM_BANK"`, `needsDenomination: true`, label `Left in bank → cash in hand`; approve it directly (no step 1). Show the button only when `cashLeftInBank` > 0.
+
+→ 201 `Settlement started. Approve it when the bank step is done.` `data: { id, direction, step: "TO_BANK" (FROM_BANK for BANK_TO_HAND), label, status: "PENDING", amount, … }`. Errors (400): `Not enough cash in account: ₹… available, ₹… requested.`, `Not enough cash left in bank: ₹… available, ₹… requested.`, `Not enough cash in hand: …`, `Cash denomination is required: the notes taken out of the drawer.`, `Cash denomination total (₹…) must equal the amount (₹…).`, `Amount must be more than 0.`, `Cash management isn't set up for this CSP yet. …`.
+
+**Approve or cancel an open step:** `POST /machines/runtime/cash/settlements/:settlementId`
+
+```json
+{ "machineCode": "…", "apiKey": "…", "fingerprint": "…", "action": "APPROVE" }
+{ "machineCode": "…", "apiKey": "…", "fingerprint": "…", "action": "APPROVE", "cashDenomination": { "notes500": 96 } }
+{ "machineCode": "…", "apiKey": "…", "fingerprint": "…", "action": "APPROVE", "amount": 2000 }
+{ "machineCode": "…", "apiKey": "…", "fingerprint": "…", "action": "CANCEL", "remarks": "Bank closed" }
+```
+
+| Call | Result |
+|---|---|
+| APPROVE step 1 | 200 `Step approved. The next step is open.` `data: { approved, next }`: `next` is step 2 (`FROM_BANK`, `needsDenomination` true for ACCOUNT_TO_HAND) |
+| APPROVE step 2 | 200 `Settlement completed.` `data: { approved, next: null }`; `approved.settledAmount` = what reached the destination, `approved.leftInBank` = the rest |
+| CANCEL (step 1 or 2) | 200 `Settlement cancelled; the amount went back.` `data: { cancelled, next: null }`: money (and, for HAND_TO_ACCOUNT, the notes) back where they came from |
+
+Errors: 404 `Settlement not found.` (not this agent's), 409 `This settlement step is already approved.` / `… cancelled.`, 400 `Cash denomination is required: the notes received from the bank.`, `Cash denomination total (₹…) must be more than ₹0 and at most the amount in bank (₹…).`, `Amount credited (₹…) must be more than ₹0 and at most the amount in bank (₹…).`; on create also 409 `This agent already has an open settlement. Approve or cancel it first.`
+
+**Screen flow (cash screen, from §21.6 data):**
+
+1. **Open the cash screen** → call `GET /machines/runtime/cash`. Show limit, cash in account, in bank (`cashInTransit`), left in bank (`cashLeftInBank`), own cash in hand + drawer, today's totals and history.
+2. **Open settlement?** If `openSettlements` is not empty, show it as a card with **Approve** / **Cancel** and **disable the Settlement button** (one at a time; the server answers 409 otherwise).
+3. **Settlement button** → popup "What do you want to do?":
+   - **Get cash from account** (`ACCOUNT_TO_HAND`) → amount (≤ `cashInAccount`).
+   - **Deposit cash to account** (`HAND_TO_ACCOUNT`) → amount + notes taken out of the drawer (total = amount, each count ≤ the drawer).
+   - **Get cash left in bank** (`BANK_TO_HAND`) → amount (≤ `cashLeftInBank`). Show this option only when `cashLeftInBank` > 0.
+   → `POST /machines/runtime/cash/settlements` → refresh the screen.
+4. **Approve** on the open card, by its `step` and `needsDenomination`:
+   - `TO_BANK` (step 1, the money reached the bank) → confirm → `{ action: "APPROVE" }`. The response's `next` is step 2: show it as the new open card.
+   - `FROM_BANK` with `needsDenomination: true` (bank → cash in hand, also `BANK_TO_HAND`) → **denomination popup** for the notes received; show the running total and "at most ₹`amount`" → `{ action: "APPROVE", cashDenomination }`. If the total is less, say "₹… stays left in bank".
+   - `FROM_BANK` with `needsDenomination: false` (bank → cash in account) → amount field prefilled with `amount` → `{ action: "APPROVE", amount }`. If it's less, say "₹… stays left in bank".
+5. **Cancel** on the open card → confirm (optional remarks) → `{ action: "CANCEL" }`. The money (and notes) go back where they came from: cash in account, cash in hand + drawer, or left in bank.
+6. After every action: refresh the cash screen (`GET /machines/runtime/cash`) and save the returned balances over the heartbeat `cash` in `machineConfig.json`, so the pre-check (§21.2) uses the new values right away.
+
+| Direction | Cards the KO sees | Approve needs |
+|---|---|---|
+| `ACCOUNT_TO_HAND` | 1 "Cash in account → bank" → 2 "Bank → cash in hand" | 1: nothing · 2: notes received (≤ amount) |
+| `HAND_TO_ACCOUNT` | 1 "Cash in hand → bank" → 2 "Bank → cash in account" | 1: nothing · 2: amount credited (≤ amount; default all) |
+| `BANK_TO_HAND` | only "Left in bank → cash in hand" | notes received (≤ amount) |
+
+Show `label` from the response as the card title. Every step is in the CSP's ledger (`SETTLEMENT_TO_BANK`, `SETTLEMENT_FROM_BANK`, `SETTLEMENT_HELD`, `SETTLEMENT_CANCELLED`) and in its settlements feed; the CSP doesn't approve anything.
+
+### 21.4 Ask the CSP to change cash in hand / drawer
+
+`POST /machines/runtime/cash/requests` (machine auth, like the other runtime calls)
+
+```json
+{ "machineCode": "…", "apiKey": "…", "fingerprint": "…",
+  "cashInHand": 54000,
+  "drawer": { "notes500": 98, "notes100": 50 },
+  "reason": "Counted ₹1,000 less than the system" }
+```
+
+| Field | Rule |
+|---|---|
+| `cashInHand` | required, ₹ ≥ 0, 2 decimals (`Cash in hand is required.`) |
+| `drawer` | optional; the note/coin keys above, integers 0–100,000; keys left out keep their count |
+| `reason` | required, 1–500 chars (`Reason is required.`) |
+
+→ 201 `Cash change request sent to the CSP for approval.` `data: { id, status: "PENDING", requestedCashInHand, systemCashInHand, requestedDrawer, reason, … }`. Errors: 409 `A cash change request is already pending for this agent. …` (one at a time), 400 `Cash management isn't set up for this CSP yet. …`, 403 `No agent is currently assigned to this machine.`, plus the usual machine-auth errors (section H).
+
+Nothing changes until the CSP approves. The result shows in the next heartbeats as `cash.lastRequest.status` (`APPROVED` / `REJECTED`, with `reviewRemarks`), and on approval `cashInHand` / `drawer` show the new values.
+
 ---
 
 ## A. Conventions (all endpoints)
@@ -726,6 +923,8 @@ Per receipt, inside one DB transaction: duplicate id in the same request → ski
 | in `acceptedReceipts` | `Uploaded` |
 | in `skippedReceipts`, reason `Receipt already exists.` / `Duplicate receipt in request.` | `Uploaded` (it's on the server) |
 | in `skippedReceipts`, reason starts with `Invalid receipt` | `Failed` + reason; no auto-retry |
+| in `skippedReceipts`, reason `Receipt is older than the receipt retention period.` | `Failed` ("too old"); no auto-retry (item #20) |
+| in `acceptedReceipts` with `cash.status = "NOT_APPLIED"` | `Uploaded` (saved and counted); show a notice: the balances couldn't cover it (item #21) |
 | 429 | `Pending`; retry with backoff |
 | 400 validation message | `Failed` + message; no auto-retry; show in an "upload problems" list |
 | 400 `No active machine session found.` | `Pending`; retry after the next successful heartbeat |
@@ -737,7 +936,7 @@ Per receipt, inside one DB transaction: duplicate id in the same request → ski
 - Upload in chunks of ≤ 20, oldest first, one request at a time (no parallel uploads).
 - Trigger: after enqueue, after each successful heartbeat, and on a 60 s timer when `Pending` rows exist.
 - Before uploading old queued rows, map legacy denomination keys (#2) and drop rows older than 30 days to `Failed` ("too old") so a broken row can't loop forever.
-- `totalCount` in the response = the agent's cumulative counts on the server; use it for the on-screen counters (don't add locally).
+- `totalCount` in the response = the agent's counts on the server for the last 12 months (item #20); use it for the on-screen counters (don't add locally).
 
 ## H. Error classification (all runtime endpoints)
 
@@ -823,9 +1022,15 @@ The examples below show the body form; in signed mode drop those three fields fr
 | Q6 | `/machines/runtime/activity/stop` | unchanged | CSP Manager UI | logout, auto-logout, app close |
 | Q7 | `/receipts/upload-counts` | CHANGED (new values, per-receipt validation) | CSP Manager UI | queued confirmed receipts, ≤ 20 per request |
 | Q8 | `/receipts/upload` | CHANGED (watcher gate, ≤ 20) | background watcher | only when `receiptWatcherAllowed = true` |
+| Q9 | `GET /machines/runtime/cash` | **NEW** | CSP Manager UI (cash screen) | opening the cash screen; after every settlement action |
+| Q10 | `/machines/runtime/cash/settlements` | **NEW** | CSP Manager UI (Settlement button) | starting a settlement |
+| Q11 | `/machines/runtime/cash/settlements/:settlementId` | **NEW** | CSP Manager UI (open settlement card) | Approve / Cancel |
+| Q12 | `/machines/runtime/cash/requests` | **NEW** | CSP Manager UI | asking the CSP to correct cash in hand / drawer |
 | — | `/events`, `/api/events`, `/api/auth/activate`, `/api/config/sync`, `/receipt` | **REMOVED** (404) | — | delete the calling code |
 
-Rate limits: Q2–Q8 share **120 requests/min per machine**; Q1 is **20 per 15 min per IP**.
+Q9 is a `GET` (credentials in headers; `POST` with the body form also works). Q9–Q12 are described in full in §21.6, §21.7 and §21.4.
+
+Rate limits: Q2–Q12 share **120 requests/min per machine**; Q1 is **20 per 15 min per IP**.
 
 ### Q1. `POST /api/v1/machines/activate`
 
@@ -834,6 +1039,8 @@ Rate limits: Q2–Q8 share **120 requests/min per machine**; Q1 is **20 per 15 m
   "agentId": "CSP-001",
   "activationCode": "K7M2-QX9P-RT4W-HB3N",
   "activationPassword": "<typed by the user>",
+  "cashInHand": 6000,
+  "cashDenomination": { "notes500": 10, "notes100": 10 },
   "machine": {
     "fingerprint": "4C4C4544-0042-3510-8051-B4C04F383732",
     "watcherVersion": "1.0.0",
@@ -847,11 +1054,14 @@ Rate limits: Q2–Q8 share **120 requests/min per machine**; Q1 is **20 per 15 m
 
 `devicePublicKey` (item #19.2): send it to switch this PC to signed requests.
 
+`cashInHand` + `cashDenomination` (item #21.5): the agent's counted cash, **required when the agent is a KO**.
+
 Response 201:
 
 ```json
 { "success": true, "message": "Machine registered and activated successfully.",
-  "data": { "machineCode": "MAC-2026-000001", "apiKey": "<64 hex chars>" } }
+  "data": { "machineCode": "MAC-2026-000001", "apiKey": "<64 hex chars>",
+            "cash": { "status": "APPLIED", "cashLimit": 100000, "cashInAccount": 89000, "cashInHand": 6000 } } }
 ```
 
 How to use:
@@ -987,7 +1197,7 @@ Response 201:
 How to use:
 - 1–20 receipts, oldest first, one request at a time. `agentId` = `MachineConfig.AgentId`. Leave out null fields; `count` is always 1.
 - `amount` only for `CASH_DEPOSIT`, `CASH_WITHDRAWAL`, `MONEY_TRANSFER` (required there); never for passbook or social security.
-- Per receipt: in `acceptedReceipts` → Uploaded; skipped with `Receipt already exists.` / `Duplicate receipt in request.` → Uploaded; skipped with a reason starting `Invalid receipt` → Failed (keep reason, no retry); in neither list → keep queued and retry.
+- Per receipt: in `acceptedReceipts` → Uploaded; skipped with `Receipt already exists.` / `Duplicate receipt in request.` → Uploaded; skipped with a reason starting `Invalid receipt` or `Receipt is older than the receipt retention period.` → Failed (keep reason, no retry); in neither list → keep queued and retry.
 - Needs an active machine session (Q2 or Q5 in the last 180 s): 400 `No active machine session found.` → retry after the next heartbeat. Full rules: section G, item #16.
 
 ### Q8. `POST /api/v1/receipts/upload` (background watcher only)
@@ -1010,11 +1220,48 @@ How to use:
 - Only when the last `receiptWatcherAllowed` was `true`. Otherwise the server answers 403 `Receipt watcher is not allowed for this machine. Receipts are counted by CSP Manager.` → stop the watcher.
 - 1–20 receipts; `status`, `transactionAt` and `amount` required on each; one invalid receipt fails the whole request (400) here, unlike Q7. No `agentId` (the machine's assigned agent is used).
 - Don't send `customerName` / `customerAccount` unless the product asks for them (pre-production checklist 5C.6).
+- Skipped reasons: `Duplicate receipt in request.`, `Receipt already exists.` (both = on the server) and `Receipt is older than the receipt retention period.` (= drop it, item #20).
+
+### Q9. `GET /api/v1/machines/runtime/cash`
+
+Headers `X-Machine-Code`, `X-Machine-Fingerprint`, `Authorization: Machine <apiKey>` (or signed). Response 200: today's cash screen for this PC's agent (§21.6): `cashLimit`, `cashInAccount`, `cashInTransit`, `cashLeftInBank`, `cashInHand`, `drawer`, `today { totals, transactions, settlements }`, `openSettlements`, `lastRequest`.
+
+### Q10. `POST /api/v1/machines/runtime/cash/settlements`
+
+```json
+{ "machineCode": "…", "apiKey": "…", "fingerprint": "…", "direction": "ACCOUNT_TO_HAND" | "HAND_TO_ACCOUNT" | "BANK_TO_HAND", "amount": 2000, "cashDenomination": { … } (HAND_TO_ACCOUNT only), "remarks": "…" }
+```
+
+Response 201: the open step `{ id, direction, step, label, status: "PENDING", amount, needsDenomination, … }`. 400 not enough cash in account / hand / left in bank, denomination errors; 409 one already open (§21.7).
+
+### Q11. `POST /api/v1/machines/runtime/cash/settlements/:settlementId`
+
+```json
+{ "machineCode": "…", "apiKey": "…", "fingerprint": "…", "action": "APPROVE" | "CANCEL", "cashDenomination": { … }, "amount": 2000, "remarks": "…" }
+```
+
+Response 200: `{ approved, next }` (next = step 2 or null) or `{ cancelled, next: null }`. `cashDenomination` for bank → cash in hand steps, `amount` for bank → cash in account (§21.7).
+
+### Q12. `POST /api/v1/machines/runtime/cash/requests`
+
+`{ …credentials, "cashInHand", "drawer"?, "reason" }` → 201 PENDING; the CSP approves in the app (§21.4).
 
 ---
 
 ## Changelog
 
+- 2026-11-02 (rev 19) — §21.7: step-by-step screen flow for the cash screen and Settlement button (all three directions, approve/cancel by step, refresh + config save). Part 3: Q9–Q12 cash endpoints.
+
+- 2026-11-02 (rev 18) — Item #21.7: settlement direction `BANK_TO_HAND` (left in bank → cash in hand; one step, created from `cashLeftInBank`, approved with the counted notes); ledger type `SETTLEMENT_HELD`.
+
+- 2026-11-02 (rev 17) — Item #21.6–21.7: step 2 can deliver less in both directions (bank → cash in account takes `amount`); the rest is **left in bank** (`cashLeftInBank` in the today screen and heartbeat `cash`, `leftInBank` per step), shown separately. One open settlement per KO (409).
+
+- 2026-11-02 (rev 16) — Item #21.6–21.7: `GET /machines/runtime/cash` (today's cash screen for this PC's agent) and KO self-approved two-step settlements (`POST /machines/runtime/cash/settlements`, `POST /machines/runtime/cash/settlements/:id` approve/cancel); `cashInTransit` in the heartbeat `cash`.
+
+- 2026-11-02 (rev 15) — Item #21.5: `POST /machines/activate` takes `cashInHand` + `cashDenomination` (required for a KO; total must match); they set the agent's cash in hand and drawer, and cash in account adapts; response `data.cash`.
+- 2026-11-02 (rev 14) — Item #21: cash management. Heartbeat `cash` (cash limit, cash in account, own cash in hand and drawer, last request) to cache in `machineConfig.json` and check before each cash transaction; per-receipt `cash` result on uploads; `POST /machines/runtime/cash/requests` for CSP-approved changes.
+- 2026-11-01 (rev 13) — Item #20: the retention period is set by the super admin (15–365 days, default 60); the skip reason and queue handling are unchanged.
+- 2026-10-31 (rev 12) — Item #20: receipts are kept 60 days; both upload endpoints skip receipts older than that (`Receipt is older than the receipt retention period.` → Failed, no retry); `totalCount` covers the last 12 months. Section G, Q7 and Q8 updated.
 - 2026-10-30 (rev 11) — Item #19 READY: device key (ECDSA P-256, `machine.devicePublicKey` at activation), signed requests (`X-Machine-Code`, `X-Machine-Fingerprint`, `X-Timestamp`, `X-Nonce`, `X-Signature`), header credentials (`Authorization: Machine <apiKey>`). Backward compatible until the server sets `MACHINE_SIGNATURE_REQUIRED=true` (production).
 - 2026-10-30 (rev 10) — Added Part 3: endpoint quick reference (Q1–Q8) with URL, request, response and how to use. Revoke is now requested by the owner in the mobile app and approved by the super admin (item #15). Added item #19 (machine credential security plan: HTTPS + DPAPI now, signed requests later).
 - 2026-10-30 (rev 9) — Answers the desktop requirements doc (audit 2026-10-29). Items #14–#18: `receiptWatcherAllowed` / `receiptWatcherReason` / `ownerType`; same-PC re-activation and web-app revoke; `PASSBOOK` / `PASSBOOK_PRINTING`, per-agent `receiptId`, per-receipt validation, report columns; `desktopControls`; `minimumVersion`, `downloadUrl`, `portalUrl` (null for now); removed `/events`, `/api/auth/activate`, `/api/config/sync`, `/receipt`; rate limits (429). Sections C, D, E, G, H updated.
