@@ -60,6 +60,13 @@ const receiptSchema = z.object({
   customerAccount: z.string().trim().optional(),
 
   location: z.string().trim().optional(),
+
+  // Optional extra fields; kept only when the super admin allows them.
+  bankName: z.string().trim().max(100).optional(),
+  balanceAfter: z.number().finite().optional(),
+  bankTransactionId: z.string().trim().max(100).optional(),
+  bankResponseCode: z.string().trim().max(50).optional(),
+  bankResponseMessage: z.string().trim().max(500).optional(),
 });
 
 export const uploadReceiptSchema = z.object({
@@ -84,6 +91,17 @@ export const minimalReceiptSchema = z
     transactionType: z.string().trim().min(1),
     rrn: z.string().trim().min(1).optional(),
     location: z.string().trim().min(1).optional(),
+    stan: z.string().trim().min(1).max(50).optional(),
+    terminalId: z.string().trim().min(1).max(50).optional(),
+    customerName: z.string().trim().min(1).max(200).optional(),
+    customerAccount: z.string().trim().min(1).max(50).optional(),
+
+    // Optional extra fields; kept only when the super admin allows them.
+    bankName: z.string().trim().max(100).optional(),
+    balanceAfter: z.number().finite().optional(),
+    bankTransactionId: z.string().trim().max(100).optional(),
+    bankResponseCode: z.string().trim().max(50).optional(),
+    bankResponseMessage: z.string().trim().max(500).optional(),
     transactionAt: z.coerce.date().optional(),
     count: z.literal(1),
     amount: z.number().positive().finite().optional(),

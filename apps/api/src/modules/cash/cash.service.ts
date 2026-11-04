@@ -21,6 +21,9 @@ import {
   drawerTotal,
   emptyDrawer,
 } from "./cash.constants";
+import CashDeskService from "./cash-desk.service";
+import CashSettlementService from "./cash-settlement.service";
+import { CashTaskService } from "./cash-task.service";
 import CashRepository, { LockedAgentCash, LockedPool } from "./cash.repository";
 import {
   D,
@@ -201,7 +204,9 @@ export default class CashService {
    * Machine activation: the agent counts its cash in hand and drawer, which
    * replace the stored ones; cash in account changes by the difference. The
    * caller has checked that the drawer total equals the cash in hand.
-   * NOT_SET_UP when the CSP has no pool yet (nothing changes).
+   * Before the CSP sets up cash management the count is SAVED as the
+   * agent's cash in hand; setting up takes it into account. NOT_SET_UP when
+   * the agent isn't part of a CSP (nothing is kept).
    */
   async setCashAtActivation(input: {
     agentId: string;
@@ -212,13 +217,36 @@ export default class CashService {
     const cspAgentId = await this.repository.findPoolCspId(input.agentId);
     const pool = cspAgentId ? await this.repository.lockPool(cspAgentId) : null;
 
-    if (!cspAgentId || !pool) {
+    if (!cspAgentId) {
       return { status: "NOT_SET_UP" as const };
     }
 
     const cash = await this.repository.lockAgentCash([input.agentId]);
     const current = cash.get(input.agentId)!;
     const hand = D(input.cashInHand);
+
+    if (!pool) {
+      const drawer = drawerOf(input.drawer);
+
+      await this.repository.updateAgentCash(input.agentId, hand, drawer);
+
+      await this.repository.createLedger([
+        {
+          cspAgentId,
+          agentId: input.agentId,
+          type: CashLedgerType.ACTIVATION,
+          cashInHandChange: hand.minus(current.cashInHand),
+          balanceCashInHand: hand,
+          drawerChange: drawerChangeBetween(current.drawer, drawer) ?? undefined,
+          actorType: CashActorType.MACHINE,
+          actorId: input.machineCode,
+          remarks: "Cash in hand counted at machine activation (applies when cash management is set up)",
+        },
+      ]);
+
+      return { status: "SAVED" as const, cashInHand: money(hand) };
+    }
+
     const change = hand.minus(current.cashInHand);
     const account = pool.cashInAccount.minus(change);
 
@@ -493,6 +521,7 @@ export default class CashService {
     cashLimit?: number;
     cashInAccount?: number;
     cashLeftInBank?: number;
+    cashOther?: number;
     agents?: { agentId: string; cashInHand?: number; drawer?: Partial<Drawer> }[];
     remarks: string;
     idempotencyKey?: string;
@@ -506,14 +535,18 @@ export default class CashService {
       return { replayed: true };
     }
 
-    if (!pool && (input.cashLimit === undefined || input.cashInAccount === undefined)) {
+    if (!pool && input.cashLimit === undefined) {
       throw new BadRequestError(
-        "Cash management isn't set up yet: send cashLimit and cashInAccount (and each agent's cashInHand) to set it up.",
+        "Cash management isn't set up yet: send cashLimit (and cashInAccount, each agent's cashInHand) to set it up.",
       );
     }
 
     if (!pool && input.cashLeftInBank !== undefined) {
       throw new BadRequestError("Nothing is left in bank before cash management is set up.");
+    }
+
+    if (!pool && input.cashOther !== undefined) {
+      throw new BadRequestError("There's no other cash before cash management is set up.");
     }
 
     const changes = input.agents ?? [];
@@ -532,17 +565,6 @@ export default class CashService {
     const oldLimit = pool?.cashLimit ?? ZERO;
     const oldAccount = pool?.cashInAccount ?? ZERO;
     const limit = input.cashLimit !== undefined ? D(input.cashLimit) : oldLimit;
-    const account =
-      input.cashInAccount !== undefined
-        ? D(input.cashInAccount)
-        : oldAccount.plus(limit.minus(oldLimit));
-
-    if (account.isNegative()) {
-      throw new BadRequestError(
-        `Cash in account can't go below ₹0.00: lowering the limit to ${rupees(limit)} needs ${rupees(limit.minus(oldLimit).negated())} from cash in account, which has ${rupees(oldAccount)}.`,
-      );
-    }
-
     const next = new Map<string, LockedAgentCash>();
 
     for (const [agentId, current] of cash) {
@@ -561,14 +583,36 @@ export default class CashService {
       ZERO,
     );
 
+    // Setting up without cashInAccount: the rest of the limit after every
+    // agent's cash in hand (incl. counts saved at PC activation).
+    const account =
+      input.cashInAccount !== undefined
+        ? D(input.cashInAccount)
+        : pool
+          ? oldAccount.plus(limit.minus(oldLimit))
+          : limit.minus(totalHand);
+
+    if (account.isNegative()) {
+      throw new BadRequestError(
+        pool
+          ? `Cash in account can't go below ₹0.00: lowering the limit to ${rupees(limit)} needs ${rupees(limit.minus(oldLimit).negated())} from cash in account, which has ${rupees(oldAccount)}.`
+          : `The cash limit (${rupees(limit)}) is less than the agents' cash in hand (${rupees(totalHand)} in total).`,
+      );
+    }
+
     const transit = pool?.cashInTransit ?? ZERO;
     const oldLeftInBank = pool?.cashLeftInBank ?? ZERO;
     const leftInBank =
       input.cashLeftInBank !== undefined ? D(input.cashLeftInBank) : oldLeftInBank;
 
-    if (!totalHand.plus(account).plus(transit).plus(leftInBank).equals(limit)) {
+    const oldOther = pool?.cashOther ?? ZERO;
+    const other = input.cashOther !== undefined ? D(input.cashOther) : oldOther;
+
+    const dueExtra = pool?.cashDueExtra ?? ZERO;
+
+    if (!totalHand.plus(account).plus(transit).plus(leftInBank).plus(dueExtra).equals(limit.plus(other))) {
       throw new BadRequestError(
-        `Cash in hand (${rupees(totalHand)} in total) + cash in account (${rupees(account)})${transit.isZero() ? "" : ` + in bank (${rupees(transit)}, open settlements)`}${leftInBank.isZero() ? "" : ` + left in bank (${rupees(leftInBank)})`} must equal the cash limit (${rupees(limit)}).`,
+        `Cash in hand (${rupees(totalHand)} in total) + cash in account (${rupees(account)})${transit.isZero() ? "" : ` + in bank (${rupees(transit)}, open settlements)`}${leftInBank.isZero() ? "" : ` + left in bank (${rupees(leftInBank)})`}${dueExtra.isZero() ? "" : ` ${dueExtra.isNegative() ? "−" : "+"} extra cash held by dues (${rupees(dueExtra.abs())})`} must equal the cash limit (${rupees(limit)})${other.isZero() ? "" : ` ${other.isNegative() ? "−" : "+"} other cash (${rupees(other.abs())}, custom transactions and dues)`}.`,
       );
     }
 
@@ -586,7 +630,8 @@ export default class CashService {
       !pool ||
       !limit.equals(oldLimit) ||
       !account.equals(oldAccount) ||
-      !leftInBank.equals(oldLeftInBank);
+      !leftInBank.equals(oldLeftInBank) ||
+      !other.equals(oldOther);
 
     if (poolChanged) {
       rows.push({
@@ -595,9 +640,11 @@ export default class CashService {
         cashLimitChange: limit.minus(oldLimit),
         cashInAccountChange: account.minus(oldAccount),
         cashLeftInBankChange: leftInBank.minus(oldLeftInBank),
+        cashOtherChange: other.minus(oldOther),
         balanceCashInAccount: account,
         balanceCashLimit: limit,
         balanceCashLeftInBank: leftInBank,
+        balanceCashOther: other,
       });
     }
 
@@ -632,6 +679,7 @@ export default class CashService {
         cashLimit: limit,
         cashInAccount: account,
         cashLeftInBank: leftInBank,
+        cashOther: other,
       });
     } else {
       await this.repository.createPool(input.cspAgentId, limit, account);
@@ -894,6 +942,10 @@ export default class CashService {
         cashInTransit: pool ? money(D(pool.cashInTransit)) : null,
         // Left in bank by partly delivered KO settlements, shown separately.
         cashLeftInBank: pool ? money(D(pool.cashLeftInBank)) : null,
+        // Net cash from custom transactions and dues (+ in, − out), shown separately.
+        cashOther: pool ? money(D(pool.cashOther)) : null,
+        // Open "extra cash" dues (+ to collect, − to give), part of the books rule.
+        cashDueExtra: pool ? money(D(pool.cashDueExtra)) : null,
         totalCashInHand: money(totalHand),
         drawer: merged,
         drawerTotal: drawerTotal(merged),
@@ -916,13 +968,16 @@ export default class CashService {
       return null;
     }
 
-    const [pool, row, lastRequest] = await Promise.all([
+    const [pool, row, lastRequest, dues, openSettlement, tasks] = await Promise.all([
       this.repository.findPool(cspAgentId),
       this.db.agentCash.findUnique({ where: { agentId } }),
       this.db.cashRequest.findFirst({
         where: { agentId },
         orderBy: { createdAt: "desc" },
       }),
+      new CashDeskService(this.db).dueTotals(agentId),
+      new CashSettlementService(this.db).openStepSummary(agentId),
+      new CashTaskService(this.db).counts(agentId),
     ]);
 
     const drawer = row ? drawerOf(row) : emptyDrawer();
@@ -935,10 +990,17 @@ export default class CashService {
       cashInAccount: pool ? money(D(pool.cashInAccount)) : null,
       cashInTransit: pool ? money(D(pool.cashInTransit)) : null,
       cashLeftInBank: pool ? money(D(pool.cashLeftInBank)) : null,
+      cashOther: pool ? money(D(pool.cashOther)) : null,
+      cashDueExtra: pool ? money(D(pool.cashDueExtra)) : null,
       cashInHand: money(row ? D(row.cashInHand) : ZERO),
       drawer,
       drawerTotal: drawerTotal(drawer),
       lastRequest: lastRequest ? this.mapRequest(lastRequest) : null,
+      // Open balance dues: { toCollect, toGive, openCount, bySide }.
+      dues,
+      // What's waiting for the KO: its open settlement step, and tasks.
+      openSettlement,
+      tasks,
       updatedAt: (row?.updatedAt ?? pool?.updatedAt ?? null) as Date | null,
     };
   }
@@ -995,11 +1057,15 @@ export default class CashService {
         cashLimitChange: money(D(item.cashLimitChange)),
         cashInTransitChange: money(D(item.cashInTransitChange)),
         cashLeftInBankChange: money(D(item.cashLeftInBankChange)),
+        cashOtherChange: money(D(item.cashOtherChange)),
+        cashDueExtraChange: money(D(item.cashDueExtraChange)),
         balanceCashInHand: num(item.balanceCashInHand),
         balanceCashInAccount: num(item.balanceCashInAccount),
         balanceCashLimit: num(item.balanceCashLimit),
         balanceCashInTransit: num(item.balanceCashInTransit),
         balanceCashLeftInBank: num(item.balanceCashLeftInBank),
+        balanceCashOther: num(item.balanceCashOther),
+        balanceCashDueExtra: num(item.balanceCashDueExtra),
         drawerChange: item.drawerChange,
         receiptId: item.receipt?.receiptId ?? null,
         requestId: item.requestId,

@@ -14,6 +14,8 @@ import cspVisitRoutes from "../modules/csp-visits/csp-visit.routes";
 import uploadRoutes from "../modules/uploads/upload.routes";
 import cashRoutes from "../modules/cash/cash.routes";
 import bcLinkRoutes from "../modules/bc-links/bc-link.routes";
+import teamRoutes from "../modules/team/team.routes";
+import { commissionAdminRoutes, commissionRoutes } from "../modules/commission/commission.routes";
 import desktopSettingsRoutes from "../modules/settings/desktop-settings.routes";
 
 const router = Router();
@@ -37,6 +39,9 @@ router.use("/csp-visits", cspVisitRoutes);
 router.use("/uploads", uploadRoutes);
 router.use("/bc-links", bcLinkRoutes);
 router.use("/cash-management", cashRoutes);
+router.use("/team", teamRoutes);
+router.use("/commission", commissionRoutes);
+router.use("/admin/commission", commissionAdminRoutes);
 router.use("/admin", desktopSettingsRoutes);
 
 export default router;

@@ -47,6 +47,10 @@ router.get("/export", authMiddleware, controller.export.bind(controller));
 
 router.get("/stats", authMiddleware, controller.getStats.bind(controller));
 
+// The optional receipt fields with their display names (and which the super
+// admin allows now), so the app can label whatever a receipt carries.
+router.get("/fields", authMiddleware, controller.getFields.bind(controller));
+
 // Get a specific receipt by ID
 // and this route need to be below the /stats route because /stats will match /:receiptId if it is above it
 router.get(

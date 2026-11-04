@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { RECEIPT_FIELD_NAMES } from "./receipt-fields-settings.service";
+
 import { DESKTOP_SERVICE_CODES } from "./desktop-settings.constants";
 
 // Only known service codes; a code that is left out keeps its current value.
@@ -50,3 +52,14 @@ export const updateReceiptRetentionSchema = z
       .min(15, "Receipt retention must be at least 15 days."),
   })
   .strict();
+
+/** Each optional receipt field → allowed or not; only the known fields. */
+export const updateReceiptFieldsSchema = z
+  .object(
+    Object.fromEntries(RECEIPT_FIELD_NAMES.map((name) => [name, z.boolean().optional()])) as Record<
+      (typeof RECEIPT_FIELD_NAMES)[number],
+      z.ZodOptional<z.ZodBoolean>
+    >,
+  )
+  .strict()
+  .refine((data) => Object.keys(data).length > 0, { message: "Nothing to change." });

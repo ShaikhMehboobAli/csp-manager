@@ -1,3 +1,7 @@
+import ReceiptFieldsSettingsService, {
+  RECEIPT_FIELDS,
+  RECEIPT_FIELD_NAMES,
+} from "../settings/receipt-fields-settings.service";
 import { Request, Response } from "express";
 
 import { withReadOnly } from "../../core/database/transaction";
@@ -88,11 +92,18 @@ export default class ReceiptController {
     return withReadOnly(async (tx) => {
       const scopeService = new AgentScopeService(tx);
 
-      const agentIds = await scopeService.getAgentScope(req.user!);
+      const scope = await scopeService.getAgentScope(req.user!);
+
+      // receiptId is unique per agent: ?agentId= picks the agent's receipt.
+      const agentId = typeof req.query.agentId === "string" ? req.query.agentId.trim() : "";
+
+      if (agentId) {
+        scopeService.ensureAgentAccessible(agentId, scope);
+      }
 
       const result = await this.service.getReceipt(
         req.params.receiptId,
-        agentIds,
+        agentId ? [agentId] : scope,
         req.user!.agentId,
       );
 
@@ -103,6 +114,21 @@ export default class ReceiptController {
 
         data: result,
       });
+    });
+  }
+
+  async getFields(_req: Request, res: Response) {
+    const allowed = await new ReceiptFieldsSettingsService().getFields();
+
+    return res.json({
+      success: true,
+      message: "Receipt fields fetched successfully.",
+      data: RECEIPT_FIELD_NAMES.map((field) => ({
+        field,
+        label: RECEIPT_FIELDS[field].label,
+        personal: RECEIPT_FIELDS[field].personal,
+        allowed: allowed[field],
+      })),
     });
   }
 

@@ -354,7 +354,7 @@ export class AgentRepository {
   /**
    * Returns direct child agents.
    */
-  async getChildAgents(parentAgentIds: string[], type?: AgentType) {
+  async getChildAgents(parentAgentIds: string[], type?: AgentType, includeInactive = false) {
     return this.db.agent.findMany({
       where: {
         parentAgentId: {
@@ -365,7 +365,7 @@ export class AgentRepository {
           type,
         }),
 
-        status: "ACTIVE",
+        ...(!includeInactive && { status: AgentStatus.ACTIVE }),
 
         isDeleted: false,
       },
@@ -376,14 +376,14 @@ export class AgentRepository {
     });
   }
 
-  async getCspAgents(bcId: string) {
+  async getCspAgents(bcId: string, includeInactive = false) {
     return this.db.agent.findMany({
       where: {
         bcId,
 
         type: AgentType.CSP,
 
-        status: AgentStatus.ACTIVE,
+        ...(!includeInactive && { status: AgentStatus.ACTIVE }),
 
         isDeleted: false,
       },

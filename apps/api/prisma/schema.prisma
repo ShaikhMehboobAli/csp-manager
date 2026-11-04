@@ -526,6 +526,11 @@ model Agent {
 
   type AgentType
 
+  /// CSP only: the team's working day ("HH:mm", IST), set by the CSP; used
+  /// for late arrival / early leave in Team today.
+  workdayStart String?
+  workdayEnd   String?
+
   mobile  String?
   email   String?
   address String?
@@ -569,6 +574,9 @@ model Agent {
   cashLedgerEntries  CashLedger[]        @relation("CashLedgerAgent")
   cashRequests       CashRequest[]
   cashSettlements    CashSettlement[]
+  cashDues           CashDue[]
+  cashDayCloses      CashDayClose[]
+  cashTasks          CashTask[]
 
   users User?
 
@@ -1162,6 +1170,18 @@ model Receipt {
 
   location String?
 
+  // Optional extra fields; stored only when the super admin allows them
+  // (AppSetting "receiptFields"). No Aadhaar, ever.
+  bankName            String?
+  balanceAfter        Decimal? @db.Decimal(14, 2)
+  bankTransactionId   String?
+  bankResponseCode    String?
+  bankResponseMessage String?
+
+  /// Commission the CSP earns on it (frozen at upload; KOs earn nothing).
+  commissionAmount Decimal? @db.Decimal(12, 2)
+  commissionRateId String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1212,6 +1232,9 @@ model ReceiptDailyCount {
   count Int @default(0)
 
   amount Decimal @default(0) @db.Decimal(14, 2)
+
+  /// Commission of these receipts (kept a year, after the receipts are gone).
+  commissionAmount Decimal @default(0) @db.Decimal(14, 2)
 
   firstTransactionAt DateTime
 
@@ -1803,6 +1826,16 @@ enum CashLedgerType {
   REQUEST_APPROVED
   // A KO's bank → cash in hand settlement took its amount out of left in bank (held).
   SETTLEMENT_HELD
+  // Custom transaction with a CSP label (cash in / out outside SBI).
+  CUSTOM
+  // Balance due added / settled / cancelled.
+  DUE_CREATED
+  DUE_SETTLED
+  DUE_CANCELLED
+  // Notes swapped in the drawer (giving change); cash in hand unchanged.
+  EXCHANGE
+  // End-of-day count recorded; balances unchanged.
+  DAY_CLOSE
   // Cash in hand and drawer counted when the agent's PC was activated.
   ACTIVATION
   // KO settlement, step 1: money leaves cash in account / cash in hand and
@@ -1861,6 +1894,18 @@ model CashPool {
   /// + in transit + left in bank = limit.
   cashLeftInBank Decimal @default(0) @db.Decimal(14, 2)
 
+  /// Net cash from outside the SBI pool: custom transactions (shop
+  /// expenses, bill collections) and settled dues; + = came in, − = went
+  /// out. Shown separately. account + all cash in hand + in transit + left
+  /// in bank = limit + other cash.
+  cashOther Decimal @default(0) @db.Decimal(14, 2)
+
+  /// Open "extra cash" balance dues (cashSide OTHER_CASH): + to collect,
+  /// − to give. They move other cash at creation; this keeps the books
+  /// balanced: account + all cash in hand + in transit + left in bank +
+  /// extra cash held by dues = limit + other cash.
+  cashDueExtra Decimal @default(0) @db.Decimal(14, 2)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1886,6 +1931,9 @@ model AgentCash {
   coins2   Int @default(0)
   coins1   Int @default(0)
 
+  /// When the agent last read its task list (for "new from the CSP").
+  tasksReadAt DateTime?
+
   updatedAt DateTime @updatedAt
 
   agent Agent @relation(fields: [agentId], references: [agentId])
@@ -1910,18 +1958,22 @@ model CashLedger {
   /// Receipt / settlement amount.
   amount Decimal? @db.Decimal(14, 2)
 
-  cashInHandChange    Decimal @default(0) @db.Decimal(14, 2)
-  cashInAccountChange Decimal @default(0) @db.Decimal(14, 2)
-  cashLimitChange     Decimal @default(0) @db.Decimal(14, 2)
-  cashInTransitChange Decimal @default(0) @db.Decimal(14, 2)
+  cashInHandChange     Decimal @default(0) @db.Decimal(14, 2)
+  cashInAccountChange  Decimal @default(0) @db.Decimal(14, 2)
+  cashLimitChange      Decimal @default(0) @db.Decimal(14, 2)
+  cashInTransitChange  Decimal @default(0) @db.Decimal(14, 2)
   cashLeftInBankChange Decimal @default(0) @db.Decimal(14, 2)
+  cashOtherChange      Decimal @default(0) @db.Decimal(14, 2)
+  cashDueExtraChange   Decimal @default(0) @db.Decimal(14, 2)
 
   /// Balances after the change (hand = the agent's).
-  balanceCashInHand    Decimal? @db.Decimal(14, 2)
-  balanceCashInAccount Decimal? @db.Decimal(14, 2)
-  balanceCashLimit     Decimal? @db.Decimal(14, 2)
-  balanceCashInTransit Decimal? @db.Decimal(14, 2)
+  balanceCashInHand     Decimal? @db.Decimal(14, 2)
+  balanceCashInAccount  Decimal? @db.Decimal(14, 2)
+  balanceCashLimit      Decimal? @db.Decimal(14, 2)
+  balanceCashInTransit  Decimal? @db.Decimal(14, 2)
   balanceCashLeftInBank Decimal? @db.Decimal(14, 2)
+  balanceCashOther      Decimal? @db.Decimal(14, 2)
+  balanceCashDueExtra   Decimal? @db.Decimal(14, 2)
 
   /// Note/coin count changes, e.g. { "notes500": 2, "notes100": -1 }.
   drawerChange Json?
@@ -1929,6 +1981,7 @@ model CashLedger {
   receiptRecordId String?
   requestId       String?
   settlementId    String?
+  dueId           String?
   idempotencyKey  String?
 
   actorType CashActorType
@@ -2027,4 +2080,335 @@ model CashSettlement {
 
   @@index([cspAgentId, status])
   @@index([agentId, status, createdAt])
+}
+
+enum CashLabelDirection {
+  IN
+  OUT
+  BOTH
+}
+
+enum CashFlowDirection {
+  IN
+  OUT
+}
+
+enum CashDueKind {
+  // The customer owes the agent.
+  TO_COLLECT
+  // The agent owes the customer.
+  TO_GIVE
+}
+
+enum CashDueSource {
+  RECEIPT
+  CUSTOM
+  MANUAL
+}
+
+/// Where a due's amount is put when it's added (dues without a receipt).
+enum CashDueSide {
+  CASH_IN_HAND
+  CASH_IN_ACCOUNT
+  OTHER_CASH
+}
+
+enum CashDueStatus {
+  OPEN
+  SETTLED
+  CANCELLED
+}
+
+enum CashTaskCreator {
+  KO
+  CSP
+}
+
+/// A CSP's label for custom transactions (only the CSP creates them).
+model CashLabel {
+  id String @id @default(cuid())
+
+  cspAgentId String
+
+  name String
+
+  direction CashLabelDirection
+
+  active Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([cspAgentId, name])
+}
+
+/// Cash moved outside SBI with a CSP label (desktop).
+model CashCustomTransaction {
+  id String @id @default(cuid())
+
+  cspAgentId String
+
+  agentId String
+
+  labelId String
+
+  /// Label name when it was made (labels can be renamed).
+  labelName String
+
+  direction CashFlowDirection
+
+  amount Decimal @db.Decimal(14, 2)
+
+  /// Paid now (≤ amount); the rest became a balance due.
+  paidNow Decimal @db.Decimal(14, 2)
+
+  drawer Json?
+
+  note String?
+
+  machineCode String
+
+  createdAt DateTime @default(now())
+
+  @@index([agentId, createdAt])
+}
+
+/// Work done but cash not yet taken or given.
+model CashDue {
+  id String @id @default(cuid())
+
+  cspAgentId String
+
+  agentId String
+
+  kind CashDueKind
+
+  source CashDueSource
+
+  /// Still due (a part payment lowers it).
+  amount Decimal @db.Decimal(14, 2)
+
+  originalAmount Decimal @db.Decimal(14, 2)
+
+  receiptRecordId     String?
+  receiptId           String?
+  customTransactionId String?
+
+  label String?
+
+  note String?
+
+  status CashDueStatus @default(OPEN)
+
+  /// RECEIPT dues on an applied receipt: creating it moved the unpaid
+  /// amount out of (TO_COLLECT) or into (TO_GIVE) cash in hand.
+  holdsCash Boolean @default(false)
+
+  /// Dues without a receipt: where the amount was put at creation (moved
+  /// back when it's settled or cancelled). Null = nothing moved.
+  cashSide CashDueSide?
+
+  /// Receipt dues: the notes taken out of / put into the drawer at creation.
+  drawer Json?
+
+  createdBy String
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  settledAt DateTime?
+
+  agent Agent @relation(fields: [agentId], references: [agentId])
+
+  @@index([agentId, status])
+  @@index([cspAgentId, status])
+}
+
+/// Notes swapped in an agent's drawer (giving change).
+model CashExchange {
+  id String @id @default(cuid())
+
+  cspAgentId String
+
+  agentId String
+
+  taken Json
+  given Json
+
+  amount Decimal @db.Decimal(14, 2)
+
+  note String?
+
+  machineCode String
+
+  createdAt DateTime @default(now())
+
+  @@index([agentId, createdAt])
+}
+
+/// An agent's end-of-day count (IST day). Balances don't change.
+model CashDayClose {
+  id String @id @default(cuid())
+
+  cspAgentId String
+
+  agentId String
+
+  /// IST calendar day.
+  date DateTime @db.Date
+
+  systemCashInHand Decimal @db.Decimal(14, 2)
+  systemDrawer     Json
+
+  countedCashInHand Decimal @db.Decimal(14, 2)
+  countedDrawer     Json
+
+  /// counted − system (negative = short).
+  difference Decimal @db.Decimal(14, 2)
+
+  machineCode String
+
+  closedAt DateTime @default(now())
+
+  agent Agent @relation(fields: [agentId], references: [agentId])
+
+  @@unique([agentId, date])
+  @@index([cspAgentId, date])
+}
+
+/// An agent's to-do, shared with its CSP.
+model CashTask {
+  id String @id @default(cuid())
+
+  cspAgentId String
+
+  agentId String
+
+  title String
+
+  note String?
+
+  dueAt DateTime?
+
+  done   Boolean   @default(false)
+  doneAt DateTime?
+
+  createdBy CashTaskCreator
+
+  /// machineCode (KO) or userId (CSP).
+  createdById String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  agent Agent @relation(fields: [agentId], references: [agentId])
+
+  @@index([agentId, done])
+  @@index([cspAgentId])
+}
+
+/// Desktop writes sent with an Idempotency-Key: a retry within 24 h gets the
+/// first answer back instead of doing the action twice.
+model MachineIdempotencyKey {
+  id String @id @default(cuid())
+
+  machineCode String
+
+  key String
+
+  method String
+  path   String
+
+  /// Null while the first request is still running.
+  statusCode Int?
+  response   Json?
+
+  createdAt DateTime @default(now())
+
+  @@unique([machineCode, key])
+  @@index([createdAt])
+}
+
+enum CommissionGroup {
+  FINANCIAL
+  NON_FINANCIAL
+  ENROLMENT
+}
+
+enum CommissionRateType {
+  // ₹ per successful transaction / enrolment
+  FLAT
+  // % of the receipt amount (optional min / max per receipt)
+  PERCENT
+  // BC / CSP override removed from this date: the next level applies
+  INHERIT
+}
+
+enum CommissionScope {
+  DEFAULT
+  BC
+  CSP
+}
+
+/// A service commission is paid on: a transaction category, optionally one
+/// receipt type of it (e.g. SOCIAL_SECURITY + PMJJBY).
+model CommissionService {
+  id String @id @default(cuid())
+
+  code String @unique
+
+  name String
+
+  transactionCategory TransactionCategory
+
+  /// null = every receipt type of the category not listed on its own.
+  receiptType ReceiptType?
+
+  group CommissionGroup
+
+  sortOrder Int @default(0)
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  rates CommissionRate[]
+}
+
+/// A rate for one service, at one scope, from `effectiveFrom` until the next
+/// rate of the same service + scope. Set by the super admin. Precedence when
+/// a receipt is saved: the CSP's rate, else its BC's, else DEFAULT.
+model CommissionRate {
+  id String @id @default(cuid())
+
+  serviceId String
+
+  scope CommissionScope
+
+  /// "" for DEFAULT; the BC id or the CSP agentId.
+  scopeId String @default("")
+
+  type CommissionRateType
+
+  /// FLAT: ₹ per receipt.
+  amount Decimal? @db.Decimal(12, 2)
+
+  /// PERCENT: % of the receipt amount.
+  percent Decimal? @db.Decimal(7, 4)
+
+  minAmount Decimal? @db.Decimal(12, 2)
+  maxAmount Decimal? @db.Decimal(12, 2)
+
+  effectiveFrom DateTime
+
+  reason String?
+
+  createdBy String
+
+  createdAt DateTime @default(now())
+
+  service CommissionService @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+
+  @@index([serviceId, scope, scopeId, effectiveFrom])
+  @@index([scope, scopeId])
 }

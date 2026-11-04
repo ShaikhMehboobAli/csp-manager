@@ -15,6 +15,9 @@ import CashService from "../../cash/cash.service";
 import SubscriptionAccessValidator from "../../subscriptions/subscription-validator/subscription-access-validator";
 import SubscriptionResolver from "../../subscriptions/subscription-validator/subscription-resolver.service";
 import SubscriptionService from "../../subscriptions/subscription.service";
+import SubscriptionEntitlementService, {
+  DesktopFeature,
+} from "../../subscriptions/subscription-entitlement.service";
 import { mapAgent } from "../mappers/agent.mapper";
 import { AgentRepository } from "../repository/agent.repository";
 import {
@@ -54,6 +57,29 @@ function requireNewCspCash(input: {
   }
 }
 
+
+/**
+ * A BC adds CSPs (and their KOs) only on a machine plan (BC_BASIC / BC_PRO).
+ * The ₹799 plan (CSP_LINKING) links CSPs that pay for themselves instead.
+ */
+async function requireBcMachinePlan(db: Prisma.TransactionClient, bcId: string) {
+  const subscription = await new SubscriptionResolver(db).getEffectiveSubscription(bcId);
+
+  SubscriptionAccessValidator.validate(subscription);
+
+  const linkOnly = await new SubscriptionEntitlementService(db).hasFeature(
+    subscription!.planId,
+    DesktopFeature.CSP_LINKING,
+  );
+
+  if (linkOnly) {
+    throw new ForbiddenError(
+      "Your plan links CSPs that have their own subscription; it can't create CSPs or KOs. Use Link CSP instead.",
+      "PLAN_LINK_ONLY",
+    );
+  }
+}
+
 export class AgentService {
   //   private readonly subscriptionService: SubscriptionService;
 
@@ -85,6 +111,10 @@ export class AgentService {
       (input.kos?.reduce((total, ko) => total + ko.machineCount, 0) ?? 0);
 
     return this.prisma.$transaction(async (tx) => {
+      if (role === UserRole.BC_ADMIN) {
+        await requireBcMachinePlan(tx, bcId);
+      }
+
       const activationRepository = new ActivationRepository(tx);
       const subscriptionService = new SubscriptionService(tx);
 
@@ -419,6 +449,7 @@ export class AgentService {
 
     const scope = await new AgentScopeService(this.prisma).getAgentScope(
       currentUser,
+      true,
     );
 
     // Users can read themselves and agents in their scope.
@@ -433,7 +464,9 @@ export class AgentService {
       throw new NotFoundError("Agent not found.");
     }
 
-    return mapAgent(agent);
+    const [withPlan] = await this.withOwnSubscription([mapAgent(agent)], currentUser);
+
+    return withPlan;
   }
 
   /*  TODO we will se if we can add the subscription restriction here in fileURLToPathBuffer 
@@ -452,8 +485,10 @@ export class AgentService {
     const repository = new AgentRepository(this.prisma);
 
     // Only agents in the caller's scope (empty scope = SUPER_ADMIN, all).
+    // Inactive agents too: the owner reactivates them from this list.
     const agentIds = await new AgentScopeService(this.prisma).getAgentScope(
       currentUser,
+      true,
     );
 
     const skip = (filters.page - 1) * filters.limit;
@@ -477,7 +512,7 @@ export class AgentService {
     ]);
 
     return {
-      items: agents.map(mapAgent),
+      items: await this.withOwnSubscription(agents.map(mapAgent), currentUser),
 
       pagination: {
         page: filters.page,
@@ -486,6 +521,52 @@ export class AgentService {
         totalPages: Math.ceil(total / filters.limit),
       },
     };
+  }
+
+  /**
+   * For a BC (and the super admin): each CSP's own CSP subscription, so the
+   * app can show "Own plan active" / "No own plan yet". The CSP's latest
+   * subscription (any status), or null when it never bought one; KOs: null.
+   */
+  private async withOwnSubscription<T extends { agentId: string; type: string }>(
+    items: T[],
+    currentUser: CurrentUser,
+  ) {
+    if (currentUser.role !== UserRole.BC_ADMIN && currentUser.role !== UserRole.SUPER_ADMIN) {
+      return items;
+    }
+
+    const cspIds = items.filter((item) => item.type === "CSP").map((item) => item.agentId);
+    const subscriptions = cspIds.length
+      ? await this.prisma.subscription.findMany({
+          where: { ownerId: { in: cspIds }, ownerType: SubscriptionOwnerType.CSP },
+          orderBy: { createdAt: "desc" },
+          select: { ownerId: true, status: true, endDate: true, plan: { select: { code: true } } },
+        })
+      : [];
+
+    const latest = new Map<string, (typeof subscriptions)[number]>();
+
+    for (const subscription of subscriptions) {
+      if (!latest.has(subscription.ownerId)) {
+        latest.set(subscription.ownerId, subscription);
+      }
+    }
+
+    return items.map((item) => {
+      const own = item.type === "CSP" ? latest.get(item.agentId) : undefined;
+
+      return {
+        ...item,
+        ownSubscription: own
+          ? {
+              status: own.endDate < new Date() && own.status === "ACTIVE" ? "EXPIRED" : own.status,
+              endDate: own.endDate,
+              planCode: own.plan.code,
+            }
+          : null,
+      };
+    });
   }
 
   async updateAgent(

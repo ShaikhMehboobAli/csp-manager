@@ -19,7 +19,11 @@ export default class AgentScopeService {
     this.subscriptionRepository = new SubscriptionRepository(db);
   }
 
-  async getAgentScope(user: CurrentUser): Promise<string[]> {
+  /**
+   * The agents the user may see. `includeInactive`: also INACTIVE ones, for
+   * managing agents (list, detail, reactivate); data screens leave them out.
+   */
+  async getAgentScope(user: CurrentUser, includeInactive = false): Promise<string[]> {
     switch (user.role) {
       case UserRole.SUPER_ADMIN:
         return [];
@@ -28,7 +32,7 @@ export default class AgentScopeService {
       //     return [user.agentId];
 
       case UserRole.CSP_ADMIN: {
-        const koAgents = await this.repository.getChildAgents([user.agentId]);
+        const koAgents = await this.repository.getChildAgents([user.agentId], undefined, includeInactive);
 
         return [user.agentId, ...koAgents.map((agent) => agent.agentId)];
       }
@@ -38,11 +42,7 @@ export default class AgentScopeService {
          * Step 1
          * Fetch all CSPs under BC
          */
-        const linkedCsps = await this.repository.getCspAgents(
-          //   [user.agentId],
-          //   AgentType.CSP,
-          user.agentId,
-        );
+        const linkedCsps = await this.repository.getCspAgents(user.agentId, includeInactive);
 
         const cspAgents = await this.withVisibleRequestLinks(linkedCsps);
 
@@ -56,6 +56,7 @@ export default class AgentScopeService {
             : await this.repository.getChildAgents(
                 cspAgents.map((agent) => agent.agentId),
                 AgentType.KO,
+                includeInactive,
               );
 
         const scope = [

@@ -1,3 +1,5 @@
+import { RECEIPT_FIELDS, RECEIPT_FIELD_NAMES } from "../settings/receipt-fields-settings.service";
+
 export function mapReceiptList(receipts: any[]) {
   return receipts.map((receipt) => ({
     receiptId: receipt.receiptId,
@@ -8,7 +10,7 @@ export function mapReceiptList(receipts: any[]) {
 
     status: receipt.status,
 
-    amount: Number(receipt.amount ?? 0),
+    amount: receipt.amount === null ? null : Number(receipt.amount),
 
     transactionAt: receipt.transactionAt,
 
@@ -40,7 +42,7 @@ export function mapReceiptDetail(receipt: any) {
 
     status: receipt.status,
 
-    amount: Number(receipt.amount ?? 0),
+    amount: receipt.amount === null ? null : Number(receipt.amount),
 
     transactionAt: receipt.transactionAt,
 
@@ -51,6 +53,40 @@ export function mapReceiptDetail(receipt: any) {
     rrn: receipt.rrn,
 
     stan: receipt.stan,
+
+    terminalId: receipt.terminalId ?? null,
+
+    location: receipt.location ?? null,
+
+    // Extra fields, only when the super admin allows the desktop to send them.
+    bankName: receipt.bankName ?? null,
+
+    balanceAfter: receipt.balanceAfter === null || receipt.balanceAfter === undefined ? null : Number(receipt.balanceAfter),
+
+    bankTransactionId: receipt.bankTransactionId ?? null,
+
+    bankResponseCode: receipt.bankResponseCode ?? null,
+
+    bankResponseMessage: receipt.bankResponseMessage ?? null,
+
+    // Only the optional fields this receipt has, with display names, in a
+    // fixed order: render these rows as they come (receipts differ).
+    fields: RECEIPT_FIELD_NAMES.flatMap((field) => {
+      const value = receipt[field];
+
+      if (value === null || value === undefined || value === "") {
+        return [];
+      }
+
+      return [{ field, label: RECEIPT_FIELDS[field].label, value: field === "balanceAfter" ? Number(value) : value }];
+    }),
+
+    // What the CSP earned on it (the rate frozen at upload); null = no
+    // commission service for it.
+    commission:
+      receipt.commissionAmount === null || receipt.commissionAmount === undefined
+        ? null
+        : { amount: Number(receipt.commissionAmount), rateLabel: receipt.commissionRateLabel ?? null },
 
     // Per-transaction note/coin counts; null when the receipt has no cash.
     cashDenomination: receipt.cashDenomination
