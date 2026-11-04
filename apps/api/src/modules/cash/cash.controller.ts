@@ -4,8 +4,9 @@ import { withReadOnly, withTransaction } from "../../core/database/transaction";
 import { PrismaDb } from "../../core/database/prisma.types";
 import { BadRequestError } from "../../core/errors/BadRequestError";
 import { ForbiddenError } from "../../core/errors/ForbiddenError";
+import { NotFoundError } from "../../core/errors/NotFoundError";
 import { CurrentUser } from "../../core/types/auth.types";
-import { UserRole } from "../../generated/prisma/enums";
+import { CashTaskCreator, UserRole } from "../../generated/prisma/enums";
 import AgentScopeService from "../agents/service/agent-scope.service";
 import { resolveDateRange } from "../reports/helper/report.helper";
 import SubscriptionEntitlementService from "../subscriptions/subscription-entitlement.service";
@@ -15,7 +16,18 @@ import SubscriptionResolver from "../subscriptions/subscription-validator/subscr
 import CashRepository from "./cash.repository";
 import CashService from "./cash.service";
 import CashSettlementService from "./cash-settlement.service";
+import CashDeskService from "./cash-desk.service";
+import CashDayService from "./cash-day.service";
+import { CashLabelService, CashTaskService } from "./cash-task.service";
 import {
+  cashAgentQuerySchema,
+  cashDayClosesQuerySchema,
+  cashDuesQuerySchema,
+  cashLabelChangeSchema,
+  cashLabelSchema,
+  cashTasksQuerySchema,
+  cspTaskChangeSchema,
+  cspTaskSchema,
   cashLedgerQuerySchema,
   cashRequestsQuerySchema,
   cashSettlementsQuerySchema,
@@ -129,6 +141,7 @@ export const createTransaction = async (req: Request, res: Response) => {
             cashLimit: body.cashLimit,
             cashInAccount: body.cashInAccount,
             cashLeftInBank: body.cashLeftInBank,
+            cashOther: body.cashOther,
             agents: body.agents,
             remarks: body.remarks,
             idempotencyKey,
@@ -244,4 +257,194 @@ export const reviewRequest = async (req: Request, res: Response) => {
     message: body.action === "APPROVE" ? "Request approved." : "Request rejected.",
     data,
   });
+};
+
+/** The pool's agents (CSP + KOs), or just the one picked with `agentId`. */
+async function unitAgentsOf(db: PrismaDb, pool: { cspAgentId: string; onlyAgentIds?: string[] }) {
+  const agents = await new CashRepository(db).findUnitAgents(pool.cspAgentId);
+
+  return pool.onlyAgentIds
+    ? agents.filter((agent) => pool.onlyAgentIds!.includes(agent.agentId))
+    : agents;
+}
+
+// -----------------------------------------------------------------------------
+// Labels for the KOs' custom transactions (the CSP creates them)
+// -----------------------------------------------------------------------------
+
+export const getLabels = async (req: Request, res: Response) => {
+  const query = cashAgentQuerySchema.parse(req.query);
+
+  const data = await withReadOnly(async (tx) => {
+    const pool = await resolvePool(tx, req.user!, query.agentId);
+    const labels = await new CashLabelService(tx).list(pool.cspAgentId);
+    const desk = new CashDeskService(tx);
+
+    return labels.map((label) => desk.mapLabel(label));
+  });
+
+  return res.status(200).json({ success: true, message: "Labels fetched successfully.", data });
+};
+
+export const createLabel = async (req: Request, res: Response) => {
+  const body = cashLabelSchema.parse(req.body);
+
+  const data = await withTransaction(async (tx) => {
+    await requireCashManagement(tx, req.user!);
+
+    const label = await new CashLabelService(tx).create(req.user!.agentId, body);
+
+    return new CashDeskService(tx).mapLabel(label);
+  });
+
+  return res.status(201).json({ success: true, message: "Label created.", data });
+};
+
+export const updateLabel = async (req: Request, res: Response) => {
+  const body = cashLabelChangeSchema.parse(req.body);
+
+  const data = await withTransaction(async (tx) => {
+    await requireCashManagement(tx, req.user!);
+
+    const label = await new CashLabelService(tx).update(
+      req.user!.agentId,
+      req.params.labelId as string,
+      body,
+    );
+
+    return new CashDeskService(tx).mapLabel(label);
+  });
+
+  return res.status(200).json({ success: true, message: "Label updated.", data });
+};
+
+// -----------------------------------------------------------------------------
+// The agents' balance due and day closes (read-only)
+// -----------------------------------------------------------------------------
+
+export const getDues = async (req: Request, res: Response) => {
+  const query = cashDuesQuerySchema.parse(req.query);
+
+  const data = await withReadOnly(async (tx) => {
+    const pool = await resolvePool(tx, req.user!, query.agentId);
+    const agents = await unitAgentsOf(tx, pool);
+
+    return new CashDeskService(tx).listDues(
+      agents.map((agent) => agent.agentId),
+      query.status,
+    );
+  });
+
+  return res.status(200).json({ success: true, message: "Dues fetched successfully.", data });
+};
+
+/** One due with its history. */
+export const getDue = async (req: Request, res: Response) => {
+  const query = cashAgentQuerySchema.parse(req.query);
+
+  const data = await withReadOnly(async (tx) => {
+    const pool = await resolvePool(tx, req.user!, query.agentId);
+    const agents = await unitAgentsOf(tx, { cspAgentId: pool.cspAgentId });
+
+    return new CashDeskService(tx).getDue(
+      req.params.dueId as string,
+      agents.map((agent) => agent.agentId),
+    );
+  });
+
+  return res.status(200).json({ success: true, message: "Due fetched successfully.", data });
+};
+
+export const getDayCloses = async (req: Request, res: Response) => {
+  const query = cashDayClosesQuerySchema.parse(req.query);
+
+  const data = await withReadOnly(async (tx) => {
+    const pool = await resolvePool(tx, req.user!, query.agentId);
+
+    return new CashDayService(tx).listForCsp({
+      agents: await unitAgentsOf(tx, pool),
+      from: query.from,
+      to: query.to,
+    });
+  });
+
+  return res.status(200).json({ success: true, message: "Day closes fetched successfully.", data });
+};
+
+// -----------------------------------------------------------------------------
+// Tasks: the CSP sees every agent's and manages the ones it gave
+// -----------------------------------------------------------------------------
+
+export const getTasks = async (req: Request, res: Response) => {
+  const query = cashTasksQuerySchema.parse(req.query);
+
+  const data = await withReadOnly(async (tx) => {
+    const pool = await resolvePool(tx, req.user!, query.agentId);
+    const agents = await unitAgentsOf(tx, pool);
+
+    return new CashTaskService(tx).list(
+      agents.map((agent) => agent.agentId),
+      query.status,
+    );
+  });
+
+  return res.status(200).json({ success: true, message: "Tasks fetched successfully.", data });
+};
+
+export const createTask = async (req: Request, res: Response) => {
+  const body = cspTaskSchema.parse(req.body);
+
+  const data = await withTransaction(async (tx) => {
+    const pool = await resolvePool(tx, req.user!);
+    const agents = await unitAgentsOf(tx, pool);
+
+    if (!agents.some((agent) => agent.agentId === body.agentId)) {
+      throw new NotFoundError("Agent not found.");
+    }
+
+    return new CashTaskService(tx).create({
+      cspAgentId: pool.cspAgentId,
+      agentId: body.agentId,
+      title: body.title,
+      note: body.note || null,
+      dueAt: body.dueAt ?? null,
+      createdBy: CashTaskCreator.CSP,
+      createdById: req.user!.userId,
+    });
+  });
+
+  return res.status(201).json({ success: true, message: "Task added.", data });
+};
+
+export const updateTask = async (req: Request, res: Response) => {
+  const body = cspTaskChangeSchema.parse(req.body);
+
+  const data = await withTransaction(async (tx) => {
+    const pool = await resolvePool(tx, req.user!);
+    const agents = await unitAgentsOf(tx, pool);
+
+    return new CashTaskService(tx).update({
+      taskId: req.params.taskId as string,
+      agentIds: agents.map((agent) => agent.agentId),
+      by: CashTaskCreator.CSP,
+      change: { ...body, note: body.note === "" ? null : body.note },
+    });
+  });
+
+  return res.status(200).json({ success: true, message: "Task updated.", data });
+};
+
+export const deleteTask = async (req: Request, res: Response) => {
+  await withTransaction(async (tx) => {
+    const pool = await resolvePool(tx, req.user!);
+    const agents = await unitAgentsOf(tx, pool);
+
+    await new CashTaskService(tx).remove({
+      taskId: req.params.taskId as string,
+      agentIds: agents.map((agent) => agent.agentId),
+      by: CashTaskCreator.CSP,
+    });
+  });
+
+  return res.status(200).json({ success: true, message: "Task deleted." });
 };

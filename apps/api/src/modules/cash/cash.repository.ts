@@ -1,8 +1,16 @@
 import { PrismaDb } from "../../core/database/prisma.types";
 import { Prisma } from "../../generated/prisma/client";
-import { AgentType } from "../../generated/prisma/enums";
+import { AgentType, CashLabelDirection } from "../../generated/prisma/enums";
 
 import { Drawer, drawerOf } from "./cash.constants";
+
+/** Labels a new pool starts with; the CSP renames or deactivates them. */
+const DEFAULT_LABELS = [
+  { name: "Other", direction: CashLabelDirection.BOTH },
+  { name: "Shop expense", direction: CashLabelDirection.OUT },
+  { name: "Bill collection", direction: CashLabelDirection.IN },
+  { name: "Recharge", direction: CashLabelDirection.IN },
+];
 
 export interface LockedPool {
   cspAgentId: string;
@@ -10,6 +18,8 @@ export interface LockedPool {
   cashInAccount: Prisma.Decimal;
   cashInTransit: Prisma.Decimal;
   cashLeftInBank: Prisma.Decimal;
+  cashOther: Prisma.Decimal;
+  cashDueExtra: Prisma.Decimal;
 }
 
 export interface LockedAgentCash {
@@ -73,7 +83,7 @@ export default class CashRepository {
    */
   async lockPool(cspAgentId: string): Promise<LockedPool | null> {
     const rows = await this.db.$queryRaw<LockedPool[]>`
-      SELECT "cspAgentId", "cashLimit", "cashInAccount", "cashInTransit", "cashLeftInBank"
+      SELECT "cspAgentId", "cashLimit", "cashInAccount", "cashInTransit", "cashLeftInBank", "cashOther", "cashDueExtra"
       FROM "CashPool" WHERE "cspAgentId" = ${cspAgentId}
       FOR UPDATE
     `;
@@ -114,10 +124,18 @@ export default class CashRepository {
     );
   }
 
-  createPool(cspAgentId: string, cashLimit: Prisma.Decimal, cashInAccount: Prisma.Decimal) {
-    return this.db.cashPool.create({
+  /** Opens the pool with a few editable labels for the KOs' custom transactions. */
+  async createPool(cspAgentId: string, cashLimit: Prisma.Decimal, cashInAccount: Prisma.Decimal) {
+    const pool = await this.db.cashPool.create({
       data: { cspAgentId, cashLimit, cashInAccount },
     });
+
+    await this.db.cashLabel.createMany({
+      data: DEFAULT_LABELS.map((label) => ({ cspAgentId, ...label })),
+      skipDuplicates: true,
+    });
+
+    return pool;
   }
 
   updatePool(
@@ -127,6 +145,8 @@ export default class CashRepository {
       cashInAccount?: Prisma.Decimal;
       cashInTransit?: Prisma.Decimal;
       cashLeftInBank?: Prisma.Decimal;
+      cashOther?: Prisma.Decimal;
+      cashDueExtra?: Prisma.Decimal;
     },
   ) {
     return this.db.cashPool.update({ where: { cspAgentId }, data });

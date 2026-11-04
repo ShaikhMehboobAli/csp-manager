@@ -9,6 +9,7 @@ import * as DesktopSettingsController from "./desktop-settings.controller";
 import {
   updateDesktopSettingsSchema,
   updateMachineDesktopControlsSchema,
+  updateReceiptFieldsSchema,
   updateReceiptRetentionSchema,
 } from "./desktop-settings.validation";
 
@@ -45,6 +46,15 @@ router.patch(
   "/receipt-retention",
   validate(updateReceiptRetentionSchema),
   DesktopSettingsController.updateReceiptRetention,
+);
+
+// Which optional receipt fields the desktop may send (never Aadhaar).
+router.get("/receipt-fields", DesktopSettingsController.getReceiptFields);
+
+router.patch(
+  "/receipt-fields",
+  validate(updateReceiptFieldsSchema),
+  DesktopSettingsController.updateReceiptFields,
 );
 
 export default router;

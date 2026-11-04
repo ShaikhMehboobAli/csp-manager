@@ -1,3 +1,4 @@
+import { skipReasonCode } from "../../core/errors/error-codes";
 import { createCodeGeneratorService } from "../../core/services/service.factory";
 import prisma from "../../config/prisma";
 
@@ -13,6 +14,8 @@ import {
   UploadReceiptRequest,
 } from "./receipt.dto";
 import { withTransaction, withReadOnly } from "../../core/database/transaction";
+import ReceiptFieldsSettingsService from "../settings/receipt-fields-settings.service";
+import CommissionService, { rateLabel } from "../commission/commission.service";
 import ReceiptDailyCountRepository from "./repository/receipt-daily-count.repository";
 import { receiptUploadCutoff } from "./receipt-retention.service";
 
@@ -40,6 +43,13 @@ import { MinimalReceipt, parseMinimalReceipt } from "./receipt.validation";
 
 const RECEIPT_TOO_OLD_REASON =
   "Receipt is older than the receipt retention period.";
+
+
+/** Adds the stable `code` of a skip reason (e.g. RECEIPT_ALREADY_EXISTS). */
+const withReasonCode = <T extends { reason: string }>(item: T) => ({
+  ...item,
+  code: skipReasonCode(item.reason),
+});
 
 export default class ReceiptService {
   async upload(request: UploadReceiptRequest) {
@@ -154,9 +164,31 @@ export default class ReceiptService {
         toCreate.push(receipt);
       }
 
+      // Commission the CSP earns on each (rate frozen now).
+      const commissions = await new CommissionService(tx).computeForReceipts(agentId, toCreate);
+
       // One insert for the batch; existing (agentId, receiptId) are skipped.
+      const allowedFields = await new ReceiptFieldsSettingsService().allowed();
+
       const created = await repository.createManyAndReturnIfAbsent(
-        toCreate.map((receipt) => ({
+        toCreate.map((receipt, index) => ({
+          ...commissions[index],
+          ...ReceiptFieldsSettingsService.strip(
+            {
+              stan: receipt.stan,
+              rrn: receipt.rrn,
+              terminalId: receipt.terminalId,
+              customerName: receipt.customerName,
+              customerAccount: receipt.customerAccount,
+              location: receipt.location,
+              bankName: receipt.bankName,
+              balanceAfter: receipt.balanceAfter,
+              bankTransactionId: receipt.bankTransactionId,
+              bankResponseCode: receipt.bankResponseCode,
+              bankResponseMessage: receipt.bankResponseMessage,
+            },
+            allowedFields,
+          ),
           receiptId: receipt.receiptId,
           machineId: authenticated.machine.id,
           machineSessionId: session.machineSessionId,
@@ -168,12 +200,6 @@ export default class ReceiptService {
           transactionAt: receipt.transactionAt,
           amount: receipt.amount,
           charges: receipt.charges,
-          stan: receipt.stan,
-          rrn: receipt.rrn,
-          terminalId: receipt.terminalId,
-          customerName: receipt.customerName,
-          customerAccount: receipt.customerAccount,
-          location: receipt.location,
         })),
       );
 
@@ -235,7 +261,7 @@ export default class ReceiptService {
           uploaded: uploadedReceipts.length,
           skipped: skippedReceipts.length,
           uploadedReceipts: withCash,
-          skippedReceipts,
+          skippedReceipts: skippedReceipts.map(withReasonCode),
         },
       };
     });
@@ -340,8 +366,32 @@ export default class ReceiptService {
       // receiptId) uniqueness; skipDuplicates leaves existing receipts out
       // of the result (so concurrent retries stay idempotent) without putting
       // the transaction in an error state.
+      const commissions = await new CommissionService(tx).computeForReceipts(
+        request.agentId,
+        valid.map((receipt) => ({ ...receipt, status: ReceiptStatus.SUCCESS })),
+      );
+
+      const allowedFields = await new ReceiptFieldsSettingsService().allowed();
+
       const created = await repository.createManyIfAbsent(
-        valid.map((receipt) => ({
+        valid.map((receipt, index) => ({
+          ...commissions[index],
+          ...ReceiptFieldsSettingsService.strip(
+            {
+              rrn: receipt.rrn,
+              location: receipt.location,
+              stan: receipt.stan,
+              terminalId: receipt.terminalId,
+              customerName: receipt.customerName,
+              customerAccount: receipt.customerAccount,
+              bankName: receipt.bankName,
+              balanceAfter: receipt.balanceAfter,
+              bankTransactionId: receipt.bankTransactionId,
+              bankResponseCode: receipt.bankResponseCode,
+              bankResponseMessage: receipt.bankResponseMessage,
+            },
+            allowedFields,
+          ),
           receiptId: receipt.receiptId,
           machineId: authenticated.machine.id,
           machineSessionId: session.machineSessionId,
@@ -352,8 +402,6 @@ export default class ReceiptService {
           status: ReceiptStatus.SUCCESS,
           transactionAt: receipt.transactionAt,
           amount: receipt.amount,
-          rrn: receipt.rrn,
-          location: receipt.location,
           count: receipt.count,
         })),
       );
@@ -439,7 +487,7 @@ export default class ReceiptService {
         skipped: result.skippedReceipts.length,
         totalCount,
         acceptedReceipts: result.acceptedReceipts,
-        skippedReceipts: result.skippedReceipts,
+        skippedReceipts: result.skippedReceipts.map(withReasonCode),
       },
     };
   }
@@ -477,15 +525,11 @@ export default class ReceiptService {
     currentAgentId: string,
   ) {
     return withReadOnly(async (tx) => {
-      // check for subscription and access validation
+      const subscription = await new SubscriptionResolver(
+        tx,
+      ).getEffectiveSubscription(currentAgentId);
 
-      // const resolver = new SubscriptionResolver(tx);
-
-      // const subscription = await resolver.resolveForAgent(
-      //   filter.currentAgentId,
-      // );
-
-      // SubscriptionAccessValidator.validate(subscription);
+      SubscriptionAccessValidator.validate(subscription);
 
       const repository = new ReceiptDetailRepository(tx);
 
@@ -495,15 +539,15 @@ export default class ReceiptService {
         throw new NotFoundError("Receipt not found.");
       }
 
-      const subscription = await new SubscriptionResolver(
-        tx,
-      ).getEffectiveSubscription(currentAgentId);
-
       const canViewCash = await new SubscriptionEntitlementService(
         tx,
       ).canViewCashManagement(subscription);
 
-      const detail = mapReceiptDetail(receipt);
+      const rate = receipt.commissionRateId
+        ? await tx.commissionRate.findUnique({ where: { id: receipt.commissionRateId } })
+        : null;
+
+      const detail = mapReceiptDetail({ ...receipt, commissionRateLabel: rateLabel(rate) });
 
       // Cash denomination is part of CASH_MANAGEMENT on CSP plans.
       return canViewCash ? detail : { ...detail, cashDenomination: null };

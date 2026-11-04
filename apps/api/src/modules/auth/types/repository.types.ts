@@ -26,6 +26,8 @@ export interface CreateOtpInput {
   email?: string;
   phone?: string;
   expiresAt: Date;
+  /** Sends in the current hour before this one (resend limit). */
+  resendCount?: number;
 }
 
 export interface CreateAgentInput {

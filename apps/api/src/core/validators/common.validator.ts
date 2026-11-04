@@ -67,7 +67,8 @@ function moneyNumber(label: string, required: boolean) {
     .min(0, `${label} can't be negative.`)
     .max(MAX_MONEY, `${label} is too large.`)
     .refine(
-      (amount) => Math.round(amount * 100) === amount * 100,
+      // Tolerant: 0.07 * 100 is 7.000000000000001 in floating point.
+      (amount) => Math.abs(amount * 100 - Math.round(amount * 100)) < 1e-6,
       `${label} can have at most 2 decimal places.`,
     );
 }

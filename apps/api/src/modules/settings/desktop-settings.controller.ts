@@ -3,6 +3,7 @@ import { Request, Response } from "express";
 import { BadRequestError } from "../../core/errors/BadRequestError";
 
 import DesktopSettingsService from "./desktop-settings.service";
+import ReceiptFieldsSettingsService from "./receipt-fields-settings.service";
 import ReceiptRetentionSettingsService, {
   maxReceiptRetentionDays,
 } from "./receipt-retention-settings.service";
@@ -10,6 +11,8 @@ import ReceiptRetentionSettingsService, {
 const service = new DesktopSettingsService();
 
 const retentionService = new ReceiptRetentionSettingsService();
+
+const receiptFieldsService = new ReceiptFieldsSettingsService();
 
 export const getDesktopSettings = async (_req: Request, res: Response) => {
   const data = await service.getSettings();
@@ -95,4 +98,16 @@ export const updateReceiptRetention = async (req: Request, res: Response) => {
       "Receipt retention updated. Uploads use it within a minute; older receipts are deleted at the next daily run (03:30 IST).",
     data,
   });
+};
+
+export const getReceiptFields = async (_req: Request, res: Response) => {
+  const data = await receiptFieldsService.getAdminView();
+
+  return res.status(200).json({ success: true, message: "Receipt fields fetched successfully.", data });
+};
+
+export const updateReceiptFields = async (req: Request, res: Response) => {
+  const data = await receiptFieldsService.update(req.body, req.user!.userId);
+
+  return res.status(200).json({ success: true, message: "Receipt fields updated.", data });
 };

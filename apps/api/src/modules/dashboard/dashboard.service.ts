@@ -304,6 +304,8 @@ export default class DashboardService {
         cashInAccount: sum((pool) => pool.cashInAccount),
         cashInTransit: sum((pool) => pool.cashInTransit),
         cashLeftInBank: sum((pool) => pool.cashLeftInBank),
+        cashOther: sum((pool) => pool.cashOther),
+        cashDueExtra: sum((pool) => pool.cashDueExtra),
         totalCashInHand: sum((pool) => pool.totalCashInHand),
         drawer,
         drawerTotal: drawerTotal(drawer),

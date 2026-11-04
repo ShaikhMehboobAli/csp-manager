@@ -59,4 +59,7 @@ export interface HeartbeatResponse {
   // The machine agent's cash, read-only; the desktop caches it and checks it
   // before a cash transaction. Null when the agent isn't part of a CSP.
   cash: Awaited<ReturnType<CashService["getMachineCash"]>>;
+
+  // Optional receipt fields the super admin allows the desktop to send.
+  receiptFields: { allowed: string[] };
 }

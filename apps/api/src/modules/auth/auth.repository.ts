@@ -205,4 +205,38 @@ export default class AuthRepository {
       },
     });
   }
+
+  // ---------------------------------------------------------------------------
+  // Sessions (refresh tokens)
+  // ---------------------------------------------------------------------------
+
+  createSession(data: {
+    userId: string;
+    refreshTokenHash: string;
+    expiresAt: Date;
+    ipAddress: string | null;
+    userAgent: string | null;
+  }) {
+    return this.db.userSession.create({ data });
+  }
+
+  findSession(id: string) {
+    return this.db.userSession.findUnique({ where: { id }, include: { user: true } });
+  }
+
+  rotateSession(id: string, refreshTokenHash: string, expiresAt: Date) {
+    return this.db.userSession.update({ where: { id }, data: { refreshTokenHash, expiresAt } });
+  }
+
+  revokeSession(id: string) {
+    return this.db.userSession.updateMany({ where: { id, revokedAt: null }, data: { revokedAt: new Date() } });
+  }
+
+  /** Expired or long-revoked sessions of the user (kept tidy at each login). */
+  deleteOldSessions(userId: string) {
+    return this.db.userSession.deleteMany({
+      where: { userId, OR: [{ expiresAt: { lt: new Date() } }, { revokedAt: { not: null } }] },
+    });
+  }
+
 }

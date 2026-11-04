@@ -3,7 +3,7 @@
 **Audience:** the web team building the **Super Admin** console in React / Next.js.
 **Not covered here:** the BC/CSP mobile app → `docs/mobile-app-kt.md` (read its sections 3 and 18 for API conventions, errors and dates; they apply here too); the desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api`.
-**Last updated:** 2026-11-02 (rev 11)
+**Last updated:** 2026-11-04 (rev 16)
 
 > Describes the backend once PRs #3–#8 are merged into `development`.
 
@@ -168,7 +168,7 @@ Same endpoints and shapes as the mobile KT §11–§14; for the super admin they
 
 - Day boundaries are IST (mobile KT §18).
 - `GET /activations` returns only the caller's **own** activations (none for an admin); there's no admin-wide activation list yet (G3).
-- **Cash management (read-only for the admin):** `GET /cash-management?agentId=<CSP or KO>`, `GET /cash-management/ledger?agentId=…`, `GET /cash-management/requests?agentId=…`, `GET /cash-management/settlements?agentId=…` (KO settlements; mobile KT §13A). `agentId` is required for the admin; settling, adjusting and approving are the CSP's (403 for the admin).
+- **Cash management (read-only for the admin):** `GET /cash-management?agentId=<CSP or KO>`, `GET /cash-management/ledger?agentId=…`, `GET /cash-management/requests?agentId=…`, `GET /cash-management/settlements?agentId=…` (KO settlements), and read-only `GET /cash-management/labels|dues|day-closes|tasks?agentId=…` (mobile KT §13A). Pool views have `cashOther` (net cash from custom transactions and dues). `agentId` is required for the admin; settling, adjusting and approving are the CSP's (403 for the admin).
 - **Retention:** receipts are kept for 60 days, per-day counts for 1 year. Counts and amounts (dashboards, analytics day and longer, reports, machine stats, `/receipts/stats` without `search`) cover a year; the transaction list/detail/export, `recentTransactions` and hourly charts cover the last 60 days (mobile KT §11, §13).
 
 ## 9. Desktop settings and machine controls — READY
@@ -235,6 +235,33 @@ How long the server keeps individual receipts. Per-day counts are kept for 365 d
 - Dev runs in dry-run mode (`CLEANUP_DRY_RUN=true`): nothing is deleted and `lastRun` stays as it was.
 
 **UI:** a number input (15–365) with Save, the effective "kept from" date, and the last run (time, status, receipts deleted).
+
+## 9B. Commission rates — READY
+
+Only the **CSP** earns commission (KOs are paid a salary by their CSP): every successful receipt of a CSP or its KOs earns for the CSP, at the rate live when the receipt was uploaded (frozen on the receipt; later changes never rewrite the past). The CSP sees it by month in the app (mobile KT §13B).
+
+| Call | Notes |
+|---|---|
+| `GET /admin/commission/services` | the 15 services (`code`, `name`, `transactionCategory`, `receiptType`, `group`, `sortOrder`, `isActive`) |
+| `PATCH /admin/commission/services/:code` | `{ name?, isActive?, sortOrder? }`; an inactive service earns nothing and is hidden in the app |
+| `GET /admin/commission/rates?scope=DEFAULT\|BC\|CSP&scopeId=` | per service: `live` and `next` rate of that scope |
+| `POST /admin/commission/rates` | `{ serviceCode, scope, scopeId (BC id / CSP agentId; not for DEFAULT), type: FLAT\|PERCENT\|INHERIT, amount (FLAT ₹), percent (PERCENT), minAmount?, maxAmount? (PERCENT, per receipt), effectiveFrom? (now or later; default now), reason? }` → 201 |
+| `DELETE /admin/commission/rates/:rateId` | only a rate that hasn't started (`This rate is already in use; set a new rate instead.`) |
+| `GET /admin/commission/rates/history?serviceCode=&scope=&scopeId=` | every rate, newest first |
+
+- **Precedence** at upload: the CSP's own rate, else its BC's, else DEFAULT. `INHERIT` on a BC / CSP scope removes its override from that date (the next level applies again). DEFAULT can't inherit. No rate = ₹0.
+- A new rate replaces the scope's rate from its `effectiveFrom`; a past `effectiveFrom` is refused (400).
+- Errors: 404 `Service not found.` / `BC not found.` / `CSP not found.`; 400 `amount is required for a FLAT rate.`, `percent is required for a PERCENT rate.`, `minAmount can't be more than maxAmount.`, `scopeId is required for a BC or CSP rate.`
+
+UI: a rate card per scope (Default; search a BC or CSP for overrides): one row per service with the live rate, the next one and "Change"; a history drawer.
+
+## 9C. Receipt fields — READY
+
+Which **optional** receipt fields the desktop may send. The list reaches every PC in the next heartbeat; fields that aren't allowed are never stored. **There's no Aadhaar field.**
+
+- `GET /admin/receipt-fields` → `[{ field, label, personal, allowed }]` for `rrn`, `stan`, `terminalId`, `location` (allowed by default), `bankName`, `bankTransactionId`, `bankResponseCode`, `bankResponseMessage`, `balanceAfter`, `customerName`, `customerAccount` (off by default; `personal: true` for customer data and balance).
+- `PATCH /admin/receipt-fields` `{ "customerName": true, "bankName": true }` (any of the fields; unknown → 400) → the updated list.
+- UI: a switch per field; confirm before turning on a `personal` one ("customer data will be stored on the server").
 
 ## 10. Other endpoints the console can use
 
@@ -330,6 +357,16 @@ The data exists today: `Subscription` (`ownerType`, `ownerId`, `planId`, `status
 - **Machines dropped:** a renewal with fewer machines (5 → 3) isn't a lost subscription but does lose 2 machines. This shows on the home page as its own figure, `machinesDropped`, with a list of the owners who reduced.
 
 ## 13. Changelog
+
+- 2026-11-04 (rev 16) — New §9B commission rates (services, rates per scope with precedence CSP > BC > default, history) and §9C receipt fields (which optional fields the desktop may send; no Aadhaar).
+
+- 2026-11-04 (rev 15) — Login now creates a session: `POST /auth/refresh { refreshToken }` returns new access + refresh tokens (rotate; an old refresh token used again ends the session) and `POST /auth/logout { refreshToken }` ends it; use them in the admin console (mobile KT §5.2–5.3). Errors carry `TOKEN_EXPIRED`, `REFRESH_TOKEN_INVALID`, `SUBSCRIPTION_*` and other codes (mobile KT §3).
+
+- 2026-11-03 (rev 14) — BCs on the ₹799 plan can't create CSPs / KOs (`PLAN_LINK_ONLY`); only machine-plan BCs can. A super admin creating a CSP isn't affected.
+
+- 2026-11-03 (rev 13) — Pool views add `cashDueExtra`; dues have `cashSide`; every error answer has a stable `code` next to `message`.
+
+- 2026-11-03 (rev 12) — §8: read-only labels, balance due, day closes and tasks per CSP; `cashOther` on pool views.
 
 - 2026-11-02 (rev 11) — §8: pool views show `cashLeftInBank` (left in bank by partly delivered KO settlements) next to `cashInTransit`; settlement items have `leftInBank`.
 

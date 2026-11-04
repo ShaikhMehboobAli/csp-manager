@@ -2,7 +2,7 @@
 
 **Audience:** the engineer/agent implementing changes in the C# desktop repo (`ReceiptWarcher/`).
 **Source of truth for the backend:** `csp-manager/apps/api` (Express + Prisma). This doc lists what the desktop must add, modify, or remove to match the backend.
-**Last updated:** 2026-11-02 (rev 19)
+**Last updated:** 2026-11-04 (rev 23)
 
 > Paths below are relative to the desktop project root (`ReceiptWarcher/`). The doc was written against `ReceiptWarcher.zip` (Downloads, 2026-10-24); verify each location against your current checkout before editing.
 
@@ -40,6 +40,8 @@
 | 18 | Versions (`minimumVersion`, `downloadUrl`), `portalUrl`, removed endpoints, rate limits | READY |
 | 19 | Machine credentials: HTTPS, DPAPI, header credentials, **signed requests with a device key** | READY (must ship before production) |
 | 21 | Cash management: `cash` in the heartbeat (check before each transaction), `cash` result per uploaded receipt, cash count at activation, today's cash screen, KO settlements, change requests | READY (build the cash screen + pre-check) |
+| 22 | Cash management extras (your requirements doc item 6; **rev 21: your 6.8 answered in 22.9**: due `cashSide`, error `code`s, `Idempotency-Key`, settlement request fields, heartbeat waiting items, default labels, speed): labels + custom transactions, balance due, cash exchange, close the day, history, tasks; "other cash"; server plan check; activation count saved before setup | READY (read 22.0 first: ⚠ differences) |
+| 23 | Optional receipt fields chosen by the super admin (`receiptFields.allowed` in heartbeat + entitlements → machineConfig); heartbeat timeout now 120 s (one missed heartbeat); commission is computed by the server | READY |
 | 20 | Receipts older than the retention period (default 60 days, at least 15) are refused on upload; `totalCount` covers the last 12 months | READY (handle the new skip reason) |
 | — | **Part 3: Endpoint quick reference** (URL, request, response, how to use) | READY |
 | — | **Part 2: Desktop API reference** (all endpoints, validation, logic) | READY |
@@ -209,7 +211,7 @@ Endpoint unchanged: `POST /api/v1/machines/runtime/heartbeat`. Existing fields u
 "data": {
   "serverTime": "...",
   "heartbeatInterval": 60,
-  "heartbeatTimeout": 180,
+  "heartbeatTimeout": 120,
   "watcherEnabled": true,
   "receiptUploadEnabled": true,
   "subscriptionStatus": "ACTIVE",
@@ -270,7 +272,7 @@ Never log: API key, activation password, SBI credentials, customer name/account,
 
 ## 11. Active machine session is required for uploads — READY (handle)
 
-`/receipts/upload-counts` needs an ACTIVE machine session, which the server creates/extends on each heartbeat and closes after ~180 s without one. Today only the **background service** sends heartbeats; UI mode does not. If the service is not running, UI uploads fail with `"No active machine session found."`.
+`/receipts/upload-counts` needs an ACTIVE machine session, which the server creates/extends on each heartbeat and closes after ~120 s without one. Today only the **background service** sends heartbeats; UI mode does not. If the service is not running, UI uploads fail with `"No active machine session found."`.
 
 With #12 implemented, the UI's activity heartbeat also keeps the machine session alive, so UI uploads work without the background service. Still treat this error as retryable (keep `Pending`): it happens after the CSP logs out and the session times out, and the queued receipt uploads at the next login.
 
@@ -294,7 +296,7 @@ Tracks "the CSP is logged in to SBI" separately from "the machine/service is ali
   "startedAt": "2026-10-25T10:00:00.000Z",
   "restarted": false,
   "heartbeatInterval": 60,
-  "heartbeatTimeout": 180
+  "heartbeatTimeout": 120
 }
 ```
 
@@ -304,7 +306,7 @@ Desktop rules:
 - **403 on start** means `agentId` doesn't match the machine's current assignment; reload `MachineConfig` (see #8).
 - **Offline:** pause sending (don't queue or replay missed heartbeats). On reconnect, send one heartbeat immediately, then resume the 60 s timer.
 - **Stop is idempotent:** calling it twice, or for an already-closed session, returns 200. On app close, try it once with a short timeout and don't block closing.
-- **Crash / kill / power loss:** nothing to do. The server closes sessions that haven't sent a heartbeat for 180 s, ending them at the last heartbeat.
+- **Crash / kill / power loss:** nothing to do. The server closes sessions that haven't sent a heartbeat for 120 s, ending them at the last heartbeat.
 - Run the timer off the UI thread (e.g. `PeriodicTimer` + `CancellationToken`). Cancel it on logout, auto-logout and `FormClosing`.
 - Never log the request body (it contains `apiKey`, see #9).
 
@@ -513,7 +515,7 @@ The server keeps receipts for a retention period, by `transactionAt`: **60 days 
 
 ## 21. Cash management on the desktop — READY
 
-A CSP and its KOs share **one cash limit** and **one cash in account**; each agent (the CSP or a KO) has its **own cash in hand** and **drawer** (note/coin counts). On the desktop these are **read-only**. Any change is a request the CSP approves in the mobile app, and every change is in the CSP's cash ledger.
+A CSP and its KOs share **one cash limit** and **one cash in account**; each agent (the CSP or a KO) has its **own cash in hand** and **drawer** (note/coin counts). On the desktop the balances are **read-only**: the KO can't set them. What the KO does on the desktop moves them through the server: receipts (21.3), settlements it approves itself (21.7), and the cash extras of item 22 (custom transactions, balance due, cash exchange). A correction of cash in hand is a request the CSP approves (21.4). Every change is in the CSP's cash ledger.
 
 ### 21.1 Read the cash from the heartbeat (no extra call per transaction)
 
@@ -523,10 +525,14 @@ A CSP and its KOs share **one cash limit** and **one cash in account**; each age
 "cash": {
   "setUp": true,
   "cspAgentId": "CSP-001", "agentId": "KO-001",
-  "cashLimit": 100000, "cashInAccount": 45000, "cashInTransit": 0, "cashLeftInBank": 0, "cashInHand": 55000,
+  "cashLimit": 100000, "cashInAccount": 45000, "cashInTransit": 0, "cashLeftInBank": 0, "cashOther": 0, "cashInHand": 55000,
   "drawer": { "notes500": 90, "notes200": 0, "notes100": 50, "notes50": 0, "notes20": 0, "notes10": 0, "notes5": 0, "coins20": 0, "coins10": 0, "coins5": 0, "coins2": 0, "coins1": 0 },
   "drawerTotal": 50000,
   "lastRequest": { "id": "…", "status": "PENDING", "requestedCashInHand": 54000, "reason": "…", "reviewRemarks": null, "createdAt": "…" },
+  "cashDueExtra": 0,
+  "dues": { "toCollect": 0, "toGive": 0, "openCount": 0, "bySide": { "CASH_IN_HAND": { "toCollect": 0, "toGive": 0 }, "CASH_IN_ACCOUNT": { "toCollect": 0, "toGive": 0 }, "OTHER_CASH": { "toCollect": 0, "toGive": 0 } } },
+  "openSettlement": { "id": "…", "requestId": "…", "direction": "ACCOUNT_TO_HAND", "step": "FROM_BANK", "stepNumber": 2, "stepCount": 2, "amount": 50000, "label": "Bank → cash in hand", "needsDenomination": true },
+  "tasks": { "openCount": 2, "overdueCount": 0, "newFromCspCount": 1 },
   "updatedAt": "…"
 }
 ```
@@ -565,14 +571,14 @@ On the activation screen, ask the operator for the **cash in hand** and the **dr
 | `cashInHand` | **required for a KO** (`Cash in hand is required.`); ₹ ≥ 0, 2 decimals |
 | `cashDenomination` | **required with it** (`Cash denomination is required.`): the 12 keys of item #2, integers 0–100,000; the full drawer (keys left out = 0). Total must equal `cashInHand` (`Cash denomination total (₹…) must equal cash in hand (₹…).`) |
 
-For a CSP's own PC both are optional; send them together to set the CSP's cash in hand too.
+For a CSP's own PC both are optional; send them together to set the CSP's cash in hand too. Ask for them on **every** activation, whatever the plan: the server keeps them.
 
 What the server does, in the same transaction as the activation:
 - Sets that agent's cash in hand and drawer to these values.
 - Changes the shared cash in account by the difference, so cash in account + all cash in hand still equals the cash limit. Example: KO had ₹5,000 and counts ₹6,000, so cash in account goes from ₹90,000 to ₹89,000.
 - Audits it as `ACTIVATION` in the CSP's cash ledger.
 
-If cash in account can't cover the increase, the activation is refused with 400 `Not enough cash in account for this cash in hand: …`, and nothing is activated. Show the message: the CSP must settle cash or raise the limit first. When the CSP hasn't set up cash management, the activation still succeeds and `data.cash` is `{ "status": "NOT_SET_UP" }`.
+If cash in account can't cover the increase, the activation is refused with 400 `Not enough cash in account for this cash in hand: …`, and nothing is activated. Show the message: the CSP must settle cash or raise the limit first. When the CSP hasn't set up cash management, the activation still succeeds and the count is **saved**: `data.cash` is `{ "status": "SAVED", "cashInHand": 3000 }`; it applies when the CSP sets up (taken from cash in account). `{ "status": "NOT_SET_UP" }` now only means the agent isn't part of a CSP (nothing kept).
 
 Re-activating the same PC (after a format) asks for the count again; it replaces the stored values the same way. Then write `data.cash` to `machineConfig.json` straight away; the next heartbeat brings the full `cash` block (21.1).
 
@@ -674,6 +680,8 @@ Errors: 404 `Settlement not found.` (not this agent's), 409 `This settlement ste
 
 Show `label` from the response as the card title. Every step is in the CSP's ledger (`SETTLEMENT_TO_BANK`, `SETTLEMENT_FROM_BANK`, `SETTLEMENT_HELD`, `SETTLEMENT_CANCELLED`) and in its settlements feed; the CSP doesn't approve anything.
 
+**One request, two steps (rev 21):** every step object has `requestId` (step 1's id; the same on both steps), `requestStartedAt`, `stepNumber` (1 / 2), `stepCount` (2; 1 for `BANK_TO_HAND`) and, on step 2, `previousStep: { id, approvedAt, amount }`. The heartbeat `cash.openSettlement` is the step waiting for the KO.
+
 ### 21.4 Ask the CSP to change cash in hand / drawer
 
 `POST /machines/runtime/cash/requests` (machine auth, like the other runtime calls)
@@ -694,6 +702,328 @@ Show `label` from the response as the card title. Every step is in the CSP's led
 → 201 `Cash change request sent to the CSP for approval.` `data: { id, status: "PENDING", requestedCashInHand, systemCashInHand, requestedDrawer, reason, … }`. Errors: 409 `A cash change request is already pending for this agent. …` (one at a time), 400 `Cash management isn't set up for this CSP yet. …`, 403 `No agent is currently assigned to this machine.`, plus the usual machine-auth errors (section H).
 
 Nothing changes until the CSP approves. The result shows in the next heartbeats as `cash.lastRequest.status` (`APPROVED` / `REJECTED`, with `reviewRemarks`), and on approval `cashInHand` / `drawer` show the new values.
+
+## 22. Cash management extras (desktop requirements doc, item 6) — READY
+
+The backend answer to the desktop's "Backend requirements" doc, **item 6** (custom transactions, balance due, close the day, history, cash exchange, tasks). Everything you asked for is built with your paths, bodies and error messages, **except the points marked ⚠ below**, which differ from your ask. Read those first.
+
+### 22.0 Coverage of your requirements doc, item 6
+
+| Your item | What you asked | Backend | Where |
+|---|---|---|---|
+| Plan check | show nothing without `CASH_MANAGEMENT` | Desktop-only as you planned (heartbeat `features`), **and** the server now refuses desktop cash calls (⚠ 1) | 22.0 |
+| "Not set up" state | `cash.setUp = false` | Unchanged | 21.1 |
+| Controller cash strip | heartbeat `cash` | Unchanged, plus `cashOther` and `dues` | 21.1 |
+| Activation count | any agent, stored before setup | Done (⚠ 4) | 21.5 |
+| 6.1 Labels + custom transactions | `GET /cash/labels`, `POST /cash/custom-transactions`, CSP manages labels | Done, your bodies and messages (cash in account unchanged; ⚠ 2 other cash) | 22.1 |
+| 6.2 Balance due | list / add / settle / cancel; CSP sees dues; confirm "float with dues" | Done (⚠ 3 for receipt dues); dues don't change the cash limit picture until settled, as you said | 22.2 |
+| 6.3 Close the day | close + read; CSP sees it; open questions | Done; transactions aren't blocked after the close; `NOT_CLOSED` computed | 22.4 |
+| 6.4 History | `GET /cash/days` (or POST), `GET /cash?date=` with `dayClose` | Done (≤ 92 days per call) | 22.5 |
+| 6.5 Cash exchange | create + list | Done | 22.3 |
+| 6.6 Tasks | list / add / change / delete; CSP gives tasks | Done; push when the CSP adds one is later (pre-production checklist 2.16) | 22.6 |
+| 6.7 Existing answers | new types in `today.transactions` and the CSP ledger; heartbeat `cash.dues` | Done | 22.5, 21.1 |
+
+### 22.0a What's different from your ask (⚠) and what's new
+
+| # | Point | What the backend does |
+|---|---|---|
+| ⚠ 1 | **Plan check on the server** | Every desktop cash call (§21.6–21.7, 21.4, and all of item 22) now answers **403 `This plan doesn't include cash management.`** when the PC's plan (CSP plans) has no `CASH_MANAGEMENT`. Keep your own check from the heartbeat `features`; treat this 403 as "hide cash management", not as a lock. |
+| ⚠ 2 | **Other cash** (new balance) | Custom transactions and settled dues bring cash in from outside SBI (or send it out). They change cash in hand and the drawer; **cash in account doesn't change**, as you asked. To keep the books balanced, the pool has a new **`cashOther`** (+ = came in, − = went out): cash in account + all cash in hand + in bank + left in bank (+ extra cash held by dues, rev 21) = cash limit + other cash. It's in the heartbeat `cash`, today's screen and the CSP's pool view. Show it read-only as "Other cash (custom transactions & dues)"; the CSP clears it in the app. |
+| ⚠ 3 | **Due for a receipt moves cash** | Your doc says adding a due moves no cash. That stays true for `MANUAL` dues and dues made by a custom transaction. **But a due with `receiptId`** for a cash receipt the server already applied (e.g. a ₹2,000 deposit the customer pays tomorrow) takes the unpaid amount **out of** cash in hand (`TO_COLLECT`) or puts it **back** (`TO_GIVE`), because the upload already counted the full amount. Settling puts it back. Without this the cash would be counted twice. Optional `cashDenomination` (total = amount) moves the notes too. |
+| ⚠ 4 | **Activation count before setup** | You asked to accept the count for any agent and keep it when cash management isn't set up. Done: the count is accepted for any agent of a CSP (still **required for a KO**), and when the CSP hasn't set up cash management it's **saved** (`data.cash = { "status": "SAVED", "cashInHand": 3000 }`, no longer `NOT_SET_UP`). When the CSP sets up, the saved counts are taken from cash in account. `NOT_SET_UP` now only means "this agent isn't part of a CSP" (nothing kept). |
+| 5 | Day close doesn't block | Your open question: transactions after the close are **not blocked**; they just come after the close time on the same IST day. |
+| 6 | `NOT_CLOSED` | Worked out when you read the days (no midnight job). Days before the agent was created aren't listed. |
+| 7 | Range limit | `/cash/days`: at most **92 days per call** (default the last 14). The ledger isn't deleted by receipt retention, so older days stay available. |
+| 8 | Denomination objects | Every `cashDenomination`, `taken`, `given`, `drawer` in answers has **all 12 keys** (zeros included). |
+| 9 | Reads with body credentials | `/cash/labels` and `/cash/days` also take `POST` with the credentials (and `from` / `to`) in the body, as you asked for the day list. The other reads (`/cash/dues`, `/cash/exchanges`, `/cash/day-close`, `/cash/tasks`) are `GET` only, because `POST` on those paths creates: send the credentials in **headers** (`X-Machine-Code`, `X-Machine-Fingerprint`, `Authorization: Machine <apiKey>`, or signed). |
+| 10 | Amounts in messages | Messages show whole rupees without decimals where you wrote them so (`Day closed. You're ₹500 short.`, `Saved. ₹500 added to …`); validation messages use 2 decimals (`… (₹500.00) must equal …`). Show `message` as it comes. |
+| 11 | Keep the saved cash current | After every call that answers with `cash` (custom transaction, due settle) or changes balances (exchange, due add/cancel, day close), overwrite `cashInHand` / `drawer` in `machineConfig.json` from the answer or re-read `GET /machines/runtime/cash`, so the pre-check of §21.2 uses the new values before the next heartbeat. |
+
+### 22.1 Labels and custom transactions (your 6.1)
+
+**`GET /machines/runtime/cash/labels`** (credentials in headers; or `POST` with them in the body) → `data: [ { id, name, direction: "IN"|"OUT"|"BOTH", active, createdAt, updatedAt } ]`, active first. List only `active` ones. The CSP creates, renames and deactivates them in the app. A new pool starts with **Other** (`BOTH`), **Shop expense** (`OUT`), **Bill collection** (`IN`) and **Recharge** (`IN`) (rev 21).
+
+**`POST /machines/runtime/cash/custom-transactions`**
+
+```json
+{ "machineCode": "…", "apiKey": "…", "fingerprint": "…",
+  "labelId": "…", "direction": "IN", "amount": 1500, "paidNow": 1000,
+  "cashDenomination": { "notes500": 2 }, "note": "optional, ≤ 200" }
+```
+
+| Rule | Error (400) |
+|---|---|
+| label is the CSP's and active | `That label isn't available any more. Ask your CSP.` |
+| direction allowed by the label | `That label can't be used for cash in.` / `… cash out.` |
+| `amount` > 0 | `Enter an amount more than ₹0.` |
+| 0 ≤ `paidNow` ≤ `amount` | `Paid now must be between ₹0 and the amount.` |
+| notes total = `paidNow` (send `{}` or nothing when 0) | `The notes' total (₹….00) must equal paid now (₹….00).` |
+| OUT: `paidNow` ≤ cash in hand; each count ≤ the drawer | `That's more than your cash in hand (₹…).` / `Not enough ₹100 notes in the drawer.` (coins: `₹2 coins`) |
+| pool set up | `Cash management isn't set up for this CSP yet. …` |
+
+Effect: IN → cash in hand, drawer and other cash **+ paidNow**; OUT → **−**. Cash in account unchanged. `paidNow < amount` → a due for the rest (`source: "CUSTOM"`; IN → `TO_COLLECT`, OUT → `TO_GIVE`). Ledger `CUSTOM` (`amount` = full amount, `cashInHandChange` = ±paidNow, `remarks` = label · note), plus `DUE_CREATED` when a due was made.
+
+→ **201** `Saved.` or `Saved. ₹500 added to Balance due (to collect).`, `data: { transaction: { id, labelId, label, direction, amount, paidNow, cashDenomination | null, note, createdAt }, due: <due> | null, cash: { cashInHand, drawer, drawerTotal } }`. Update the strip from `cash`.
+
+### 22.2 Balance due (your 6.2, and 6.8 points 1, 2, 8)
+
+The due object: `{ id, agentId, kind: "TO_COLLECT"|"TO_GIVE", amount (still due; 0 once settled), originalAmount (always there), source: "RECEIPT"|"CUSTOM"|"MANUAL", receiptId, customTransactionId, label, note, status: "OPEN"|"SETTLED"|"CANCELLED", cashSide: "CASH_IN_HAND"|"CASH_IN_ACCOUNT"|"OTHER_CASH"|null, createdAt, settledAt }` (list items also have `agentName`).
+
+**`GET /machines/runtime/cash/dues?status=OPEN|CLOSED`** → `data: { dues: [ … ], totals: { toCollect, collectCount, toGive, giveCount } }`. OPEN oldest first; CLOSED = settled or cancelled in the last 14 days, newest first. `totals` are always the open dues.
+
+#### Add a due: `POST /machines/runtime/cash/dues`
+
+```json
+{ …credentials, "kind": "TO_COLLECT", "amount": 1000, "note": "Pays tomorrow", "cashSide": "CASH_IN_HAND" }
+{ …credentials, "kind": "TO_COLLECT", "amount": 2000, "note": "Deposit, pays tomorrow", "receiptId": "R-1", "cashDenomination": { "notes500": 4 } }
+{ …credentials, "kind": "TO_GIVE", "amount": 100, "note": "Change owed" }
+```
+
+Three kinds of due:
+
+| Due | What moves **now** | Settle | Cancel |
+|---|---|---|---|
+| **With `cashSide`** (no receipt; your point 8) | see the table below | moves the side back for the part paid, then the notes come in / go out (cash in hand, drawer, other cash) | moves the side back for what's still due |
+| **With `receiptId`** of a cash receipt the server applied (⚠ 3, point 1) | the unpaid amount and its notes: `TO_COLLECT` out of cash in hand and the drawer, `TO_GIVE` back in (other cash moves with it). **`cashDenomination` is required** (total = amount) | the notes come in / go out; net effect: as if the customer had paid in full at the receipt | cash in hand back; the same notes back too while nothing was paid yet (after a part payment only cash in hand: fix the drawer with a correction request) |
+| **Neither** (`MANUAL`, or a receipt whose cash wasn't applied) | nothing | the notes come in / go out (cash in hand, drawer, other cash) | nothing |
+
+`cashSide` at creation (amount A). Everything but extra cash stays inside the cash limit, so cash in hand and cash in account move **against each other**:
+
+| Due | `cashSide` | cash in hand | cash in account | other cash | extra cash held by dues |
+|---|---|---|---|---|---|
+| `TO_COLLECT` | `CASH_IN_HAND` | +A | −A | | |
+| `TO_COLLECT` | `CASH_IN_ACCOUNT` | −A | +A | | |
+| `TO_COLLECT` | `OTHER_CASH` | | | +A | +A |
+| `TO_GIVE` | `CASH_IN_HAND` | −A | +A | | |
+| `TO_GIVE` | `CASH_IN_ACCOUNT` | +A | −A | | |
+| `TO_GIVE` | `OTHER_CASH` | | | −A | −A |
+
+**Extra cash held by dues** (`cashDueExtra`, new pool balance; + to collect, − to give) is what open `OTHER_CASH` dues are worth. It's there so the books still balance when other cash moves alone: **cash in account + all cash in hand + in bank + left in bank + extra cash held by dues = cash limit + other cash.** It's in the heartbeat `cash`, the cash screen and every `cash` object below. For your limit bar: CSP and other KOs = limit + other cash − cash in account − my cash in hand − in bank − left in bank − extra cash held by dues.
+
+No notes move with a `cashSide` due when it's added (the drawer changes when it's settled), so `drawerMatchesCashInHand` can be off by the open `CASH_IN_HAND` / `CASH_IN_ACCOUNT` dues until then. That's expected: show it as "held by dues" (`dues.bySide` below).
+
+→ **201**, `message` says the move in words; show it as it comes:
+
+| Due | `message` |
+|---|---|
+| to collect, cash in hand | `Balance due added. ₹1,000 added to cash in hand; cash in account −₹1,000.` |
+| to collect, cash in account | `Balance due added. ₹1,000 added to cash in account; cash in hand −₹1,000.` |
+| to collect, extra cash | `Balance due added. ₹1,000 added to extra cash.` |
+| to give, cash in hand / account / extra cash | `Balance due added. ₹1,000 deducted from cash in hand; cash in account +₹1,000.` (and the same pattern) |
+| receipt due | `Balance due added. ₹2,000 taken out of cash in hand.` / `… put back into cash in hand.` |
+| no side, no receipt | `Balance due added.` |
+
+`data` = the due (its fields at the top, as before) **plus `cash`**: `{ cashInHand, cashInAccount, cashOther, cashDueExtra, drawer, drawerTotal }`, the agent's balances after the move. The same `cash` object comes back from SETTLE and CANCEL (`data: { due, cash }`) and from a custom transaction.
+
+| Rule | Error | `code` |
+|---|---|---|
+| `kind` | 400 `Pick to collect or to give.` | `VALIDATION_FAILED` |
+| `amount` > 0 | 400 `Enter an amount more than ₹0.` | `VALIDATION_FAILED` |
+| `note` 1–200 | 400 `Say what it's for.` | `VALIDATION_FAILED` |
+| `cashSide` one of the three | 400 `Choose where to add / deduct the amount.` | `VALIDATION_FAILED` |
+| no `cashSide` with `receiptId` | 400 `A due for a receipt has no cash side: leave cashSide out.` | `BAD_REQUEST` |
+| `receiptId` is this agent's receipt | 404 `Receipt not found for this agent.` | `RECEIPT_NOT_FOUND` |
+| due ≤ the receipt's amount | 400 `The due can't be more than the receipt amount (₹…).` | `BAD_REQUEST` |
+| one open due per receipt | 409 `This receipt already has an open due.` | `RECEIPT_DUE_ALREADY_OPEN` |
+| receipt due (applied): notes sent, total = amount, `TO_COLLECT` counts ≤ drawer | 400 `Cash denomination is required for a receipt due: …` / `The notes' total … must equal the amount …` / `Not enough ₹500 notes in the drawer.` | `DENOMINATION_REQUIRED` / `DENOMINATION_MISMATCH` / `DRAWER_TOO_FEW_NOTES` |
+| the side that goes **down** has the amount | 400 `That's more than your cash in hand (₹…).` / `That's more than the cash in account (₹…).` (shared by the CSP and its KOs) | `INSUFFICIENT_CASH_IN_HAND` / `INSUFFICIENT_CASH_IN_ACCOUNT` |
+
+**Which receipts** (your point 2): any receipt of this agent that's still stored (the retention period, default 60 days), any day, any category. Cash moves only when the receipt's cash was applied (a `RECEIPT` ledger entry); for a `RECEIPT_NOT_APPLIED` or non-cash receipt the due moves nothing (like a manual due) and needs no notes. Offering only today's applied cash receipts, as you do, is fine.
+
+#### One due with its history: `GET /machines/runtime/cash/dues/:id`
+
+(credentials in headers) → the due + `events` (oldest first): `[{ type: "CREATED" | "PART_SETTLED" | "SETTLED" | "CANCELLED", amount, stillDue, cashSide, cashInHandChange, cashInAccountChange, cashOtherChange, drawerChange, machineCode, remarks, createdAt }]`, for a "History" view. 404 `Due not found.` (not this agent's).
+
+#### Settle or cancel: `POST /machines/runtime/cash/dues/:id`
+
+`{ "action": "SETTLE", "amount": 500, "cashDenomination": { "notes500": 1 } }` or `{ "action": "CANCEL" }`.
+
+| Rule | Error (400 unless noted) | `code` |
+|---|---|---|
+| the agent's due | 404 `Due not found.` | `DUE_NOT_FOUND` |
+| `OPEN` | `This due is already settled or cancelled.` | `DUE_NOT_OPEN` |
+| SETTLE: `amount` and `cashDenomination` sent | `Enter an amount more than ₹0.` / `Cash denomination is required: the notes taken or given.` | `VALIDATION_FAILED` / `DENOMINATION_REQUIRED` |
+| SETTLE: 0 < amount ≤ still due | `The amount must be more than ₹0 and at most ₹….` | `BAD_REQUEST` |
+| SETTLE: notes total = amount | `The notes' total (₹…) must equal the amount (₹…).` | `DENOMINATION_MISMATCH` |
+| SETTLE `TO_GIVE`: counts ≤ drawer | `Not enough ₹100 notes in the drawer.` | `DRAWER_TOO_FEW_NOTES` |
+| nothing below 0 after the move | `That's more than your cash in hand (₹…).` / `… the cash in account …` | `INSUFFICIENT_CASH_IN_HAND` / `…_IN_ACCOUNT` |
+| CANCEL: the side that goes down has it | `Not enough cash in hand to cancel it (₹…).` / `Not enough cash in account to cancel it (₹…).` | `INSUFFICIENT_CASH_TO_CANCEL` |
+
+→ SETTLE 200 `Due settled.` or `₹300 is still due.`; CANCEL 200 `Due cancelled.`; both `data: { due, cash }`. Part payment keeps it OPEN with the rest.
+
+**Ledger:** `DUE_CREATED`, `DUE_SETTLED`, `DUE_CANCELLED` entries carry `cashInHandChange`, `cashInAccountChange`, `cashOtherChange`, `cashDueExtraChange` for the move, and `remarks` like `To collect · added to cash in hand · Pays tomorrow`. They're in `today.transactions` (show them as they are).
+
+**Totals:** the heartbeat `cash.dues` **and** the cash screen `dues` (your point 4) are `{ toCollect, toGive, openCount, bySide: { CASH_IN_HAND: { toCollect, toGive }, CASH_IN_ACCOUNT: {…}, OTHER_CASH: {…} } }`. "Float with dues" stays a desktop calculation.
+
+### 22.3 Cash exchange (your 6.5)
+
+**`POST /machines/runtime/cash/exchanges`** `{ …credentials, "taken": { "notes500": 1 }, "given": { "notes100": 5 }, "note"?: "…" }` → **201** `Cash exchange saved.` `data: { id, taken, given, amount, note, createdAt }`.
+
+Errors (400): `Enter the notes taken from the customer.`, `Both sides must be equal: taken ₹…, given ₹….`, `Not enough ₹100 notes in the drawer to give.` (the notes just taken count as available), not set up. Drawer only: cash in hand and cash in account don't change. Ledger `EXCHANGE` (`cashInHandChange` 0, `drawerChange` = the net swap, `remarks` = `5 × ₹100 → 1 × ₹500 · <note>`).
+
+**`GET /machines/runtime/cash/exchanges?date=YYYY-MM-DD`** (IST, default today) → `data: [ … ]`, newest first.
+
+### 22.4 Close the day (your 6.3)
+
+**`POST /machines/runtime/cash/day-close`** `{ …credentials, "countedCashInHand": 58500, "countedDrawer": { all 12 keys } }`
+
+| Rule | Error |
+|---|---|
+| all 12 keys, integers 0–100,000 | 400 (zod message for the missing key) |
+| `countedCashInHand` = notes total | 400 `The cash in hand you entered (₹…) must equal the notes counted (₹…).` |
+| today (IST) not closed yet | 409 `Today is already closed.` |
+| pool set up | 400 `Cash management isn't set up for this CSP yet. …` |
+
+→ **201** `Day closed. The count matches.` / `Day closed. You're ₹500 short.` / `… over.`, `data: { dayId, agentId, date: "2026-11-02", system: { cashInHand, drawer }, counted: { cashInHand, drawer }, difference, closedAt }`. Balances don't change. Ledger `DAY_CLOSE` (`remarks` `Matched` / `₹500 short` / `₹500 over`). When `difference ≠ 0`, send the correction request (§21.4) as you planned, unless `cash.lastRequest.status` is `PENDING` (409 otherwise).
+
+**`GET /machines/runtime/cash/day-close?date=YYYY-MM-DD`** (default today) → `data: <same object>` or `null`. Today's cash screen also has **`dayClose`** (same object or `null`), so you don't need a second call to show "Day closed HH:mm".
+
+### 22.5 History for older days (your 6.4)
+
+**`GET /machines/runtime/cash/days?from=2026-10-20&to=2026-11-02`** (or `POST /machines/runtime/cash/days` with `{ …credentials, "from", "to" }`) → `data: [ { date, status: "OPEN"|"CLOSED"|"NOT_CLOSED", closedAt, difference } ]`, newest first. Default the last 14 days, ≤ 92 per call; `to` after today is cut to today; 400 `` `from` must be on or before `to`. `` / `Use a date like 2026-11-02.`
+
+**`GET /machines/runtime/cash?date=2026-11-01`** → the §21.6 shape for that day, with:
+- `cashInHand`, `drawer`, `cashLimit`, `cashInAccount`, `cashInTransit`, `cashLeftInBank`, `cashOther` = the balances at the **end** of that day;
+- `today.totals` / `today.transactions` = that day's entries; `today.settlements` = that day's finished steps;
+- `openSettlements: []` for a past day; `dayClose` when it was closed;
+- new: `day` (`YYYY-MM-DD`) and `isToday`.
+
+`today.totals` now also has `customIn`, `customOut`, `duesCollected`, `duesGiven`. `transactions[]` items have `cashOtherChange`. New `type` values: `CUSTOM`, `DUE_CREATED`, `DUE_SETTLED`, `DUE_CANCELLED`, `EXCHANGE`, `DAY_CLOSE` (plus `SETTLEMENT_HELD` from §21.7).
+
+### 22.6 Tasks (your 6.6)
+
+Task: `{ id, agentId, agentName, title, note, dueAt, done, doneAt, createdBy: "KO"|"CSP", createdAt, updatedAt }`.
+
+| Call | Body | Answer |
+|---|---|---|
+| `GET /machines/runtime/cash/tasks?status=OPEN\|DONE\|ALL` (default ALL) | — | `data: [ … ]`: open (soonest due, then no due time, oldest first), then done in the last 30 days (newest first) |
+| `POST /machines/runtime/cash/tasks` | `{ title, note?, dueAt? }` | 201 `Task added.` `data: <task>` (`createdBy: "KO"`) |
+| `PATCH /machines/runtime/cash/tasks/:id` | any of `{ title, note, dueAt, done }` | 200 `Task updated.` |
+| `DELETE /machines/runtime/cash/tasks/:id` | credentials (headers or body) | 200 `Task deleted.` |
+
+Errors: 400 `Write what needs doing.` / `Keep it under 100 characters.` / `Keep the note under 300 characters.` / `Use an ISO date and time.`; 404 `That task isn't there any more.`; 403 `This task is from your CSP. Only they can change it.` (a CSP task: only `done` can change, and it can't be deleted). `note: null` or `dueAt: null` clears them. The server doesn't log task text.
+
+### 22.7 Calls, all machine-authenticated for the PC's assigned agent
+
+| Method | Path | Section |
+|---|---|---|
+| GET / POST | `/machines/runtime/cash/labels` | 22.1 |
+| POST | `/machines/runtime/cash/custom-transactions` | 22.1 |
+| GET / POST | `/machines/runtime/cash/dues` | 22.2 |
+| GET / POST | `/machines/runtime/cash/dues/:id` | 22.2 |
+| GET / POST | `/machines/runtime/cash/exchanges` | 22.3 |
+| GET / POST | `/machines/runtime/cash/day-close` | 22.4 |
+| GET / POST | `/machines/runtime/cash/days` | 22.5 |
+| GET | `/machines/runtime/cash?date=` | 22.5 |
+| GET / POST | `/machines/runtime/cash/tasks` | 22.6 |
+| PATCH / DELETE | `/machines/runtime/cash/tasks/:id` | 22.6 |
+
+GETs and DELETE take the credentials in headers (`X-Machine-Code`, `X-Machine-Fingerprint`, `Authorization: Machine <apiKey>`, or signed); POST / PATCH in the body or headers. Common errors on all of them: 403 `This plan doesn't include cash management.`, 403 `No agent is currently assigned to this machine.`, 400 `This agent isn't part of a CSP.`, machine-auth errors (section H), 429 rate limit (shared with the other runtime calls).
+
+### 22.8 Desktop to-do: what to change, where
+
+| Screen / file (your names) | Change |
+|---|---|
+| `Services/CashExtrasService.GetLabelsAsync` | `GET /cash/labels`; keep only `active` |
+| `Services/CashExtrasService.CreateCustomTransactionAsync` ("New transaction" popup) | `POST /cash/custom-transactions`; show `message`; update the strip and `machineConfig.json` from `data.cash`; add `data.due` to Balance due when not null |
+| `Services/CashExtrasService.GetDuesAsync` / `CreateDueAsync` / `SettleDueAsync` / `CancelDueAsync` (Balance due tab + Overview card) | 22.2. "Add balance due" from a receipt: send its `receiptId` (and the notes if cash is handed back or taken out); re-read cash afterwards (⚠ 3). Settle: denomination popup, total = amount |
+| `Services/CashExtrasService.CreateExchangeAsync` / `GetExchangesAsync` (Settlement tab "Cash exchange") | 22.3; refresh the drawer afterwards |
+| `Services/CashExtrasService.CloseDayAsync` / `GetDayCloseAsync` ("Close the day") | 22.4; after a short / over close, send the correction request (21.4) unless one is pending; show "Day closed HH:mm" from `dayClose` on the cash screen |
+| `Services/CashExtrasService.GetDaysAsync` / `GetDayAsync` (History tab) | 22.5 |
+| `Services/CashTaskService.GetTasksAsync` / `SaveAsync` / `SetDoneAsync` / `DeleteAsync` (Tasks tab) | 22.6; remove the local tasks file and the sample "from the CSP" task; for `createdBy: "CSP"` show only the done tick |
+| Overview / controller strip | add "Other cash" (`cashOther`) and dues (`cash.dues`) from the heartbeat |
+| Setup window (activation, step 2) | handle `data.cash.status = "SAVED"` (show "Saved; applies when your CSP sets up cash management") |
+| Every cash call | 403 `This plan doesn't include cash management.` → hide cash management, don't lock the app |
+
+### 22.9 Answers to your 6.8 (rev 21, 2026-11-03)
+
+| # | Your point | Answer |
+|---|---|---|
+| 1 | Receipt dues and the drawer | Confirmed as you apply them: for `TO_COLLECT` the notes not received come **out** of the drawer (each count ≤ the drawer), for `TO_GIVE` the notes not paid out go **back in**. **`cashDenomination` is now required** for a receipt due whose cash was applied (400 `DENOMINATION_REQUIRED`), total = amount. Settling adds / takes the settle's notes, so the drawer ends right. A cancel before any payment puts the same notes back. See 22.2. |
+| 2 | Which receipts can have a due | Any stored receipt of the agent (retention period), any day. Cash moves only for one whose cash was applied; a `RECEIPT_NOT_APPLIED` or non-cash receipt gets a due that moves nothing and needs no notes. Your choice (today's applied cash receipts) is fine. |
+| 3 | `dueAt` format | `2026-11-03T11:00:00.000Z` is accepted; so are `+05:30` / `+00:00` offsets and no milliseconds. The answer always has UTC `…Z`. |
+| 4 | Dues in `GET /cash` | Added: `dues` on the cash screen, same object as the heartbeat `cash.dues`, now with `bySide`. |
+| 5 | Dev server | 192.168.1.4 (your note). |
+| 6 | Idempotency key | **Done** on every desktop cash write: `POST /cash/settlements`, `/cash/settlements/:id`, `/cash/requests`, `/cash/custom-transactions`, `/cash/dues`, `/cash/dues/:id`, `/cash/exchanges`, `/cash/day-close`, `/cash/tasks`, `PATCH` / `DELETE /cash/tasks/:id`. Header `Idempotency-Key` (8–128 of letters, digits, `- _ : .`; a new random id per user action, the same on every retry). Kept 24 h per machine. A retry gets the **first answer again** (same status and body) with header `Idempotent-Replayed: true`; nothing runs twice. Only successful answers are kept: after an error the retry runs again. While the first copy is still running, a second one gets 409 `IDEMPOTENCY_IN_PROGRESS` (retry a moment later); the same key on a different call → 409 `IDEMPOTENCY_KEY_REUSED`. No header = as before. |
+| 7 | Speed | Cash reads no longer run inside a database transaction (their queries now run in parallel), the cash screen's queries are merged into one round, and the machine's API key check is remembered for 10 minutes (bcrypt was ~100 ms per call). Measured from a server talking to the same remote database (Neon, Singapore) as your test server: `GET /cash` ~0.9–1.8 s → **~0.5–0.7 s**, `/cash/dues` ~0.3 s, `/cash/labels` ~0.4 s, `/cash/days` ~0.3 s. What's left is mostly network round trips to the database: production with the API next to the database should be well under 500 ms. |
+| 8 | Due: the KO chooses where the amount goes | **Done** as you wrote it, with one addition: extra cash held by dues (`cashDueExtra`) keeps the books balanced when other cash moves alone. See 22.2 for the table, messages, `cash` and checks. |
+| 9 | Settlement request in one object | **Done.** Every step (open, finished, in `openSettlements`, `today.settlements`, the CSP feed and every settlement answer) has `requestId` (step 1's id, same for both steps), `requestStartedAt`, `stepNumber` (1 or 2), `stepCount` (2; 1 for `BANK_TO_HAND`), and `previousStep: { id, approvedAt, amount }` on a step 2 (`null` otherwise). |
+| 10 | Heartbeat: what's waiting | **Done.** Heartbeat `cash` has `openSettlement: { id, requestId, direction, step, stepNumber, stepCount, amount, label, needsDenomination } \| null` and `tasks: { openCount, overdueCount, newFromCspCount }`. `newFromCspCount` counts open CSP tasks added since the KO last read the task list (`GET /cash/tasks` resets it). |
+| 11 | Error codes | **Done.** Every error answer is `{ success: false, code, message }`. The codes you listed exist (names in the table below), plus a status code when nothing specific applies (`BAD_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `VALIDATION_FAILED`, `INVALID_JSON`, `PAYLOAD_TOO_LARGE`, `INTERNAL_ERROR`). Upload answers: each `skippedReceipts[]` item also has `code`: `RECEIPT_ALREADY_EXISTS`, `DUPLICATE_IN_REQUEST`, `OLDER_THAN_RETENTION`, `INVALID_RECEIPT`. |
+| 12 | Exchange in history | **Done.** `EXCHANGE` remarks: `1 × ₹500 → 5 × ₹100` (`· <note>` after it when given; coins as `3 × ₹2 coin`). |
+| 13 | Default labels | **Done.** A new pool starts with **Other** (`BOTH`), **Shop expense** (`OUT`), **Bill collection** (`IN`), **Recharge** (`IN`); the CSP renames or deactivates them. Pools set up before rev 21 have none: the CSP adds them in the app. |
+| 14 | `originalAmount` | Kept on every due. |
+
+**Error codes** (`code` → when):
+
+| Area | Codes |
+|---|---|
+| Cash management | `PLAN_NO_CASH_MANAGEMENT`, `CASH_NOT_SET_UP`, `NOT_PART_OF_CSP`, `NO_AGENT_ASSIGNED`, `INSUFFICIENT_CASH_IN_HAND`, `INSUFFICIENT_CASH_IN_ACCOUNT`, `INSUFFICIENT_LEFT_IN_BANK`, `INSUFFICIENT_CASH_TO_CANCEL`, `DENOMINATION_MISMATCH`, `DENOMINATION_REQUIRED`, `DRAWER_TOO_FEW_NOTES`, `SETTLEMENT_ALREADY_OPEN`, `STEP_ALREADY_APPROVED`, `STEP_ALREADY_CANCELLED`, `SETTLEMENT_NOT_FOUND`, `DAY_ALREADY_CLOSED`, `REQUEST_ALREADY_PENDING`, `REQUEST_ALREADY_REVIEWED`, `DUE_NOT_OPEN`, `DUE_NOT_FOUND`, `RECEIPT_DUE_ALREADY_OPEN`, `RECEIPT_NOT_FOUND`, `LABEL_NOT_AVAILABLE`, `LABEL_DIRECTION_NOT_ALLOWED`, `LABEL_NAME_TAKEN`, `TASK_FROM_OTHER_SIDE` (your `TASK_FROM_CSP`), `TASK_NOT_FOUND`, `IDEMPOTENCY_KEY_REUSED`, `IDEMPOTENCY_IN_PROGRESS` |
+| Machine auth (section H) | `MACHINE_NOT_FOUND`, `NO_ACTIVE_ACTIVATION`, `SIGNATURE_REQUIRED`, `SIGNATURE_INVALID`, `SIGNATURE_CLOCK_SKEW`, `SIGNATURE_REPLAYED`, `API_KEY_REQUIRED`, `API_KEY_INVALID`, `FINGERPRINT_MISMATCH`, `CREDENTIALS_MISMATCH`, `MACHINE_INACTIVE`, `MACHINE_DELETED`, `ACTIVATION_INACTIVE`, `ACTIVATION_EXPIRED`, `REACTIVATION_REQUIRED`, `SUBSCRIPTION_INACTIVE`, `SUBSCRIPTION_EXPIRED`, `WATCHER_DISABLED`, `WATCHER_NOT_ALLOWED`, `NO_ACTIVE_SESSION`, `AGENT_NOT_VALID` |
+| Generic | `RATE_LIMITED` (429), `NOT_FOUND`, `VALIDATION_FAILED`, `INVALID_JSON`, `PAYLOAD_TOO_LARGE`, `INTERNAL_ERROR`, … |
+
+Codes stay the same when a message is reworded; switch to `code` and keep the text match only as a fallback, as you planned.
+
+**Desktop to-do for rev 21:**
+- Due without a receipt: keep sending `cashSide`; show `message` and refresh from `data.cash` (it now has `cashInAccount`, `cashOther`, `cashDueExtra`).
+- Receipt due: keep sending the notes (now required).
+- Limit bar: subtract `cashDueExtra` too (formula in 22.2); show it next to other cash ("Extra cash held by dues").
+- Settlements: build the tracker from `requestId`, `stepNumber`, `stepCount`, `previousStep`.
+- Strip: `cash.openSettlement` ("waiting for your approval") and `cash.tasks` (badge for `newFromCspCount`, overdue).
+- Errors: switch to `code`; send `Idempotency-Key` on every cash write.
+- The 4 default labels exist for new pools; "Your CSP hasn't made any labels yet" stays for older ones.
+
+## 23. Optional receipt fields, session timeout, commission (rev 23) — READY
+
+### 23.1 Optional receipt fields (the super admin decides)
+
+Most receipt fields are optional. **Which optional fields the desktop may send is set by the super admin** (admin console), not by a release. The list comes in **both** the heartbeat and the entitlements answer:
+
+```json
+"receiptFields": { "allowed": ["rrn", "stan", "terminalId", "location", "bankName", "customerName"] }
+```
+
+**What to build:**
+
+1. **Save it in `machineConfig.json`** on every heartbeat (and from entitlements), e.g. `"ReceiptFields": ["rrn", "stan", "terminalId", "location", "bankName", "customerName"]`. The heartbeat carries changes: a field the super admin switches on reaches every PC within one heartbeat (≤ 60 s) and needs no release or re-activation. Offline, use the last saved list.
+2. **Read the fields from the SBI receipt** as you do today, then put on the upload **only** the ones in the saved list. Leave out a field you couldn't read (don't send `null` or `""`).
+3. **Send them on each receipt** of `POST /receipts/upload-counts` (and `/receipts/upload`), next to the required fields.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `rrn` | string | allowed | |
+| `stan` | string (≤ 50) | allowed | |
+| `terminalId` | string (≤ 50) | allowed | |
+| `location` | string | allowed | |
+| `bankName` | string (≤ 100) | off | |
+| `bankTransactionId` | string (≤ 100) | off | the bank's transaction id |
+| `bankResponseCode` | string (≤ 50) | off | |
+| `bankResponseMessage` | string (≤ 500) | off | |
+| `balanceAfter` | number | off | personal |
+| `customerName` | string (≤ 200) | off | personal |
+| `customerAccount` | string (≤ 50) | off | personal; send it **masked** (e.g. `XXXX1234`) |
+
+Example receipt with the list above:
+
+```json
+{ "receiptId": "R-1", "receiptType": "AEPS", "transactionCategory": "CASH_WITHDRAWAL",
+  "transactionType": "Cash Withdrawal", "transactionAt": "2026-11-04T05:10:00.000Z", "count": 1,
+  "amount": 2000, "cashDenomination": { "notes500": 4 },
+  "rrn": "123456789012", "stan": "004512", "location": "Market branch", "bankName": "SBI", "customerName": "Asha" }
+```
+
+- **Receipts may differ:** one receipt may have more fields than another (what SBI showed, what the list allowed at that moment). That's expected; send what you have.
+- The server keeps only allowed fields and **silently drops** the rest: the receipt is still accepted and counted, nothing is refused. An older desktop that sends more doesn't break.
+- **Never send Aadhaar** in any form: there is no such field and never will be.
+- The CSP app shows each receipt's fields with their names, so a field switched on later just appears there.
+
+### 23.2 Session timeout: one missed heartbeat
+
+A machine session is on while heartbeats arrive with **at most one missed**: the server ends it (and the PC shows offline) after **120 s** without a heartbeat (`heartbeatTimeout: 120`, was 180). The same applies to the SBI activity session (`/activity/*`). Keep the 60 s heartbeat; if a heartbeat fails, retry it once within the minute. The CSP sees online time, active (SBI) time and late / early per KO in the app (mobile KT §13C).
+
+### 23.3 Commission
+
+The server computes the CSP's commission on every successful receipt at upload (rates set by the super admin; only the CSP earns, KOs are salaried). Nothing for the desktop to send or show; it isn't in any desktop answer.
 
 ---
 
@@ -721,7 +1051,7 @@ Nothing changes until the CSP approves. The result shows in the next heartbeats 
 | 7 | UI (optional) | "Refresh plan" button, or after a feature 403 | `POST /machines/runtime/entitlements` | `Services/HeartbeatService.cs` or a small `EntitlementService` |
 
 Rules that tie these together:
-- **A receipt upload needs an ACTIVE machine session.** The machine heartbeat (step 2) *and* the activity heartbeat (step 4) both create/extend it. A session closes 180 s after the last of either.
+- **A receipt upload needs an ACTIVE machine session.** The machine heartbeat (step 2) *and* the activity heartbeat (step 4) both create/extend it. A session closes 120 s after the last of either (at most one missed heartbeat).
 - **The activity session (CSP logged in to SBI) is separate** from the machine session. The machine heartbeat never keeps an activity session alive.
 - The background service heartbeat must keep running exactly as today, whether or not the UI is open.
 
@@ -802,7 +1132,7 @@ Rules that tie these together:
 
 **Server checks, in order:** machine credentials (section H, all 400) → activation ACTIVE and not expired (403 `Activation is inactive.` / `Activation has expired.`). Heartbeat does **not** fail when the watcher is disabled; it returns `watcherEnabled: false`.
 
-**Side effects:** creates or extends the machine session (new session if the last heartbeat was >180 s ago); updates machine info and `lastHeartbeatAt`.
+**Side effects:** creates or extends the machine session (new session if the last heartbeat was >120 s ago); updates machine info and `lastHeartbeatAt`.
 
 **Response (200)**
 
@@ -810,7 +1140,7 @@ Rules that tie these together:
 "data": {
   "serverTime": "2026-10-25T10:00:00.000Z",
   "heartbeatInterval": 60,
-  "heartbeatTimeout": 180,
+  "heartbeatTimeout": 120,
   "watcherEnabled": true,
   "receiptUploadEnabled": true,
   "subscriptionStatus": "ACTIVE",
@@ -868,7 +1198,7 @@ All three need `machineCode`, `apiKey`, `fingerprint`. **Server checks for all t
 - **Body:** `+ activitySessionId` (required).
 - **Responses:**
   - 200, `restarted: false`: normal.
-  - 200, `restarted: true`: the old session timed out (e.g. internet outage > 180 s); the server opened a new one. **Replace the stored id** with the returned `activitySessionId`.
+  - 200, `restarted: true`: the old session timed out (e.g. internet outage > 120 s); the server opened a new one. **Replace the stored id** with the returned `activitySessionId`.
   - 409 `Activity session has ended. Start a new activity session.`: it was stopped or replaced (e.g. another start). If still logged in → call start (F1); else stop the timer.
   - 403 `No agent is currently assigned to this machine.`: machine was unassigned in the web app; stop the timer, show notice.
 - **Offline:** skip ticks; don't queue or replay heartbeats.
@@ -878,7 +1208,7 @@ All three need `machineCode`, `apiKey`, `fingerprint`. **Server checks for all t
 - **When / reason:** explicit SBI logout → `LOGOUT`; detected SBI auto-logout / session expiry → `AUTO_LOGOUT`; app close / `FormClosing` / Windows shutdown → `APP_CLOSE`.
 - **Body:** `+ activitySessionId`, `reason` (one of the three; anything else → 400).
 - **Response (200):** `{ activitySessionId, stopped: true }`. Idempotent: unknown or already-closed ids also return 200.
-- **Desktop:** cancel the timer first, then call stop once with a 3 s timeout. On app close don't wait longer and don't retry. If it fails, do nothing: the server closes the session 180 s after the last heartbeat.
+- **Desktop:** cancel the timer first, then call stop once with a 3 s timeout. On app close don't wait longer and don't retry. If it fails, do nothing: the server closes the session 120 s after the last heartbeat.
 
 ## G. `POST /api/v1/receipts/upload-counts` — confirmed transactions
 
@@ -940,6 +1270,8 @@ Per receipt, inside one DB transaction: duplicate id in the same request → ski
 
 ## H. Error classification (all runtime endpoints)
 
+Since rev 21 every error also has a stable **`code`** (e.g. `MACHINE_NOT_FOUND`, `API_KEY_INVALID`, `SUBSCRIPTION_EXPIRED`; the full list is in 22.9). Classify on `code`; the messages below stay as the fallback.
+
 Machine authentication runs first on every runtime call and returns **400** for all of these:
 
 | Message | Meaning | Desktop action |
@@ -1000,7 +1332,7 @@ Always read features from `MachineConfig.Features` (last heartbeat). Offline, us
 
 # Part 3 — Endpoint quick reference
 
-Base URL: `https://<server>/api/v1` (dev: `http://192.168.1.8:3000/api/v1`). All requests are `POST` with `Content-Type: application/json`. No JWT: the machine credentials are in the body. Every response is `{ "success", "message", "data" }`; errors are `{ "success": false, "message" }` (classify them with section H). 429 = rate limit: keep state, retry with backoff.
+Base URL: `https://<server>/api/v1` (dev: `http://192.168.1.4:3000/api/v1`). Most requests are `POST` with `Content-Type: application/json`; the cash reads are `GET` with the credentials in headers (item 22). No JWT. Every response is `{ "success", "message", "data" }`; errors are `{ "success": false, "code", "message" }`: decide on **`code`** (stable; list in 22.9), show `message`. 429 = rate limit (`RATE_LIMITED`): keep state, retry with backoff. Cash writes take an `Idempotency-Key` header (22.9 point 6).
 
 Every runtime call (Q2–Q8) identifies the PC in one of three ways (item #19):
 
@@ -1026,11 +1358,16 @@ The examples below show the body form; in signed mode drop those three fields fr
 | Q10 | `/machines/runtime/cash/settlements` | **NEW** | CSP Manager UI (Settlement button) | starting a settlement |
 | Q11 | `/machines/runtime/cash/settlements/:settlementId` | **NEW** | CSP Manager UI (open settlement card) | Approve / Cancel |
 | Q12 | `/machines/runtime/cash/requests` | **NEW** | CSP Manager UI | asking the CSP to correct cash in hand / drawer |
+| Q13 | `/machines/runtime/cash/labels`, `/cash/custom-transactions` | **NEW** | Cash Management "New transaction" | §22.1 |
+| Q14 | `/machines/runtime/cash/dues`, `/cash/dues/:id` | **NEW** | Balance due tab / card | §22.2 |
+| Q15 | `/machines/runtime/cash/exchanges` | **NEW** | Settlement tab "Cash exchange" | §22.3 |
+| Q16 | `/machines/runtime/cash/day-close`, `/cash/days`, `/cash?date=` | **NEW** | Close the day, History tab | §22.4–22.5 |
+| Q17 | `/machines/runtime/cash/tasks`, `/cash/tasks/:id` | **NEW** | Tasks tab | §22.6 |
 | — | `/events`, `/api/events`, `/api/auth/activate`, `/api/config/sync`, `/receipt` | **REMOVED** (404) | — | delete the calling code |
 
-Q9 is a `GET` (credentials in headers; `POST` with the body form also works). Q9–Q12 are described in full in §21.6, §21.7 and §21.4.
+Q9 is a `GET` (credentials in headers; `POST` with the body form also works). Q9–Q12 are described in full in §21.6, §21.7 and §21.4; Q13–Q17 in item 22 (the table in §22.7 lists every method and path).
 
-Rate limits: Q2–Q12 share **120 requests/min per machine**; Q1 is **20 per 15 min per IP**.
+Rate limits: Q2–Q17 share **120 requests/min per machine**; Q1 is **20 per 15 min per IP**.
 
 ### Q1. `POST /api/v1/machines/activate`
 
@@ -1085,7 +1422,7 @@ Response 200:
 
 ```json
 "data": {
-  "serverTime": "2026-10-30T05:12:00.000Z", "heartbeatInterval": 60, "heartbeatTimeout": 180,
+  "serverTime": "2026-10-30T05:12:00.000Z", "heartbeatInterval": 60, "heartbeatTimeout": 120,
   "watcherEnabled": true, "receiptUploadEnabled": true,
   "subscriptionStatus": "ACTIVE", "planCode": "BC_BASIC", "ownerType": "BC",
   "subscriptionEndDate": "2026-11-29T18:30:00.000Z", "graceEndsAt": null,
@@ -1198,7 +1535,7 @@ How to use:
 - 1–20 receipts, oldest first, one request at a time. `agentId` = `MachineConfig.AgentId`. Leave out null fields; `count` is always 1.
 - `amount` only for `CASH_DEPOSIT`, `CASH_WITHDRAWAL`, `MONEY_TRANSFER` (required there); never for passbook or social security.
 - Per receipt: in `acceptedReceipts` → Uploaded; skipped with `Receipt already exists.` / `Duplicate receipt in request.` → Uploaded; skipped with a reason starting `Invalid receipt` or `Receipt is older than the receipt retention period.` → Failed (keep reason, no retry); in neither list → keep queued and retry.
-- Needs an active machine session (Q2 or Q5 in the last 180 s): 400 `No active machine session found.` → retry after the next heartbeat. Full rules: section G, item #16.
+- Needs an active machine session (Q2 or Q5 in the last 120 s): 400 `No active machine session found.` → retry after the next heartbeat. Full rules: section G, item #16.
 
 ### Q8. `POST /api/v1/receipts/upload` (background watcher only)
 
@@ -1249,6 +1586,15 @@ Response 200: `{ approved, next }` (next = step 2 or null) or `{ cancelled, next
 ---
 
 ## Changelog
+
+- 2026-11-04 (rev 23, update) — §23.1: what to build for receipt fields (save the list in machineConfig, send only those, per-field types and defaults, example), receipts may carry different fields.
+- 2026-11-04 (rev 23) — Item #23: `receiptFields.allowed` in heartbeat + entitlements (send only those optional fields; no Aadhaar); `upload-counts` accepts the optional fields; heartbeat timeout 120 s (one missed heartbeat) for machine and activity sessions; commission is server-side.
+
+- 2026-11-04 (rev 22) — §22.2: `GET /machines/runtime/cash/dues/:id` (one due with its history).
+
+- 2026-11-03 (rev 21) — Answers to the desktop's 6.8 (22.9): due `cashSide` (cash in hand / cash in account move against each other; extra cash with the new `cashDueExtra`), `cash` with every balance on due answers, notes required for applied receipt dues; `code` on every error and on skipped receipts; `Idempotency-Key` on cash writes; settlement `requestId` / `stepNumber` / `stepCount` / `previousStep`; heartbeat `cash.openSettlement`, `cash.tasks`, `dues.bySide`; `dues` on the cash screen; exchange remarks; default labels; faster cash reads.
+- 2026-11-03 (rev 20, update) — Item #22: coverage table (22.0), screen-by-screen to-do (22.8), `POST` forms of `/cash/labels` and `/cash/days`, whole-rupee amounts in the day-close message, how to keep the saved cash current; item #21 intro updated.
+- 2026-11-03 (rev 20) — Item #22: cash management extras from the desktop's requirements doc item 6 (labels and custom transactions, balance due, cash exchange, close the day, history with `?date=` and `/cash/days`, tasks); "other cash" (`cashOther`); dues in the heartbeat `cash`; desktop cash calls refused (403) without `CASH_MANAGEMENT`; activation count saved before setup (`SAVED`). Part 3: Q13–Q17.
 
 - 2026-11-02 (rev 19) — §21.7: step-by-step screen flow for the cash screen and Settlement button (all three directions, approve/cancel by step, refresh + config save). Part 3: Q9–Q12 cash endpoints.
 

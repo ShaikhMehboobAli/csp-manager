@@ -23,7 +23,9 @@ import { ForbiddenError } from "../../core/errors/ForbiddenError";
 import { ConflictError } from "../../core/errors/ConflictError";
 import { Agent, BusinessCorrespondent } from "../../generated/prisma/client";
 import type { VerifyOtpDto } from "./validations/verify-otp.validation";
-import JwtService from "../../core/services/jwt.service";
+import JwtService, { REFRESH_TOKEN_DAYS } from "../../core/services/jwt.service";
+import { UnauthorizedError } from "../../core/errors/UnauthorizedError";
+import { createHash } from "node:crypto";
 import { LoginDto } from "./validations/login.validation";
 import { AccountType } from "./types/auth.types";
 import { BadRequestError } from "../../core/errors/BadRequestError";
@@ -32,6 +34,18 @@ import CashService from "../cash/cash.service";
 // bcrypt hash of a random value, compared when the agent ID is unknown.
 const LOGIN_TIMING_HASH =
   "$2b$10$CwTycUXWue0Thq9StjUM0uJ8.zdFvQ1f6lYB0yNvEJ0TVN5qM2y5W";
+
+
+type SessionClient = { ipAddress: string | null; userAgent: string | null };
+
+const RESEND_WAIT_MS = 60 * 1000;
+const RESEND_MAX = 5;
+const RESEND_WINDOW_MS = 60 * 60 * 1000;
+
+/** Only a hash of the refresh token is stored. */
+const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
+
+const refreshExpiry = () => new Date(Date.now() + REFRESH_TOKEN_DAYS * 24 * 60 * 60 * 1000);
 
 export default class AuthService {
   private readonly repository: AuthRepository;
@@ -612,7 +626,7 @@ export default class AuthService {
     });
   }
 
-  async login(data: LoginDto) {
+  async login(data: LoginDto, client: SessionClient = { ipAddress: null, userAgent: null }) {
     const user = await this.repository.findUserByAgentId(data.agentId);
 
     // Same answer (and similar timing) for an unknown ID and a wrong
@@ -645,16 +659,28 @@ export default class AuthService {
       role: user.role,
     });
 
-    const refreshToken = this.jwtService.generateRefreshToken({
-      userId: user.id,
-      agentId: user.agentId,
-      role: user.role,
-    });
-
     return withTransaction(async (tx) => {
       const repository = new AuthRepository(tx);
 
       await repository.updateLastLogin(user.id);
+      await repository.deleteOldSessions(user.id);
+
+      // One session per login (per device); the refresh token names it.
+      const session = await repository.createSession({
+        userId: user.id,
+        refreshTokenHash: "",
+        expiresAt: refreshExpiry(),
+        ...client,
+      });
+
+      const refreshToken = this.jwtService.generateRefreshToken({
+        userId: user.id,
+        agentId: user.agentId,
+        role: user.role,
+        sid: session.id,
+      });
+
+      await repository.rotateSession(session.id, hashToken(refreshToken), refreshExpiry());
 
       return {
         success: true,
@@ -669,6 +695,173 @@ export default class AuthService {
             role: user.role,
           },
         },
+      };
+    });
+  }
+
+  /**
+   * New access token + a new refresh token (rotation). The old refresh token
+   * stops working; using it again means it was copied, so the whole session
+   * is revoked (the user logs in again).
+   */
+  async refresh(refreshToken: string, client: SessionClient) {
+    let payload;
+
+    try {
+      payload = this.jwtService.verifyRefresh(refreshToken);
+    } catch (error) {
+      throw new UnauthorizedError(
+        (error as Error).name === "TokenExpiredError" ? "Refresh token has expired." : "Invalid refresh token.",
+      );
+    }
+
+    // A revoke must stick even though the request fails, so it runs outside
+    // the transaction (whose rollback would undo it).
+    let revoke: string | null = null;
+
+    try {
+      return await this.rotate(refreshToken, payload, client, (sessionId) => {
+        revoke = sessionId;
+      });
+    } finally {
+      if (revoke) {
+        await this.repository.revokeSession(revoke);
+      }
+    }
+  }
+
+  private rotate(
+    refreshToken: string,
+    payload: { userId: string; sid: string },
+    client: SessionClient,
+    revokeLater: (sessionId: string) => void,
+  ) {
+    return withTransaction(async (tx) => {
+      const repository = new AuthRepository(tx);
+      const session = payload.sid ? await repository.findSession(payload.sid) : null;
+
+      if (!session || session.revokedAt || session.userId !== payload.userId) {
+        throw new UnauthorizedError("Invalid refresh token.");
+      }
+
+      if (session.expiresAt < new Date()) {
+        throw new UnauthorizedError("Refresh token has expired.");
+      }
+
+      if (session.refreshTokenHash !== hashToken(refreshToken)) {
+        revokeLater(session.id);
+
+        throw new UnauthorizedError("Invalid refresh token.");
+      }
+
+      const user = session.user;
+
+      if (user.status === UserStatus.BLOCKED) {
+        revokeLater(session.id);
+
+        throw new ForbiddenError("Your account has been blocked.");
+      }
+
+      if (user.status === UserStatus.SUSPENDED) {
+        revokeLater(session.id);
+
+        throw new ForbiddenError("Your account has been suspended.");
+      }
+
+      const claims = { userId: user.id, agentId: user.agentId, role: user.role };
+      const accessToken = this.jwtService.generateAccessToken(claims);
+      const nextRefreshToken = this.jwtService.generateRefreshToken({ ...claims, sid: session.id });
+
+      await repository.rotateSession(session.id, hashToken(nextRefreshToken), refreshExpiry());
+
+      if (client.ipAddress || client.userAgent) {
+        await tx.userSession.update({ where: { id: session.id }, data: client });
+      }
+
+      return {
+        success: true,
+        message: "Session refreshed.",
+        data: {
+          accessToken,
+          refreshToken: nextRefreshToken,
+          user: { id: user.id, agentId: user.agentId, email: user.email, role: user.role },
+        },
+      };
+    });
+  }
+
+  /** Ends the session of this refresh token (an unknown or old token is fine). */
+  async logout(refreshToken: string) {
+    let sid: string | undefined;
+
+    try {
+      sid = this.jwtService.verifyRefresh(refreshToken).sid;
+    } catch {
+      sid = undefined;
+    }
+
+    if (sid) {
+      await this.repository.revokeSession(sid);
+    }
+
+    return { success: true, message: "Logged out." };
+  }
+
+  /**
+   * Sends the signup OTP again (new code, same email). At most one per
+   * minute and 5 in an hour per account.
+   */
+  async resendOtp(agentId: string) {
+    return withTransaction(async (tx) => {
+      const repository = new AuthRepository(tx);
+      const user = await repository.findUserByAgentId(agentId);
+
+      if (!user) {
+        throw new NotFoundError("User not found.");
+      }
+
+      if (user.status !== UserStatus.PENDING) {
+        throw new ConflictError("Account already exists. Please login.");
+      }
+
+      const last = await repository.findLatestSignupOtp(user.id);
+      const now = Date.now();
+
+      if (last) {
+        const wait = Math.ceil((last.createdAt.getTime() + RESEND_WAIT_MS - now) / 1000);
+
+        if (wait > 0) {
+          throw new ConflictError(`Please wait ${wait} second${wait === 1 ? "" : "s"} before asking for a new OTP.`);
+        }
+
+        if (last.resendCount >= RESEND_MAX && now - last.createdAt.getTime() < RESEND_WINDOW_MS) {
+          throw new ConflictError("Too many OTPs sent. Please try again in an hour.");
+        }
+      }
+
+      const resendCount =
+        last && now - last.createdAt.getTime() < RESEND_WINDOW_MS ? last.resendCount + 1 : 0;
+      const otpCode = this.otpService.generate();
+      const expiresAt = this.otpService.getExpiry();
+      const email = last?.email ?? user.email;
+
+      await repository.deleteUnusedOtps(user.id);
+      await repository.createOtp({
+        userId: user.id,
+        otpCode,
+        purpose: OtpPurpose.SIGNUP,
+        email,
+        phone: last?.phone ?? undefined,
+        expiresAt,
+        resendCount,
+      });
+
+      await this.sendSignupOtp(email, otpCode);
+
+      return {
+        success: true,
+        message: "OTP sent again.",
+        data: { expiresAt, resendAvailableAt: new Date(now + RESEND_WAIT_MS) },
       };
     });
   }

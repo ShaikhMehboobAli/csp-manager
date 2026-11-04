@@ -185,7 +185,9 @@ export default class SubscriptionRepository {
         status: "ACTIVE",
       },
       include: {
-        plan: true,
+        // Features too, so the app gates screens without a second call
+        // (a plan deactivated after purchase isn't in the public list).
+        plan: { include: { features: { include: { feature: true } } } },
         payments: {
           orderBy: {
             createdAt: "desc",

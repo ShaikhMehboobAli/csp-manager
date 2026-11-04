@@ -1,3 +1,4 @@
+import ReceiptFieldsSettingsService from "../../settings/receipt-fields-settings.service";
 import { PrismaDb } from "../../../core/database/prisma.types";
 
 import MachineAuthenticationService from "./machine-auth.service";
@@ -52,7 +53,7 @@ export default class MachineHeartbeatService {
       lastTransactionAt: input.lastTransactionAt,
     });
 
-    const [{ plan, features }, watcher, desktop, cash] = await Promise.all([
+    const [{ plan, features }, watcher, desktop, cash, receiptFields] = await Promise.all([
       new SubscriptionEntitlementService(this.db).getPlanEntitlements(
         authenticated.subscription.planId,
       ),
@@ -63,6 +64,7 @@ export default class MachineHeartbeatService {
       new CashService(this.db).getMachineCash(
         authenticated.machine.currentAgentId,
       ),
+      new ReceiptFieldsSettingsService(this.db).allowed(),
     ]);
 
     return {
@@ -84,6 +86,8 @@ export default class MachineHeartbeatService {
       graceEndsAt: authenticated.subscription.graceEndsAt,
       features: features.map((feature) => feature.code),
       cash,
+      // Optional receipt fields the desktop may send (save in machineConfig).
+      receiptFields: { allowed: receiptFields },
     };
   }
 }

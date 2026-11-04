@@ -3,7 +3,7 @@
 **Audience:** the React Native team building the CSP Manager mobile app for **BC** and **CSP** users.
 **Not covered here:** the Super Admin console (React / Next.js) → `docs/admin-web-kt.md`; the Windows desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api` (Express + Prisma + PostgreSQL).
-**Last updated:** 2026-11-02 (rev 15)
+**Last updated:** 2026-11-04 (rev 24)
 
 > Describes the backend once PRs #3–#8 are merged into `development`. Where an older build behaves differently it says so.
 
@@ -15,6 +15,8 @@
 2. App architecture (recommended stack)
 3. API conventions (client, errors, auth header)
 4. Roles and navigation
+4A. **Full flow by role (start here)**: CSP and BC, step by step
+4B. **Every API the app uses, by role**: one table per area, plus what each tab calls
 5. Auth: signup, OTP, login, session
 6. Plans, subscription and payment
 7. Paywall and feature gating
@@ -25,12 +27,14 @@
 12. Machines
 13. Transactions (receipts)
 13A. Cash management (CSP + KOs)
+13B. Commission (CSP)
+13C. Team today (CSP)
 14. Reports
 15. Metrics (manual entries)
 16. CSP visits (photo upload)
 17. File downloads (Excel)
 18. Dates, money and formatting
-19. Known backend gaps
+19. Known backend gaps (19.1 requirements from the mobile app, 19.2 endpoints for the v2 screens)
 20. Changelog
 
 ---
@@ -78,7 +82,7 @@ Config per environment: `API_BASE_URL` (HTTPS in production), `APP_ENV`. Use `re
 **Every request:** `Content-Type: application/json`; authenticated calls add `Authorization: Bearer <accessToken>`.
 
 **Success:** `{ "success": true, "message": "…", "data": … }` (status 200, 201 or 202; check `success`).
-**Error:** `{ "success": false, "message": "…" }`. Exactly one message; show it as-is (they're user-readable). There are no error codes, so match on HTTP status, and on the exact message where this doc says so.
+**Error:** `{ "success": false, "code": "…", "message": "…" }`. Show `message` as-is (it's user-readable). Decide on **`code`** (stable, e.g. `VALIDATION_FAILED`, `PLAN_NO_CASH_MANAGEMENT`, `INSUFFICIENT_CASH_IN_ACCOUNT`, `RATE_LIMITED`, `NOT_FOUND`); it doesn't change when a message is reworded. Codes the app meets most: `VALIDATION_FAILED` (400, field error), `TOKEN_EXPIRED` / `TOKEN_INVALID` / `TOKEN_REQUIRED` (401 → refresh, §5.3), `REFRESH_TOKEN_INVALID` (401 on refresh → Login), `ACCOUNT_NOT_VERIFIED` (→ OTP screen), `INVALID_CREDENTIALS`, `ACCOUNT_EXISTS`, `OTP_INVALID` / `OTP_EXPIRED` / `OTP_ATTEMPTS_EXCEEDED` / `OTP_NOT_FOUND` / `OTP_RESEND_TOO_SOON` / `OTP_RESEND_LIMIT`, the subscription codes `SUBSCRIPTION_NONE` / `SUBSCRIPTION_EXPIRED` / `SUBSCRIPTION_SUSPENDED` / `SUBSCRIPTION_CANCELLED` / `SUBSCRIPTION_PENDING` / `SUBSCRIPTION_NOT_STARTED` (403 → Paywall), `PLAN_FEATURE_MISSING` (403 → upgrade prompt), `UNAUTHORIZED` (401), `FORBIDDEN` (403; subscription messages → Paywall), `PLAN_NO_CASH_MANAGEMENT` (403 → upgrade prompt), `NOT_FOUND` (404), `CONFLICT` and the specific 409 codes (`REQUEST_ALREADY_REVIEWED`, `LABEL_NAME_TAKEN`, …), `RATE_LIMITED` (429), `INTERNAL_ERROR` (500). Where no specific code fits, `code` is the status name.
 
 | Status | Meaning | App behaviour |
 |---|---|---|
@@ -108,9 +112,10 @@ api.interceptors.response.use(
   async (error) => {
     const status = error.response?.status;
     const message = error.response?.data?.message ?? "Network error. Please try again.";
+    const code = error.response?.data?.code ?? "NETWORK";
     if (status === 401) await session.expire();               // clear + navigate to Login
-    if (status === 403 && SUBSCRIPTION_MESSAGES.has(message)) paywall.open(message);
-    return Promise.reject(new ApiError(status, message));
+    if (status === 403 && code.startsWith("SUBSCRIPTION_")) paywall.open(message);
+    return Promise.reject(new ApiError(status, code, message));
   },
 );
 ```
@@ -138,12 +143,365 @@ api.interceptors.response.use(
 | Tab | Screens | APIs |
 |---|---|---|
 | Home | dashboard + CSP summary table, CSP monthly detail | §11 |
-| CSPs | CSP list (agents), add CSP, link CSP (₹799), link requests | §9, §10 |
+| CSPs | CSP list (agents); add CSP (₹199 / ₹399 machine plans only); link CSP + link requests (₹799 only) | §9, §10 |
 | Machines | machine monitoring | §12 |
 | Reports | summary, export, transactions | §13, §14 |
 | More | subscription & payments, activation codes (hidden on ₹799), CSP visits, metric entries, profile | §6, §8, §15, §16 |
 
 Show/hide by plan: read the current plan's features (section 7).
+
+## 4A. Full flow by role (start here)
+
+This is the whole app in the order a user meets it, for a **CSP** and for a **BC**. Each step names the screen, the calls, and what to show. The sections after this one have every field and error.
+
+### 4A.1 Every launch (both roles)
+
+```
+App start
+ ├─ token in secure storage and not expired (decode `exp`)?
+ │    no  → Login (prefill the last agentId)                                   §5
+ │    yes → GET /subscriptions/current                                         §6
+ │            data = null or status not ACTIVE → Plans / Paywall                §6, §7
+ │            ACTIVE → features = current.plan.features[].code              §7
+ │                     → open CspTabs or BcTabs (by user.role)                  §4
+ └─ any call: 401 → Login ("Session expired"); 403 with a subscription message → Paywall;
+    403 `PLAN_NO_CASH_MANAGEMENT` / "does not include this feature" → upgrade prompt
+```
+
+- Keep `features` and the current subscription in one store (React Query `["subscription"]`); refetch on app resume, after a payment, and when a 403 subscription message comes back.
+- Decide on the error **`code`** (§3), show `message`.
+- Rate limits (§3): never retry in a loop.
+
+### 4A.2 What each plan unlocks
+
+**CSP plans** (price per machine per month; the CSP picks the number of machines: its own PC + its KOs' PCs):
+
+| Screen / action | `CSP_AUTOMATION` ₹250 | `CSP_AUTOMATION_CASH_MANAGEMENT` ₹450 | `CSP_COMPLETE` ₹550 |
+|---|---|---|---|
+| Dashboard, machines, transactions, reports, exports | yes | yes | yes |
+| Activation codes (one per machine), KOs | yes | yes | yes |
+| Cash: float cards, denominations, Cash tab (pool, settle, adjust, KO settlements, requests, labels, dues, day closes, tasks) | **no** (fields come back `null`, cash calls 403 `PLAN_NO_CASH_MANAGEMENT`): show "Upgrade to see cash" | yes | yes |
+| `MOBILE_TRACKING` | — | — | reserved (nothing to build) |
+
+**BC plans:**
+
+| Screen / action | `BC_BASIC` ₹199 (1 machine) | `BC_PRO` ₹399 (5 machines) | `BC_CSP_LINK` ₹799 (0 machines) |
+|---|---|---|---|
+| Add CSPs (+ KOs) it manages (`POST /agents/csp`) | yes | yes | **no**: 403 `PLAN_LINK_ONLY` (hide "Add CSP") |
+| Activation codes for its CSPs / KOs | yes | yes | **no**: "This plan doesn't include machine activations" |
+| Link CSPs that pay for themselves (search + request, admin approves) | no | no | **yes** (`CSP_LINKING`) |
+| Dashboard (with CSP summary + monthly detail), machines, transactions, reports | yes | yes | yes (linked CSPs only while their own plan is active) |
+| Cash (read-only, per CSP) | yes | yes | yes |
+| Metric entries, CSP visits | yes | yes | yes |
+
+### 4A.3 CSP flow
+
+**A. Sign up and log in** (§5)
+
+```
+[Welcome] → [Sign up: CSP]
+   name, agentId (bank-issued), email, phone, address, password ×2,
+   cashInHand, cashInAccount, cspLimit   (cash in hand + cash in account must equal the limit)
+   → POST /auth/signup                         201 → [OTP]  (409 "Account already exists" → Login)
+[OTP] 6 digits, 10 min, 5 tries → POST /auth/verify-otp   ("Resend" = POST /auth/signup again)
+[Login] agentId + password → POST /auth/login → save accessToken, refreshToken, user
+```
+
+The three cash fields open the CSP's cash pool (§13A): they're the starting point of cash management, so validate them before sending.
+
+**B. Choose a plan and pay** (§6)
+
+```
+GET /subscriptions/current → null → [Plans] GET /subscriptions/plans?ownerType=CSP
+[Plan card] → cycle → machines stepper (1–100; total = price × machines)
+  → [Pay]: new Idempotency-Key (UUID), saved with the attempt
+  → POST /payments/create-order { planId, billingCycle, machineCount }     → payment PENDING
+  → (Razorpay later; today) POST /payments/verify { paymentId, gatewayTransactionId }
+  → GET /subscriptions/current → ACTIVE → reload features → [Home]
+```
+
+Retries, timeouts and "payment being confirmed" polling: §6. Payments list: `GET /payments/history`, detail `GET /payments/:paymentId`. Plan history: `GET /subscriptions/history`.
+
+**C. Set up KOs and machines** (§8, §9)
+
+```
+[More → KOs] → [Add KO] { agentId, name, mobile?, email?, address?, openingCash }
+   → POST /agents/ko   (openingCash comes out of the CSP's cash in account; 400 when it can't)
+[More → Activation codes] GET /activations   (one per machine bought)
+   → [Assign] pick the CSP itself or a KO → POST /activations/assign → modal: code + password (shown once; Copy / Share)
+On the PC: the operator types agentId + code + password into the desktop app and counts the drawer → PC appears in Machines
+```
+
+Replace a PC or give a code to someone else: **Revoke request** (super admin approves; §8). A Windows reinstall needs nothing: the same PC re-activates with the same code.
+
+**D. Every day** (§11–§14)
+
+| Tab | Screen | Calls |
+|---|---|---|
+| Home | today's numbers, services tiles, status, recent transactions, float / cash cards | `GET /dashboard/summary` (refetch on focus + every 60 s), charts `GET /dashboard/analytics?groupBy=` |
+| Home → pick an agent | the CSP or one KO | same calls with `agentId` |
+| Machines | list (online dot), detail, sessions, SBI activity, rename / watcher switch | `GET /machines/list`, `/machines/:id`, `/analytics`, `/activity-sessions`, `/heartbeat`, `PATCH /machines/:id` |
+| Transactions | filters (agents, types, categories, period), detail, export | `GET /receipts`, `/receipts/stats`, `/receipts/:receiptId`, `/receipts/export` (§17) |
+| Reports | period chips, one row per CSP (+ KOs), export | `GET /reports/summary`, `/reports/export` |
+
+**E. Cash management** (only with `CASH_MANAGEMENT`; §13A)
+
+```
+[Cash] GET /cash-management                     → limit, cash in account, in bank, left in bank, other cash,
+                                                   extra cash held by dues, each agent's cash in hand + drawer,
+                                                   badges: pendingRequests, openSettlements
+  ├─ [Settle] (CSP's own direct move)            POST /cash-management/transactions { type: SETTLEMENT, … } + Idempotency-Key
+  ├─ [Adjust] (corrections, raise limit, set drawer, clear left in bank / other cash)
+  │                                              POST /cash-management/transactions { type: ADJUSTMENT, …, remarks }
+  ├─ [Requests] KO asks to correct its cash      GET /cash-management/requests → POST /requests/:id/review { APPROVE | REJECT }
+  ├─ [Settlements] the KOs' own (informed only)  GET /cash-management/settlements
+  ├─ [Ledger] audit, filters                     GET /cash-management/ledger   ("To fix" = types=RECEIPT_NOT_APPLIED)
+  ├─ [Balance due] per KO                        GET /cash-management/dues?status=OPEN|CLOSED
+  ├─ [Day closes] today's state + history        GET /cash-management/day-closes
+  ├─ [Tasks] per KO; give / edit / delete own    GET|POST /cash-management/tasks, PATCH|DELETE /tasks/:id
+  └─ [Settings → Labels] for KOs' custom transactions   GET|POST /cash-management/labels, PATCH /labels/:id
+```
+
+A KO does its own cash work on the desktop (settlements, custom transactions, dues, exchange, day close, tasks); the CSP sees all of it here. Push notifications for these aren't built yet (pre-production checklist 2.16): refetch on focus and pull-to-refresh.
+
+**F. Renew, change, expire** (§6, §7)
+
+- Same plan and machines while active → renewal (end date extends). Different machines or plan → new subscription now; activated PCs carry over up to the new count.
+- Show "Renews on `endDate`" on More → Subscription. After `endDate` every data call returns 403 `Your subscription has expired.` → Paywall; the desktop PCs stop too.
+
+### 4A.4 BC flow
+
+**A. Sign up and log in** (§5): same as the CSP without the three cash fields (`accountType: "BC"`).
+
+**B. Choose a plan and pay** (§6): `GET /subscriptions/plans?ownerType=BC`; BC plans have a fixed machine count, so **no machine stepper and no `machineCount`** (400 `Machine count can only be chosen for CSP plans.`). Same Idempotency-Key, verify and polling rules.
+
+**C1. Machine plan (`BC_BASIC` / `BC_PRO`, the legacy plans): CSPs the BC manages** (§9, §8)
+
+The BC creates its CSPs (with their KOs) and gives them machines: it assigns the activation codes of **its** subscription to them. Those CSPs still need **their own** CSP subscription to use the app (4A.5).
+
+```
+[CSPs] GET /agents?type=CSP
+ → [Add CSP] { agentId, name, …, cashLimit, openingCash, openingCashInAccount, kos?: [{ agentId, name, openingCash }] }
+      POST /agents/csp
+        201 → new CSP (+ KOs) created; its cash pool opened from the three cash values
+        202 → the ID already exists: a link request went to the super admin → open [Link requests] (C2)
+ → [CSP detail] edit / delete (PATCH / DELETE /agents/:agentId), its KOs (GET /agents?type=KO&parentAgentId=)
+[Activation codes] GET /activations → [Assign] to any CSP or KO of this BC → code + password modal
+```
+
+**C2. ₹799 plan (`BC_CSP_LINK`): link CSPs that pay for themselves** (§10)
+
+Linking only: this plan **can't create CSPs or KOs** (`POST /agents/csp` → 403 `PLAN_LINK_ONLY` `Your plan links CSPs that have their own subscription; it can't create CSPs or KOs. Use Link CSP instead.`) and has no activation codes. Show "Link CSP" instead of "Add CSP".
+
+```
+[Link CSP] search (≥ 2 chars, debounce 300 ms) GET /bc-links/csps/search?search=
+   → row: Linked / Request pending / [Send link request] → POST /bc-links/requests { cspAgentId, remarks? }
+[Link requests] GET /bc-links/requests?status=  → PENDING → super admin approves / rejects; BC can cancel
+   approved → the CSP and all its KOs appear in every BC screen (view only: no edit / delete)
+```
+
+A linked CSP drops out of the BC's data while its own plan has lapsed, and comes back when it renews.
+
+**D. Every day** (§11–§16)
+
+| Tab | Screen | Calls |
+|---|---|---|
+| Home | totals for all CSPs, machine monitoring, CSP summary table (transactions + social security) | `GET /dashboard/summary`, `/dashboard/analytics` |
+| Home → CSP | one CSP (+ its KOs), month-by-day table | `GET /dashboard/summary?agentId=`, `GET /dashboard/csp/:agentId/detail?section=transaction\|socialSecurity&month=YYYY-MM` |
+| CSPs | list, detail, KOs, add / link (C1 / C2) | `/agents`, `/bc-links/*` |
+| Machines | all PCs of its CSPs and KOs | `GET /machines/list`, detail calls as for the CSP |
+| Reports | one row per CSP (with its KOs), export; transactions with filters | `/reports/*`, `/receipts/*` |
+| Cash (read-only) | a CSP's pool, ledger, dues, day closes, tasks, settlements | the §13A GETs with **`agentId` = the CSP (or a KO)** (400 without it) |
+| More → Metrics | daily manual values per CSP | `GET /metrics`, `GET|POST /metrics/values`, `PATCH /metrics/values/:id` (§15) |
+| More → CSP visits | one visit per CSP per month: photo + ≥ 5 reviews | `POST /uploads/presigned-url` → S3 → `POST /csp-visits`; `GET /csp-visits/csp/:cspAgentId` (§16) |
+
+**E. Renew, change, expire:** as for the CSP. Moving a machine plan to `BC_CSP_LINK` (0 machines) stops its PCs: warn before paying.
+
+### 4A.5 A CSP that a BC created
+
+A CSP made by a BC (C1) can also get its own login: it signs up with the same `agentId` (signup creates the user for the existing agent). **Its app content needs its own CSP subscription** (product rule): until it buys a CSP plan it sees the Paywall, even though its PCs run on the activation codes the BC assigned from the BC's plan. The cash values it enters at signup replace the BC's opening values only while nothing has been recorded in its pool (`openingFloat: UPDATED`); otherwise they're kept (`KEPT`).
+
+### 4A.6 Build order (suggested)
+
+1. API client, error handling by `code`, secure session (§2, §3, §5).
+2. Signup / OTP / login for both roles (§5).
+3. Plans, checkout, subscription and paywall, feature store (§6, §7).
+4. CSP: KOs, activation codes, revoke requests (§8, §9).
+5. Dashboard, machines, transactions, reports, exports (§11–§14, §17).
+6. BC: add CSP, link CSP, link requests (§9, §10); metrics, CSP visits (§15, §16).
+7. Cash management screens (§13A).
+
+## 4B. Every API the app uses, by role
+
+All paths are under `/api/v1`. **CSP** / **BC** columns: ✓ = allowed, — = not for this role (403), *own* = only its own records, *read* = view only.
+**Sub** column: what the server checks before answering:
+- *public*: no token;
+- *login*: any valid token;
+- *active*: an active subscription (403 subscription message → Paywall, §7);
+- *cash*: active, plus `CASH_MANAGEMENT` for CSP plans (403 `PLAN_NO_CASH_MANAGEMENT`; BCs always pass);
+- *machines*: a BC machine plan (₹199 / ₹399; 403 `PLAN_LINK_ONLY` on ₹799);
+- *link*: the ₹799 plan's `CSP_LINKING`.
+
+The last column points to the section with every field and error. Super-admin-only routes (pricing, approvals, metric definitions) and desktop routes (`/machines/activate`, `/machines/runtime/*`, `/receipts/upload*`) are not for the app.
+
+### Auth (§5)
+
+| Method | Path | CSP | BC | Sub | Body → answer | § |
+|---|---|---|---|---|---|---|
+| POST | `/auth/check-agent` | ✓ | ✓ | public | `{ agentId }` → 200 exists / 404 / 403 KO | 5.1 |
+| POST | `/auth/signup` | ✓ | ✓ | public | `{ accountType, name, agentId, email, phone, address, password, confirmPassword }` + CSP: `cashInHand, cashInAccount, cspLimit` → 201 `{ userId, openingFloat }` | 5.1 |
+| POST | `/auth/verify-otp` | ✓ | ✓ | public | `{ agentId, otp }` → 200 | 5.1 |
+| POST | `/auth/login` | ✓ | ✓ | public | `{ agentId, password }` → `{ accessToken, refreshToken, user: { id, agentId, email, role } }` | 5.1 |
+| POST | `/auth/resend-otp` | ✓ | ✓ | public | `{ agentId }` → `{ expiresAt, resendAvailableAt }` (1 per minute, 5 per hour) | 5.2 |
+| POST | `/auth/refresh` | ✓ | ✓ | public | `{ refreshToken }` → `{ accessToken, refreshToken (new), user }` | 5.2 |
+| POST | `/auth/logout` | ✓ | ✓ | public | `{ refreshToken }` → 200 (ends that session) | 5.2 |
+
+### Plans, subscription, payment (§6)
+
+| Method | Path | CSP | BC | Sub | Body → answer | § |
+|---|---|---|---|---|---|---|
+| GET | `/subscriptions/plans?ownerType=CSP\|BC` | ✓ | ✓ | public | → plans `{ id, code, name, machineLimit, pricing[], features[] }` | 6 |
+| GET | `/subscriptions/current` | ✓ | ✓ | login | → current subscription or `null` | 6 |
+| GET | `/subscriptions/history` | ✓ | ✓ | login | → all subscriptions | 6 |
+| POST | `/payments/create-order` + `Idempotency-Key` | ✓ (`machineCount` 1–100) | ✓ (no `machineCount`) | login | `{ planId, billingCycle, machineCount? }` → payment `PENDING` | 6 |
+| POST | `/payments/verify` | ✓ | ✓ | login | `{ paymentId, gatewayTransactionId, transactionReference? }` → subscription created / extended | 6 |
+| GET | `/payments/history` | *own* | *own* | login | → payments | 6 |
+| GET | `/payments/:paymentId` | *own* | *own* | login | → one payment (poll while `PENDING`) | 6 |
+
+### Activation codes (§8)
+
+| Method | Path | CSP | BC | Sub | Body → answer | § |
+|---|---|---|---|---|---|---|
+| GET | `/activations` | *own* | *own* (none on ₹799) | active | → activations `{ id, activationCode, status, assignedAgentId, machine, pendingRevokeRequest, … }` | 8 |
+| GET | `/activations/:activationId` | *own* | *own* | active | → one, with `canRegenerate` | 8 |
+| POST | `/activations/assign` | to itself or its KOs | to its CSPs / KOs | active | `{ activationId, assignedAgentId }` → `{ activationCode, activationPassword }` (once) | 8 |
+| POST | `/activations/:activationId/regenerate-password` | *own* | *own* | active | → new password (once; only `NOT_ACTIVATED`) | 8 |
+| POST | `/activations/:activationId/revoke-requests` | *own* | *own* | active | `{ reason? }` → 201 request `PENDING` (super admin decides) | 8 |
+| GET | `/activations/revoke-requests?status=&activationId=&page=&limit=` | *own* | *own* | active | → requests | 8 |
+| GET | `/activations/revoke-requests/:requestId` | *own* | *own* | active | → one request | 8 |
+| POST | `/activations/revoke-requests/:requestId/cancel` | *own* | *own* | active | → `CANCELLED` (pending only) | 8 |
+
+### Agents: CSPs and KOs (§9)
+
+| Method | Path | CSP | BC | Sub | Body → answer | § |
+|---|---|---|---|---|---|---|
+| GET | `/agents?type=CSP\|KO&parentAgentId=&page=&limit=` | itself + its KOs | its CSPs + KOs | login | → agents | 9 |
+| GET | `/agents/:agentId` | in scope | in scope | login | → agent | 9 |
+| POST | `/agents/ko` | ✓ | — | login | `{ agentId, name, mobile?, email?, address?, openingCash }` → 201 KO (its cash taken from the CSP's cash in account) | 9 |
+| POST | `/agents/csp` | — | ✓ | **machines** | `{ agentId, name, …, cashLimit, openingCash, openingCashInAccount, kos?: [{ agentId, name, openingCash }] }` → 201 created / 202 link request sent | 9 |
+| PATCH | `/agents/:agentId` | itself + its KOs | itself + its CSPs / KOs (not ₹799-linked ones) | login | `{ name?, mobile?, email?, address?, cashLimit?, openingCash?, openingCashInAccount?, status? }` | 9 |
+| DELETE | `/agents/:agentId` | its KOs | its CSPs (KOs first) / KOs | login | soft delete (never your own account) | 9 |
+
+### BC ₹799: link CSPs (§10)
+
+| Method | Path | CSP | BC | Sub | Body → answer | § |
+|---|---|---|---|---|---|---|
+| GET | `/bc-links/csps/search?search=` | — | ✓ | **link** | → up to 20 subscribed CSPs `{ agentId, name, koCount, linkStatus, hasPendingRequest }` | 10 |
+| POST | `/bc-links/requests` | — | ✓ | **link** | `{ cspAgentId, remarks? }` → 201 request `PENDING` | 10 |
+| GET | `/bc-links/requests?status=&isConflict=&cspAgentId=&page=&limit=` | — | *own* | **link** | → requests | 10 |
+| GET | `/bc-links/requests/:requestId` | — | *own* | **link** | → one request | 10 |
+| POST | `/bc-links/requests/:requestId/cancel` | — | *own* | **link** | → `CANCELLED` (pending only) | 10 |
+
+### Dashboard (§11)
+
+| Method | Path | CSP | BC | Sub | Query → answer | § |
+|---|---|---|---|---|---|---|
+| GET | `/dashboard/summary` | ✓ | ✓ | active | `from, to, agentId, includeKos, machineId, receiptType, transactionCategory, search` → overview, services, cash, status, activations, recent, subscription (+ CSP: `float`, `machine`; BC: `machineMonitoring`, `cspSummary`) | 11 |
+| GET | `/dashboard/analytics` | ✓ | ✓ | active | same + `groupBy=hour\|day\|week\|month\|year` → trends | 11 |
+| GET | `/dashboard/csp/:agentId/detail?section=transaction\|socialSecurity&month=YYYY-MM` | (itself) | its CSPs | active | → day-by-day table for the month | 11 |
+
+### Machines (§12)
+
+| Method | Path | CSP | BC | Sub | Body / query → answer | § |
+|---|---|---|---|---|---|---|
+| GET | `/machines/list` | its PCs + KOs' | all its CSPs' / KOs' | active | `page, limit, search, agentId, agentType, machineStatus, connectionStatus, watcherEnabled, sortBy, sortOrder, from, to` → items | 12 |
+| GET | `/machines/:machineId` | in scope | in scope | active | → detail | 12 |
+| GET | `/machines/:machineId/analytics` | in scope | in scope | active | → sessions, daily online hours | 12 |
+| GET | `/machines/:machineId/activity-sessions` | in scope | in scope | active | → SBI login activity | 12 |
+| GET | `/machines/:machineId/heartbeat` | in scope | in scope | active | → live status | 12 |
+| PATCH | `/machines/:machineId` | in scope | in scope | active | `{ machineName?, watcherEnabled? }` | 12 |
+
+### Transactions and reports (§13, §14, §17)
+
+| Method | Path | CSP | BC | Sub | Query → answer | § |
+|---|---|---|---|---|---|---|
+| GET | `/receipts` | ✓ | ✓ | active | `page, limit, from, to, period, machineId, agentIds, receiptTypes, transactionCategories, status, search, sortBy, sortOrder` → items | 13 |
+| GET | `/receipts/stats` | ✓ | ✓ | active | same filters → `{ total, success, failed, totalAmount, commissionAmount }` | 13 |
+| GET | `/receipts/fields` | ✓ | ✓ | login | → `[{ field, label, personal, allowed }]`: optional fields and their display names | 13 |
+| GET | `/receipts/:receiptId?agentId=` | in scope | in scope | active | → detail (+ `cashDenomination` with `CASH_MANAGEMENT`); send `agentId` (receipt numbers are unique per agent) | 13 |
+| GET | `/receipts/export` | ✓ | ✓ | active | same filters → `.xlsx` | 13, 17 |
+| GET | `/reports/summary` | ✓ | ✓ | active | `period, from, to, cspAgentId, agentId` → one row per CSP (with KOs) | 14 |
+| GET | `/reports/export` | ✓ | ✓ | active | same → `.xlsx` | 14, 17 |
+
+### Cash management (§13A)
+
+BCs read a CSP's cash with `agentId` = the CSP (or one of its KOs); without it → 400. A CSP reads its own (optional `agentId` = one of its KOs).
+
+| Method | Path | CSP | BC | Sub | Body / query → answer | § |
+|---|---|---|---|---|---|---|
+| GET | `/cash-management?agentId=` | ✓ | *read* | cash | → pool: limit, cash in account, in bank, left in bank, other cash, extra cash held by dues, each agent's cash in hand + drawer, `pendingRequests`, `openSettlements` | 13A |
+| POST | `/cash-management/transactions` + `Idempotency-Key` | ✓ | — | cash | `{ type: SETTLEMENT, agentId, amount, direction }` or `{ type: ADJUSTMENT, cashLimit?, cashInAccount?, cashLeftInBank?, cashOther?, agents?, remarks }` → pool | 13A |
+| GET | `/cash-management/ledger` | ✓ | *read* | cash | `agentId, agentIds, types, period, from, to, page, limit` → audit entries | 13A |
+| GET | `/cash-management/settlements` | ✓ | *read* | cash | `agentId, agentIds, status, period, from, to, page, limit` → the KOs' settlement steps | 13A |
+| GET | `/cash-management/requests` | ✓ | *read* | cash | `status, agentId, page, limit` → KO correction requests | 13A |
+| POST | `/cash-management/requests/:requestId/review` | ✓ | — | cash | `{ action: APPROVE\|REJECT, remarks? }` | 13A |
+| GET | `/cash-management/labels` | ✓ | *read* | cash | → labels | 13A |
+| POST | `/cash-management/labels` | ✓ | — | cash | `{ name, direction: IN\|OUT\|BOTH }` | 13A |
+| PATCH | `/cash-management/labels/:labelId` | ✓ | — | cash | `{ name?, direction?, active? }` | 13A |
+| GET | `/cash-management/dues` | ✓ | *read* | cash | `agentId, status=OPEN\|CLOSED` → dues + totals | 13A |
+| GET | `/cash-management/dues/:dueId` | ✓ | *read* | cash | `agentId` → the due + `events` (history) | 13A |
+| GET | `/cash-management/day-closes` | ✓ | *read* | cash | `agentId, from, to` → today's state per agent + closes | 13A |
+| GET | `/cash-management/tasks` | ✓ | *read* | cash | `agentId, status=OPEN\|DONE\|ALL` → tasks | 13A |
+| POST | `/cash-management/tasks` | ✓ | — | cash | `{ agentId, title, note?, dueAt? }` → task for a KO | 13A |
+| PATCH | `/cash-management/tasks/:taskId` | its own tasks | — | cash | `{ title?, note?, dueAt?, done? }` | 13A |
+| DELETE | `/cash-management/tasks/:taskId` | its own tasks | — | cash | → `Task deleted.` | 13A |
+
+### Commission and team (§13B, §13C)
+
+| Method | Path | CSP | BC | Sub | Query / body → answer | § |
+|---|---|---|---|---|---|---|
+| GET | `/commission/summary` | ✓ (its + its KOs') | its CSPs | active | `period=TODAY\|WEEK\|MONTH, month=YYYY-MM, agentId` → total, groups, rows per service, byAgent | 13B |
+| GET | `/commission/months` | ✓ | its CSPs | active | `count, agentId` → monthly totals | 13B |
+| GET | `/commission/rates` | ✓ | `agentId` required | active | → live rate per service | 13B |
+| GET | `/team/today` | ✓ | its CSPs | active | `date, agentId` → per agent: online, first login, online / active time, late, early | 13C |
+| GET / PATCH | `/team/settings` | ✓ | — | login | `{ workdayStart, workdayEnd }` | 13C |
+
+### Metrics, CSP visits, uploads (§15, §16)
+
+| Method | Path | CSP | BC | Sub | Body → answer | § |
+|---|---|---|---|---|---|---|
+| GET | `/metrics` | ✓ | ✓ | login | → metric definitions | 15 |
+| GET | `/metrics/:metricId` | ✓ | ✓ | login | → one definition | 15 |
+| GET | `/metrics/values?agentId=&metricId=&from=&to=` | in scope | in scope | login | → entered values | 15 |
+| POST | `/metrics/values` | — | ✓ | login | `{ metricId, agentId (a CSP), date, value }` | 15 |
+| PATCH | `/metrics/values/:valueId` | — | ✓ | login | `{ value }` | 15 |
+| POST | `/uploads/presigned-url` | (not used) | ✓ | login | `{ fileName, contentType }` → `{ key, uploadUrl, fields }` (S3 POST, 5 min, ≤ 5 MB) | 16 |
+| GET | `/uploads/presigned-url?key=` | (not used) | ✓ (own keys) | login | → signed download URL | 16 |
+| DELETE | `/uploads` | (not used) | ✓ (own keys) | login | `{ key }` (a discarded photo) | 16 |
+| POST | `/csp-visits` | — | ✓ | login | `{ cspAgentId, visitDate, photoUrl: key, latitude?, longitude?, remarks?, customerReviews: [≥ 5] }` (one per CSP per month) | 16 |
+| GET | `/csp-visits/csp/:cspAgentId?from=&to=` | (itself) | its CSPs | login | → visits | 16 |
+| GET | `/csp-visits/:id` | in scope | in scope | login | → visit with a 5-minute photo URL | 16 |
+
+### What each tab calls, in order
+
+| Role | Tab / screen | Calls (first load → actions) |
+|---|---|---|
+| both | launch | `GET /subscriptions/current` → `GET /subscriptions/plans?ownerType=` (features) |
+| both | Plans / Paywall | `GET /subscriptions/plans` → `POST /payments/create-order` → `POST /payments/verify` → `GET /subscriptions/current` |
+| both | More → Subscription | `GET /subscriptions/current`, `GET /subscriptions/history`, `GET /payments/history`, `GET /payments/:id` |
+| both | Home | `GET /dashboard/summary` (+ every 60 s) → `GET /dashboard/analytics?groupBy=` |
+| BC | Home → CSP | `GET /dashboard/summary?agentId=` → `GET /dashboard/csp/:agentId/detail` |
+| both | Machines | `GET /machines/list` → `GET /machines/:id` (+ `/analytics`, `/activity-sessions`, `/heartbeat`) → `PATCH /machines/:id` |
+| both | Transactions | `GET /receipts` + `GET /receipts/stats` → `GET /receipts/:receiptId` → `GET /receipts/export` |
+| both | Reports | `GET /reports/summary` → `GET /reports/export` |
+| CSP | More → KOs | `GET /agents?type=KO` → `POST /agents/ko` → `PATCH` / `DELETE /agents/:agentId` |
+| BC (₹199 / ₹399) | CSPs | `GET /agents?type=CSP` → `POST /agents/csp` → `GET /agents?type=KO&parentAgentId=` → `PATCH` / `DELETE /agents/:agentId` |
+| BC (₹799) | CSPs → Link CSP | `GET /bc-links/csps/search` → `POST /bc-links/requests` → `GET /bc-links/requests` → `POST …/cancel` |
+| CSP, BC (₹199 / ₹399) | Activation codes | `GET /activations` → `POST /activations/assign` → `POST …/regenerate-password` → `POST …/revoke-requests` → `GET /activations/revoke-requests` |
+| CSP (cash plans) | Cash | `GET /cash-management` → settle / adjust `POST /transactions` → `GET /requests` + review → `GET /settlements` → `GET /ledger` → `GET /dues` → `GET /day-closes` → `GET|POST|PATCH|DELETE /tasks` → `GET|POST|PATCH /labels` |
+| BC | CSP → Cash | the same GETs with `agentId` = the CSP |
+| BC | More → Metrics | `GET /metrics` → `GET /metrics/values` → `POST` / `PATCH /metrics/values` |
+| BC | More → CSP visits | `POST /uploads/presigned-url` → S3 POST → `POST /csp-visits` → `GET /csp-visits/csp/:cspAgentId` → `GET /csp-visits/:id` |
 
 ## 5. Auth
 
@@ -198,26 +556,35 @@ Login errors (all **403**, show `message`): `Invalid credentials.` (unknown ID *
 
 Errors: 404 `User not found.`; 403 `Please verify your account first.` (→ OTP screen), `Your account has been blocked.`, `Your account has been suspended.`, `Invalid credentials.`
 
-### 5.2 Planned auth endpoints — PENDING (not built yet)
+### 5.2 Refresh, logout, resend OTP (built, rev 23) and planned auth endpoints
 
-These are agreed but not implemented; the contracts below are proposals and may change. Build the screens behind a feature flag.
+**`POST /auth/refresh`** (public) `{ refreshToken }` → 200 `Session refreshed.` `data: { accessToken, refreshToken, user }`.
+- Every refresh returns a **new** refresh token: store it and drop the old one. The old one stops working.
+- Sending an old (already used) refresh token again is treated as a stolen token: that session is ended and every token of it fails (401 `REFRESH_TOKEN_INVALID`) → Login.
+- 401 `REFRESH_TOKEN_INVALID` (`Invalid refresh token.` / `Refresh token has expired.`) → Login. A blocked or suspended account → 403 `ACCOUNT_BLOCKED` / `ACCOUNT_SUSPENDED` and the session ends.
+- A refresh token lasts **7 days** from its last use (each refresh restarts the 7 days). One session per login, so each phone has its own.
+- Not under the strict `/auth` rate limit (20 / 15 min); the general limit applies.
+
+**`POST /auth/logout`** (public) `{ refreshToken }` → 200 `Logged out.` Ends that session (any token, even an old or invalid one, answers 200). Call it on Logout, then delete the tokens.
+
+**`POST /auth/resend-otp`** (public) `{ agentId }` → 200 `OTP sent again.` `data: { expiresAt, resendAvailableAt }`: a new code to the same email (the old one stops working). Errors: 409 `OTP_RESEND_TOO_SOON` `Please wait N seconds before asking for a new OTP.` (one per minute: use `resendAvailableAt` for the countdown), 409 `OTP_RESEND_LIMIT` `Too many OTPs sent. Please try again in an hour.` (5 per hour), 409 `ACCOUNT_EXISTS` (already verified → Login), 404 `User not found.` Use it for "Send a new code"; signup again is no longer needed.
+
+Still planned (not built; proposals):
 
 | Endpoint (proposed) | Body | Purpose |
 |---|---|---|
-| `POST /auth/resend-otp` | `{ agentId }` | resend the signup OTP (until then: call signup again) |
 | `POST /auth/forgot-password` | `{ agentId }` | email a reset OTP |
 | `POST /auth/reset-password` | `{ agentId, otp, password, confirmPassword }` | set a new password with the OTP |
-| `POST /auth/refresh` | `{ refreshToken }` | new `accessToken` (+ rotated `refreshToken`) |
 | `POST /notifications/devices` / `DELETE /notifications/devices/:token` | `{ token, platform: "ios" \| "android" }` | register/unregister the push token (Expo or FCM, provider TBD) |
 | (no endpoint) activation email | — | assign/regenerate will email the code + password to the agent |
 
-When `/auth/refresh` exists, the 401 interceptor should call it once, retry the request, and log out only if the refresh fails.
+The 401 interceptor (§5.3) calls `/auth/refresh` once, retries the request, and logs out only if the refresh fails.
 
 ### 5.3 Session
 
 - Store `accessToken` and `user` in secure storage. **Don't store the password.**
-- The access token lasts **15 minutes** and **there is no refresh endpoint yet** (gap §19). Until there is one: on 401, show Login prefilled with the `agentId`. Keep the `refreshToken` stored; it'll be used when the endpoint exists.
-- Logout = delete tokens + `queryClient.clear()`. There is no server-side logout call.
+- The access token lasts **15 minutes**. Store `refreshToken` in secure storage too. On 401 (`TOKEN_EXPIRED` / `TOKEN_INVALID`): call `POST /auth/refresh` **once** (one refresh at a time: queue the other requests until it answers), save both new tokens, retry the request. If the refresh fails (401 `REFRESH_TOKEN_INVALID` or 403) → Login prefilled with the `agentId`. You can also refresh shortly before `exp`.
+- Logout = `POST /auth/logout { refreshToken }`, then delete tokens + `queryClient.clear()`.
 - On app start: token present → decode `exp` (e.g. `jwt-decode`); expired → Login.
 
 ## 6. Plans, subscription and payment
@@ -232,7 +599,7 @@ When `/auth/refresh` exists, the 401 interceptor should call it once, retry the 
 | `GET /payments/history`, `GET /payments/:paymentId` | own payments only |
 
 Plan: `{ id, code, name, ownerType, level, machineLimit, pricing: [{ billingCycle, durationDays, price }], features: [{ code, name, description, category }] }` (`price` is a **string**).
-Current subscription: `{ id, subscriptionNumber, status, subscriptionType, machineLimit, amountPaid (string), startDate, endDate, graceEndsAt, plan: { id, code, name, ownerType, level }, latestPayment: { paymentNumber, status, amount, totalAmount, paidAt } }`.
+Current subscription: `{ id, subscriptionNumber, status, subscriptionType, machineLimit, amountPaid (string), startDate, endDate, graceEndsAt, plan: { id, code, name, ownerType, level, features: [{ code, name, description, category }] }, latestPayment: { paymentNumber, status, amount, totalAmount, paidAt } }`.
 `create-order` returns the payment: `{ id, paymentNumber, amount, totalAmount, currency: "INR", status: "PENDING", planId, billingCycle, … }`.
 
 **CSP checkout (per machine):**
@@ -282,7 +649,7 @@ Your subscription has not started yet.
 
 → open the Paywall/Plans screen with that message. (Plans, current subscription, payments and login stay accessible.)
 
-**Features** (`GET /subscriptions/current` → plan code, `GET /subscriptions/plans` → plan features): build a `features: Set<string>` for the current plan and gate UI:
+**Features**: `GET /subscriptions/current` → `plan.features[].code` (rev 23; no second call needed, and it works for a plan deactivated after purchase). Build a `features: Set<string>` and gate UI:
 
 | Feature | UI |
 |---|---|
@@ -291,7 +658,7 @@ Your subscription has not started yet.
 | `DESKTOP_AUTOMATION`, `RECEIPT_SYNC` | informational in the app (they gate the desktop) |
 | `MOBILE_TRACKING` | reserved; nothing to build yet |
 
-`403 Your subscription does not include this feature.` → upgrade prompt.
+`403 Your subscription does not include this feature.` (`PLAN_FEATURE_MISSING`) → upgrade prompt. Branch the Paywall on the `SUBSCRIPTION_*` codes (§3) rather than on the messages above.
 
 ## 8. Activations (machine codes)
 
@@ -352,9 +719,12 @@ super admin rejects  → request REJECTED (reviewRemarks = why); activation unch
 | `PATCH /agents/:agentId` | owner | `{ name?, mobile?, email?, address?, cashLimit?, openingCash?, openingCashInAccount?, status? (ACTIVE\|INACTIVE) }` (opening values don't change a float that is already open) |
 | `DELETE /agents/:agentId` | owner | soft delete |
 
-Agent: `{ id, agentId, name, type, mobile, email, address, bcId, parentAgentId, cashLimit (string\|null; the CSP limit), openingCash (string\|null; opening cash in hand), openingCashInAccount (string\|null; opening cash in account), linkedAt, createdAt, updatedAt }`.
+Agent: `{ id, agentId, name, type, status ("ACTIVE" | "INACTIVE"), mobile, email, address, bcId, parentAgentId, cashLimit (string\|null; the CSP limit), openingCash (string\|null; opening cash in hand), openingCashInAccount (string\|null; opening cash in account), linkedAt, createdAt, updatedAt }`.
 
-**`POST /agents/csp` (BC)** body: `{ agentId, name, mobile?, email?, address?, cashLimit, openingCash, openingCashInAccount, machineCount, kos?: [{ agentId, name, mobile?, email?, address?, openingCash, machineCount }] }`.
+- `GET /agents` and `GET /agents/:agentId` include **inactive** agents for their owner (so an inactive KO can be shown and reactivated with `PATCH { status: "ACTIVE" }`); dashboards, machines and reports still leave inactive agents out.
+- For a **BC** (and the super admin), each CSP also has **`ownSubscription`**: `{ status ("ACTIVE" | "EXPIRED" | "SUSPENDED" | "CANCELLED" | …), endDate, planCode } | null` — the CSP's own latest CSP subscription, `null` when it never bought one. Show "Own plan active" / "No own plan yet" (4A.5). KOs and CSP logins don't get the field.
+
+**`POST /agents/csp` (BC on a machine plan: `BC_BASIC` / `BC_PRO`)**. Needs an active subscription (403 subscription messages, §7). A BC on the ₹799 plan can't use it: 403 `PLAN_LINK_ONLY` (it links CSPs instead, §10). Body: `{ agentId, name, mobile?, email?, address?, cashLimit, openingCash, openingCashInAccount, machineCount, kos?: [{ agentId, name, mobile?, email?, address?, openingCash, machineCount }] }`.
 - **New CSP:** `cashLimit` (CSP limit), `openingCash` (cash in hand) and `openingCashInAccount` (cash in account) are **required** (`CSP limit is required.`, `Cash in hand is required.`, `Cash in account is required.`), and cash in hand + cash in account must equal the limit. They open the CSP's cash pool (§13A). For an **existing** CSP (link request, 202) they're ignored.
 - **KO:** only `openingCash` (its cash in hand), **required** (`Cash in hand is required.`). A KO shares its CSP's limit and cash in account, so `cashLimit` / `openingCashInAccount` sent for a KO are ignored. The KO's cash in hand is taken from the CSP's cash in account: 400 `Not enough cash in account for this KO's cash in hand: …` when it doesn't cover it (nothing is created).
 
@@ -426,7 +796,7 @@ Link request:
 
 `agentId` picks whose numbers to show, inside your scope (else 403):
 - **A KO** → that KO only (single-agent view: `float` + `machine`).
-- **A CSP** → the CSP **and all its KOs** (same as the CSP's own login). A CSP without KOs gets the single-agent view.
+- **A CSP** → the CSP **and all its KOs** (same as the CSP's own login). A CSP without KOs gets the single-agent view. Add **`includeKos=false`** for the CSP's own numbers only (single-agent view; e.g. "your own counter"). Also on `/dashboard/analytics`.
 - **Omitted** → your whole scope (BC: all its CSPs and KOs; CSP: itself + its KOs).
 
 The same rule applies to `GET /dashboard/analytics`, which used to ignore `agentId`.
@@ -485,11 +855,13 @@ Refresh: refetch summary on focus and every 60 s while the Home tab is visible (
 | `GET /machines/:machineId/heartbeat` | live status: `{ connectionStatus, lastHeartbeatAt, watcherVersion, latestWatcherVersion, watcherEnabled, receiptUploadEnabled, subscriptionStatus, heartbeatInterval }` |
 | `PATCH /machines/:machineId` | `{ machineName? (1–100), watcherEnabled? }` |
 
+**Per PC (rev 23):** every list item and the detail have **`pc`**: `{ agent: { agentId, name, type } (the agent working on this PC), machineStatus, connectionStatus, lastHeartbeatAt, lastStartupAt, transaction: { count, amount, success, failed }, services: [{ transactionCategory, count }] }` for **this PC only**, in the requested range (counts follow the daily counts, §11). Use `pc` for a per-PC Machines tab; the other fields below stay the CSP unit's (CSP + KOs).
+
 List item: `{ machine: { machineId, machineCode, machineName, watcherVersion, watcherEnabled, machineStatus, connectionStatus, lastHeartbeatAt, lastStartupAt, lastReceiptCapturedAt, ipAddress, deviceName, osName, osVersion }, agent: { agentId, name, type }, float: {…} | null, transaction: { count, amount, success, failed }, services: [...], children: [...] }`. **Use `item.machine.machineId` for detail calls.**
 
 Detail: `{ machineId, machineCode, machineName, agent, status: { machineStatus, connectionStatus, lastHeartbeatAt, lastStartupAt }, runtime: { isSessionActive, sessionId, startedAt, onlineHours }, cspActivity: { isActive, agentId, activeSince, activeSeconds }, float, watcher: { version, enabled }, device, activity, overview, services, statusSummary, recentTransactions, children: [ per CSP/KO: agent fields + status + machine + transaction + services ] }`.
 
-- `connectionStatus` is `ONLINE` when the last heartbeat is < 180 s old. Show a green/grey dot; refresh the detail every 30–60 s.
+- `connectionStatus` is `ONLINE` when the last heartbeat is ≤ 120 s old (at most one missed heartbeat; was 180 s before rev 24). Show a green/grey dot; refresh the detail every 30–60 s.
 - `cspActivity.isActive` = "CSP is logged in to SBI right now".
 - Turning `watcherEnabled` off stops the desktop's automation and uploads on that PC; confirm first.
 
@@ -508,7 +880,25 @@ At most 100 values per list. For "all agents of a CSP", omit `agentIds` (CSP log
 
 Item: `{ receiptId, receiptType, transactionCategory, status, amount, transactionAt, createdAt, customerName, customerAccount, rrn, stan, agentId, machineCode, machineName }`.
 
-`GET /receipts/:receiptId` (use **`receiptId`**) → `{ …, cashDenomination: { notes500, notes200, notes100, notes50, notes20, notes10, notes5, coins20, coins10, coins5, coins2, coins1 } | null, machine: { machineCode, machineName }, agent: { agentId, name, type } }`. `cashDenomination` is `null` when none was captured or the CSP plan lacks `CASH_MANAGEMENT`.
+**Optional receipt fields (rev 24): build the receipt screen from what comes back.** Which optional fields the desktop may send is decided by the **super admin**, and can change at any time (more fields switched on later, or off again). So receipts differ: an older receipt, or one from a PC that didn't have the field, has fewer fields; a newer one may have more. **Don't hard-code a fixed list of rows.**
+
+- Every receipt detail has **`fields`**: only the optional fields **this** receipt has, in a fixed order, each with its display name:
+
+  ```json
+  "fields": [
+    { "field": "rrn", "label": "RRN", "value": "123456789012" },
+    { "field": "bankName", "label": "Bank name", "value": "SBI" },
+    { "field": "customerName", "label": "Customer name", "value": "Asha" }
+  ]
+  ```
+
+  Render one row per entry (`label`: `value`). When the super admin switches on a new field, it appears here on new receipts with no app change. Money-like values (`balanceAfter`) come as numbers: format them as ₹.
+- The same values are also flat on the detail (`rrn`, `stan`, `terminalId`, `location`, `bankName`, `bankTransactionId`, `bankResponseCode`, `bankResponseMessage`, `balanceAfter`, `customerName`, `customerAccount`; `null` when missing) for screens that need one by name.
+- **`GET /receipts/fields`** (any login) → `[{ field, label, personal, allowed }]`: every optional field, its display name and whether it's switched on now. Use it for filter chips, table / export column headers and an "about this receipt" legend; refetch on app start (it changes rarely).
+- Fields that aren't allowed are never stored, so they can't appear later for that receipt. A receipt keeps the fields it was saved with even if the super admin later switches a field off.
+- **There is no Aadhaar field** (and there won't be): remove `customerAadhaarMasked` from the app. Personal fields (`customerName`, `customerAccount`, `balanceAfter`; `personal: true`) are off by default.
+
+`GET /receipts/:receiptId?agentId=<the receipt's agent>` (use **`receiptId`**, and send `agentId` from the list item: receipt numbers are unique per agent, so two agents can have the same one; outside your scope → 403) → `{ …, cashDenomination: { notes500, notes200, notes100, notes50, notes20, notes10, notes5, coins20, coins10, coins5, coins2, coins1 } | null, machine: { machineCode, machineName }, agent: { agentId, name, type } }`. `cashDenomination` is `null` when none was captured or the CSP plan lacks `CASH_MANAGEMENT`.
 
 `GET /receipts/stats` (same filters) → `{ total, success, failed, totalAmount }`. Without `search` it reads the daily counts (up to a year back); with `search` it counts receipts (last 60 days). With `status=SUCCESS`, `failed` is now `0` (older builds ignored the filter for `failed`).
 
@@ -521,15 +911,19 @@ Enums for filters:
 
 `receiptId` is unique **per agent** (two agents can have the same value). Open a receipt from the list item you have; `GET /receipts/:receiptId` is limited to your scope.
 
-`amount` is `null` for non-cash categories (balance enquiry, mini statement…): show "—", not ₹0. Only cash deposit, cash withdrawal and money transfer move the float.
+`amount` is `null` for receipts without an amount (balance enquiry, mini statement…; list and detail, rev 23): show "—", not ₹0. Only cash deposit, cash withdrawal and money transfer move the float.
 
 ## 13A. Cash management (CSP + KOs)
 
 A CSP and its KOs share **one cash limit** and **one cash in account (holding)**: the **pool**. Each agent (the CSP and each KO) has its **own cash in hand** and its own **drawer** (note/coin counts). Always:
 
 ```
-cash in account + cash in hand (CSP) + cash in hand (every KO) + in bank (open KO settlements) + left in bank = cash limit
+cash in account + cash in hand (CSP) + cash in hand (every KO) + in bank (open KO settlements) + left in bank + extra cash held by dues = cash limit + other cash
 ```
+
+**Extra cash held by dues** (`cashDueExtra`, + to collect, − to give) is what the KOs' open balance dues put on "extra cash" are worth; it moves with other cash so the books balance. Show it read-only next to other cash.
+
+**Other cash** (`cashOther`, + or −) is cash that came in from (or went out to) outside SBI on the desktop: custom transactions (shop expenses, bill collections) and settled balance dues. It's 0 until a KO records one; the CSP clears it with an ADJUSTMENT (`cashOther`).
 
 Nothing ever goes below ₹0. Who can do what:
 
@@ -539,6 +933,9 @@ Nothing ever goes below ₹0. Who can do what:
 | Settle, adjust (limit, cash in account, cash in hand, drawer) | yes | no | no | no |
 | KO settlements (cash in account ↔ bank ↔ cash in hand) | **informed only** (feed) | sees them | sees them | starts and approves its own, from the desktop |
 | Approve / reject a KO's change request | yes | no | no | asks from the desktop |
+| Labels for custom transactions | create, rename, deactivate | sees them | sees them | picks one |
+| Balance due, day closes | sees every agent's | sees them | sees them | records its own |
+| Tasks | sees all; adds / edits / deletes the ones it gives | sees them | sees them | its own; ticks the CSP's done |
 
 All endpoints need the `CASH_MANAGEMENT` plan feature for CSP plans (403 `Your subscription does not include cash management.`).
 
@@ -560,6 +957,14 @@ All endpoints need the `CASH_MANAGEMENT` plan feature for CSP plans (403 `Your s
 | Limit raised / lowered (no new cash in account given) | — | + / − the difference |
 | KO added with cash in hand X | + X (the KO's) | − X |
 | PC activated: the agent counts cash in hand Y (was X) | set to Y; drawer set to the count | − (Y − X) |
+| Custom transaction IN / OUT (paid now P) | + P / − P | — (other cash + P / − P) |
+| Balance due settled: collected / given A | + A / − A | — (other cash + A / − A) |
+| Balance due added for an applied receipt (A unpaid): to collect / to give | − A / + A | — (other cash − A / + A) |
+| Balance due added on **cash in hand** (A): to collect / to give | + A / − A | − A / + A |
+| Balance due added on **cash in account** (A): to collect / to give | − A / + A | + A / − A |
+| Balance due added on **extra cash** (A): to collect / to give | — | — (other cash and extra cash held by dues + A / − A) |
+| That due settled / cancelled | the side moves back (for the part paid / still due), then the notes come in / go out as above | |
+| Cash exchange, day close | — (exchange swaps notes only) | — |
 
 Other categories don't move cash yet. A receipt reaches the server **after** the bank transaction, so it's never refused for cash. If the balance can't cover it, it's saved and counted but **not applied** (balances unchanged) and shows in the ledger as `RECEIPT_NOT_APPLIED` with a `reason`: `INSUFFICIENT_CASH_IN_HAND`, `INSUFFICIENT_CASH_IN_ACCOUNT`, or `NOT_SET_UP` when the CSP has no pool yet. Show these to the CSP as "to fix" (settle or adjust). The desktop checks the balance before a transaction, so this should be rare.
 
@@ -578,11 +983,11 @@ CSP: no `agentId` = the whole CSP (merged + every agent); `agentId=<KO>` = that 
     { "agentId": "CSP-001", "name": "…", "type": "CSP", "cashInHand": 5000, "drawer": { … }, "drawerTotal": 5000, "drawerMatchesCashInHand": true },
     { "agentId": "KO-001", "name": "…", "type": "KO", "cashInHand": 50000, "drawer": { … }, "drawerTotal": 45000, "drawerMatchesCashInHand": false }
   ],
-  "cashInTransit": 0, "cashLeftInBank": 0, "pendingRequests": 1, "openSettlements": 0, "updatedAt": "…"
+  "cashInTransit": 0, "cashLeftInBank": 0, "cashOther": 0, "cashDueExtra": 0, "pendingRequests": 1, "openSettlements": 0, "updatedAt": "…"
 }
 ```
 
-`setUp: false` (limit and cash in account `null`) is a CSP that existed before cash management. Show a "Set up cash" screen that sends one ADJUSTMENT with `cashLimit`, `cashInAccount` and each agent's `cashInHand`. Money values are numbers in rupees (2 decimals).
+`setUp: false` (limit and cash in account `null`) is a CSP that existed before cash management. Show a "Set up cash" screen that sends one ADJUSTMENT with `cashLimit` (and optionally `cashInAccount` and each agent's `cashInHand`). Agents may already show a cash in hand: a KO counts it when activating a PC, and it's kept until setup. Without `cashInAccount`, cash in account = limit − every agent's cash in hand (400 `The cash limit (₹…) is less than the agents' cash in hand (₹… in total).`). Money values are numbers in rupees (2 decimals).
 
 ### `POST /cash-management/transactions` (CSP) — settle or adjust
 
@@ -602,12 +1007,14 @@ Optional header `Idempotency-Key` (8–128 chars): a retry with the same key ret
 { "type": "ADJUSTMENT", "cashLimit": 120000, "remarks": "Bank raised the limit" }
 { "type": "ADJUSTMENT", "cashInAccount": 60000, "agents": [{ "agentId": "KO-001", "cashInHand": 55000, "drawer": { "notes500": 100, "notes100": 50 } }], "remarks": "Counted the drawer" }
 { "type": "ADJUSTMENT", "cashLeftInBank": 0, "cashInAccount": 53500, "remarks": "Bank returned the rest" }
+{ "type": "ADJUSTMENT", "cashOther": 0, "cashInAccount": 44400, "remarks": "Shop cash counted into the books" }
 ```
 
 Rules:
 - A new `cashLimit` without `cashInAccount` moves cash in account by the difference (raise by 20K → cash in account +20K).
 - The result must keep cash in account + all cash in hand + in bank + left in bank = cash limit: 400 `Cash in hand (₹… in total) + cash in account (₹…) [+ in bank (₹…, open settlements)] [+ left in bank (₹…)] must equal the cash limit (₹…).`
 - `cashLeftInBank` sets what partly delivered KO settlements left in bank, e.g. to 0 when the bank returns it (raise `cashInAccount` by the same amount). Audited like every adjustment (ledger `cashLeftInBankChange`). 400 `Nothing is left in bank before cash management is set up.` when there's no pool yet.
+- `cashOther` sets the net cash from custom transactions and dues (may be negative), e.g. to 0 once the CSP has accounted for it; change `cashInAccount` (or the limit) to match. The rule's message adds `+ / − other cash (₹…)` when it isn't 0. 400 `There's no other cash before cash management is set up.` with no pool.
 - The CSP's direct `SETTLEMENT` and every `ADJUSTMENT` are in the ledger with `actorType: USER` and the user's id.
 - Nothing below 0: 400 `Cash in account can't go below ₹0.00: …`
 - Drawer keys you leave out keep their count.
@@ -615,11 +1022,11 @@ Rules:
 
 ### `GET /cash-management/ledger` — audit
 
-Query: `agentId` (as for the pool), `agentIds` (one or more agents individually; omit for all agents merged), `types` (`OPENING`, `AGENT_ADDED`, `RECEIPT`, `RECEIPT_NOT_APPLIED`, `SETTLEMENT`, `ADJUSTMENT`, `REQUEST_APPROVED`, `ACTIVATION`, `SETTLEMENT_TO_BANK`, `SETTLEMENT_FROM_BANK`, `SETTLEMENT_HELD`, `SETTLEMENT_CANCELLED`; several allowed), `period` / `from` / `to` (as in §13), `page`, `limit` (≤100). Newest first.
+Query: `agentId` (as for the pool), `agentIds` (one or more agents individually; omit for all agents merged), `types` (`OPENING`, `AGENT_ADDED`, `RECEIPT`, `RECEIPT_NOT_APPLIED`, `SETTLEMENT`, `ADJUSTMENT`, `REQUEST_APPROVED`, `ACTIVATION`, `SETTLEMENT_TO_BANK`, `SETTLEMENT_FROM_BANK`, `SETTLEMENT_HELD`, `SETTLEMENT_CANCELLED`, `CUSTOM`, `DUE_CREATED`, `DUE_SETTLED`, `DUE_CANCELLED`, `EXCHANGE`, `DAY_CLOSE`; several allowed), `period` / `from` / `to` (as in §13), `page`, `limit` (≤100). Newest first.
 
 `ACTIVATION` entries are the cash in hand and drawer counted on the desktop when a PC is activated.
 
-Item: `{ id, type, reason, agentId, agentName, agentType, transactionCategory, amount, cashInHandChange, cashInAccountChange, cashLimitChange, cashInTransitChange, cashLeftInBankChange, balanceCashInHand, balanceCashInAccount, balanceCashLimit, balanceCashInTransit, balanceCashLeftInBank, drawerChange, receiptId, requestId, settlementId, actorType (USER|MACHINE|SYSTEM), actorId (userId or machineCode), remarks, createdAt }` + `pagination`. Every change, from the app or the desktop, is recorded here.
+Item: `{ id, type, reason, agentId, agentName, agentType, transactionCategory, amount, cashInHandChange, cashInAccountChange, cashLimitChange, cashInTransitChange, cashLeftInBankChange, cashOtherChange, cashDueExtraChange, balanceCashInHand, balanceCashInAccount, balanceCashLimit, balanceCashInTransit, balanceCashLeftInBank, balanceCashOther, balanceCashDueExtra, drawerChange, receiptId, requestId, settlementId, actorType (USER|MACHINE|SYSTEM), actorId (userId or machineCode), remarks, createdAt }` + `pagination`. Every change, from the app or the desktop, is recorded here.
 
 ### KO settlements (the KO approves its own; the CSP is informed)
 
@@ -635,7 +1042,7 @@ While a step is open, the amount is in `cashInTransit` (pool view, dashboard, he
 
 **Left in bank** (`cashLeftInBank` on the pool view and dashboard cash totals; `leftInBank` per settlement step): what step 2 didn't deliver. Show it **separately** from cash in account and "in bank". A KO brings it back into its cash in hand with a `BANK_TO_HAND` settlement from the desktop; the CSP can also correct it with an ADJUSTMENT (`cashLeftInBank`).
 
-**`GET /cash-management/settlements`** (CSP, BC, super admin): the feed. Query: `agentId` (as for the pool), `agentIds`, `status` (`PENDING`, `APPROVED`, `CANCELLED`), `period` / `from` / `to`, `page`, `limit`. Item: `{ id, cspAgentId, agentId, agentName, direction, step (TO_BANK|FROM_BANK), label ("Cash in account → bank", …), status, amount, settledAmount, leftInBank (step 2: amount − settledAmount), drawer, needsDenomination, parentId (step 2 → step 1), remarks, requestedBy, reviewedBy (machineCode), reviewedAt, createdAt }` + `pagination`. `openSettlements` on the pool view is the badge count. Every money move is also in the ledger as `SETTLEMENT_TO_BANK`, `SETTLEMENT_FROM_BANK`, `SETTLEMENT_HELD` (left in bank held for a `BANK_TO_HAND`), `SETTLEMENT_CANCELLED` (with `settlementId`, `cashInTransitChange`, `balanceCashInTransit`).
+**`GET /cash-management/settlements`** (CSP, BC, super admin): the feed. Query: `agentId` (as for the pool), `agentIds`, `status` (`PENDING`, `APPROVED`, `CANCELLED`), `period` / `from` / `to`, `page`, `limit`. Item: `{ id, cspAgentId, agentId, agentName, direction, step (TO_BANK|FROM_BANK), label ("Cash in account → bank", …), status, amount, settledAmount, leftInBank (step 2: amount − settledAmount), requestId (both steps of one request share it), requestStartedAt, stepNumber, stepCount, previousStep ({ id, approvedAt, amount } on step 2), drawer, needsDenomination, parentId (step 2 → step 1), remarks, requestedBy, reviewedBy (machineCode), reviewedAt, createdAt }` + `pagination`. `openSettlements` on the pool view is the badge count. Every money move is also in the ledger as `SETTLEMENT_TO_BANK`, `SETTLEMENT_FROM_BANK`, `SETTLEMENT_HELD` (left in bank held for a `BANK_TO_HAND`), `SETTLEMENT_CANCELLED` (with `settlementId`, `cashInTransitChange`, `balanceCashInTransit`).
 
 The CSP's own `SETTLEMENT` above (`POST /cash-management/transactions`) still works for direct moves (e.g. the CSP's own cash in hand). It's in the audit like every CSP action (`actorType: USER`). An ADJUSTMENT must account for what's in bank and left in bank: cash in account + all cash in hand + in bank + left in bank = limit.
 
@@ -646,11 +1053,104 @@ A KO can't change its cash itself. From the desktop it asks for a new cash in ha
 - `GET /cash-management/requests?status=PENDING|APPROVED|REJECTED&agentId=&page=&limit=` → items `{ id, cspAgentId, agentId, requestedCashInHand, systemCashInHand (at the time of the request), requestedDrawer, reason, status, requestedBy (machineCode), reviewedBy, reviewedAt, reviewRemarks, createdAt }`. `pendingRequests` on the pool view is the badge count.
 - `POST /cash-management/requests/:requestId/review` (CSP) `{ "action": "APPROVE" | "REJECT", "remarks"? }`. Approving sets the KO's cash in hand to the requested value; the difference comes from (or goes back to) cash in account. Errors: 400 `Not enough cash in account to approve: …` (the request stays pending); 409 `This request has already been reviewed.`; 404 `Cash request not found.`
 
+### Labels for the KOs' custom transactions
+
+KOs record cash that moves outside SBI (shop expenses, bill collections, recharges) on the desktop, picking one of the CSP's labels.
+
+- A new pool starts with four editable labels: **Other** (`BOTH`), **Shop expense** (`OUT`), **Bill collection** (`IN`), **Recharge** (`IN`).
+- `GET /cash-management/labels?agentId=` (CSP, BC, super admin) → `data: [ { id, name, direction: "IN"|"OUT"|"BOTH", active, createdAt, updatedAt } ]`, active first.
+- `POST /cash-management/labels` (CSP) `{ "name": "Electricity bill collection", "direction": "IN" }` → 201 `Label created.`
+- `PATCH /cash-management/labels/:labelId` (CSP) any of `{ name, direction, active }` → 200 `Label updated.` Deactivate with `active: false`; old transactions keep the name they were made with.
+- Errors: 409 `A label with this name already exists.` (case-insensitive), 404 `Label not found.`, 400 `Name is required.` / `Keep the name under 60 characters.` / `Nothing to change.`
+
+### Balance due (read-only)
+
+Work a KO did but hasn't been paid for (or still owes change). The KO records and settles them on the desktop.
+
+`GET /cash-management/dues?agentId=&status=OPEN|CLOSED` → `data: { dues: [ { id, agentId, agentName, kind: "TO_COLLECT"|"TO_GIVE", amount (still due), originalAmount, source: "RECEIPT"|"CUSTOM"|"MANUAL", receiptId, customTransactionId, label, note, status, cashSide ("CASH_IN_HAND" | "CASH_IN_ACCOUNT" | "OTHER_CASH" | null), createdAt, settledAt } ], totals: { toCollect, collectCount, toGive, giveCount } }`. Show `cashSide` as "added to cash in hand" / "deducted from cash in account" / "… extra cash" (to collect = added, to give = deducted); null = nothing was moved.
+
+**`GET /cash-management/dues/:dueId?agentId=`** → the due + `agentName` + **`events`** (oldest first): `[{ type: "CREATED" | "PART_SETTLED" | "SETTLED" | "CANCELLED", amount, stillDue, cashSide, cashInHandChange, cashInAccountChange, cashOtherChange, drawerChange, machineCode, remarks, createdAt }]` for the Due detail "History". 404 `Due not found.` OPEN oldest first; CLOSED = settled or cancelled in the last 14 days. No `agentId` = the CSP and all its KOs.
+
+### Day closes (read-only)
+
+At the end of the day a KO counts its drawer on the desktop. Closing changes nothing; a difference is fixed through a KO change request.
+
+`GET /cash-management/day-closes?agentId=&from=YYYY-MM-DD&to=YYYY-MM-DD` (default the last 14 days) → `data: { today: [ { agentId, agentName, status: "CLOSED"|"OPEN" } ], items: [ { dayId, agentId, agentName, date, system: { cashInHand, drawer }, counted: { cashInHand, drawer }, difference (negative = short), result ("Matched" / "₹500 short" / "₹500 over"), closedAt } ] }`.
+
+### Tasks
+
+To-dos shared between the CSP and its agents. A KO manages its own on the desktop and can only tick the CSP's done.
+
+- `GET /cash-management/tasks?agentId=&status=OPEN|DONE|ALL` → `data: [ { id, agentId, agentName, title, note, dueAt, done, doneAt, createdBy: "KO"|"CSP", createdAt, updatedAt } ]`: open (soonest due first), then done in the last 30 days. Overdue = not done and `dueAt` in the past.
+- `POST /cash-management/tasks` (CSP) `{ "agentId": "KO-001", "title": "…", "note"?: "…", "dueAt"?: "ISO" }` → 201 `Task added.` (`createdBy: "CSP"`).
+- `PATCH /cash-management/tasks/:taskId` (CSP) any of `{ title, note, dueAt, done }`; `DELETE /cash-management/tasks/:taskId` (CSP). Only the CSP's own tasks: 403 `This task is the agent's own. Only they can change it.`; 404 `That task isn't there any more.` (not in your CSP); 404 `Agent not found.` on create for an agent outside your CSP.
+- Validation: `Write what needs doing.`, `Keep it under 100 characters.`, `Keep the note under 300 characters.`, `Use an ISO date and time.` Task text may hold customer details: don't log it.
+
 ### Screens (suggested)
 
 - **Cash (CSP):** limit, cash in account, in bank, total cash in hand; a card per agent (cash in hand, drawer, mismatch badge); "Settle" and "Adjust" actions; a "Requests" badge; a "Settlements" feed with an open count; a "To fix" list (ledger `types=RECEIPT_NOT_APPLIED`).
 - **Cash (BC, read-only):** the same view per CSP.
+- **Other cash, dues, day closes, tasks (CSP):** "Other cash" next to left in bank; a Balance due list per KO (to collect / to give); a "Today" strip with each KO's day close (closed, short, over, not closed); Tasks per KO (open, overdue, done) with "Add task"; Labels under settings.
 - **Ledger:** filters for agent(s), type and period.
+
+## 13B. Commission (CSP)
+
+**Who earns:** only the **CSP**. A KO is paid a salary by its CSP, so every successful receipt of the CSP **or of its KOs** earns commission for the CSP. Commission is earned **by month** (the Home hero shows this month so far; "Monthly" lists past months).
+
+**Rates** are set by the super admin per service: `FLAT` (₹ per transaction / enrolment) or `PERCENT` (of the amount, optional min / max per receipt). A rate can be the default for everyone, or an override for one BC's CSPs or for one CSP (CSP > BC > default). New rates start now or later, never in the past: the rate is frozen on each receipt when it's uploaded, so past days never change. Failed receipts earn nothing. With no rate set a service earns ₹0.
+
+Services (`serviceCode`): `CW`, `CD`, `MT`, `FT`, `MATM`, `BBPS`, `LOAN` (FINANCIAL); `BE`, `MS`, `PB` (NON_FINANCIAL); `AO`, `PMJJBY`, `PMSBY`, `APY`, `SS_OTHER` (ENROLMENT).
+
+| Call | Who | Notes |
+|---|---|---|
+| `GET /commission/summary?period=TODAY\|WEEK\|MONTH&month=YYYY-MM&agentId=` | CSP, BC, super admin | default `MONTH` (1st → today); `month` = a whole past month; `WEEK` = Monday → today (IST). `agentId`: a CSP = the CSP + its KOs (what the CSP earned); a KO = what that KO generated; none = your scope (BC: all its CSPs) |
+| `GET /commission/months?count=12&agentId=` | CSP, BC, super admin | monthly totals, newest first: `[{ month, total, successCount, isCurrent }]` (kept 12 months) |
+| `GET /commission/rates?agentId=` | CSP (its own), BC / super admin (`agentId` = a CSP or KO, required) | the live rate of every service after precedence: `{ cspAgentId, effectiveFrom, rates: [{ serviceCode, serviceName, transactionCategory, receiptType, group, rateType, rate, minAmount, maxAmount, rateLabel, scope (DEFAULT\|BC\|CSP), unit (TRANSACTION\|ENROLMENT) }] }` |
+
+Summary `data`:
+
+```json
+{ "period": "MONTH", "month": null, "from": "2026-11-01", "to": "2026-11-04",
+  "total": 1840, "previousTotal": 1612, "monthToDate": 1840,
+  "successCount": 152, "excludedFailedCount": 4,
+  "groups": { "FINANCIAL": 1516, "NON_FINANCIAL": 38, "ENROLMENT": 286 },
+  "rows": [ { "serviceCode": "CW", "serviceName": "Cash withdrawal", "transactionCategory": "CASH_WITHDRAWAL", "receiptType": null,
+              "group": "FINANCIAL", "count": 64, "rateType": "FLAT", "rate": 15, "rateLabel": "₹15", "amount": 960 } ],
+  "byAgent": [ { "agentId": "KO-0012", "name": "Suresh", "type": "KO", "amount": 980 } ],
+  "updatedAt": "…" }
+```
+
+- `rows`: every active service, also with count 0; `rateLabel` / `rate` are the live rate when the view is one CSP (else `null`).
+- `previousTotal`: the same period one step back (yesterday / last week / last month to the same day; a whole month for `month=`).
+- `byAgent`: where it was generated (all of it belongs to the CSP). Show it on the KO detail as "Commission generated", not "earned".
+- Commission totals come from the daily counts, so they stay after receipts are deleted (retention).
+
+Also: `GET /receipts/stats` adds `commissionAmount`; `GET /receipts/:receiptId` adds `commission: { amount, rateLabel } | null` (null = no commission service for that receipt).
+
+## 13C. Team today (CSP)
+
+Per agent of the CSP (the CSP and its KOs), from their PCs:
+
+- **Online time**: a PC's session is on while its heartbeats arrive with at most **one** missed (a PC is offline after 120 s without a heartbeat).
+- **Active time**: SBI work started and stopped on the desktop (activity start → stop).
+- **Late / early**: against the working day **the CSP sets**.
+
+`GET /team/today?date=YYYY-MM-DD&agentId=` (CSP, BC, super admin; default today, IST; `agentId` as for the dashboard):
+
+```json
+"data": { "date": "2026-11-04", "startTime": "09:30", "endTime": "18:30",
+  "members": [ { "agentId": "KO-0014", "name": "Asha Mehra", "type": "KO",
+    "machineName": "Village kiosk", "machines": [ { "machineCode": "MAC-…", "machineName": "Village kiosk" } ],
+    "online": false, "status": "OFFLINE",
+    "firstLoginAt": "2026-11-04T04:45:00.000Z", "lastSeenAt": "2026-11-04T10:50:00.000Z",
+    "onlineSeconds": 21900, "activeSeconds": 15300, "lateMinutes": 45, "earlyLeaveMinutes": 0 } ] }
+```
+
+- `status`: `ONLINE`, `OFFLINE`, `NOT_LOGGED_IN` (no login yet and the start time has passed), `NOT_STARTED` (no login, before the start time or no start time set).
+- `lateMinutes`: first login after `startTime` (0 when on time or no start time). `earlyLeaveMinutes`: last heartbeat before `endTime` once the closing time has passed and the PC is offline.
+- `startTime` / `endTime` are shown when the view is one CSP.
+
+`GET /team/settings` / `PATCH /team/settings { "workdayStart": "09:30" | null, "workdayEnd": "18:30" | null }` (CSP): its team's working day (`HH:mm`, IST). 400 `Use a time like 09:30.`, `The start time must be before the closing time.`
 
 ## 14. Reports
 
@@ -733,15 +1233,210 @@ await Sharing.shareAsync(res.uri, { mimeType: "application/vnd.openxmlformats-of
 
 | Gap | Impact on the app | Plan |
 |---|---|---|
-| No refresh-token endpoint yet; access token lasts 15 min | users re-login every 15 min | planned `POST /auth/refresh` (§5.2) |
-| No resend-OTP / forgot-password endpoints yet | resend = signup again; no password reset | planned (§5.2) |
+| No forgot-password endpoint yet | no password reset | planned (§5.2) |
 | Payments are manual (no Razorpay yet) | don't ship checkout to production | checklist 1.1–1.5 |
 | No push notifications / activation emails yet | poll lists for link approvals and machine status; show passwords from the assign response | planned (§5.2) |
 | `POST /auth/check-agent` returns the full agent record | only use `success` | backend to trim |
 | No unlink endpoint for BC↔CSP | can't undo a link from the app | Super Admin/backend |
 | `cashLimit`/`openingCash` are ignored when an existing CSP is requested via `POST /agents/csp` | the CSP keeps its own values | by design for now |
 
+### 19.1 Backend requirements from the mobile app
+
+**Backend status (rev 23, 2026-11-04):**
+
+| # | Requirement | Status |
+|---|---|---|
+| R1 | Fix the 2-decimal money check (floating point refused e.g. `0.07`, `1000.29`) | **Done.** Tolerant check in `common.validator.ts`; 3 decimals are still refused. |
+| R2 | `POST /auth/refresh` | **Done** (§5.2): rotation, reuse detection, plus `POST /auth/logout`. |
+| R3 | Stable `code` on the 403 / 409 answers the app branches on | **Done** (§3): `ACCOUNT_NOT_VERIFIED`, `ACCOUNT_EXISTS`, `INVALID_CREDENTIALS`, `ACCOUNT_BLOCKED`, `ACCOUNT_SUSPENDED`, `KO_NO_LOGIN`, `OTP_INVALID`, `OTP_EXPIRED`, `OTP_ATTEMPTS_EXCEEDED`, `OTP_NOT_FOUND`, `OTP_RESEND_TOO_SOON`, `OTP_RESEND_LIMIT`, `TOKEN_EXPIRED`, `TOKEN_INVALID`, `TOKEN_REQUIRED`, `REFRESH_TOKEN_INVALID`, `SUBSCRIPTION_NONE`, `SUBSCRIPTION_EXPIRED`, `SUBSCRIPTION_SUSPENDED`, `SUBSCRIPTION_CANCELLED`, `SUBSCRIPTION_PENDING`, `SUBSCRIPTION_NOT_STARTED`, `PLAN_FEATURE_MISSING`. |
+| R4 | `POST /auth/resend-otp` | **Done** (§5.2): 1 per minute, 5 per hour. |
+| R5 | `plan.features[]` in `GET /subscriptions/current` | **Done** (§6): same shape as `/subscriptions/plans`. |
+| R6 | Razorpay order + signature verify | **Open**: waits for the Razorpay account (pre-production checklist 1.1–1.5). |
+| R7 | `status` (`ACTIVE` / `INACTIVE`) in the agent object | **Done** (§9). Inactive agents are now also listed in `GET /agents` / `GET /agents/:id` for their owner, so they can be reactivated. |
+| R8 | Per-PC numbers in the machine list and detail | **Done** (§12): a new `pc` block per machine; the existing fields stay the CSP unit's. |
+| R9 | `amount: null` for receipts without an amount | **Done** (§13). |
+| R10 | Commission per service | **Open**: see R12 (product decisions pending). |
+| R11 | CSP-only dashboard view | **Done** (§11): `includeKos=false`. |
+
+The app team's list, as they wrote it (found while building the app against this KT; ordered by priority; the app has a workaround for each until it's done):
+
+| # | Requirement | Why the app needs it | App workaround today |
+|---|---|---|---|
+| R1 | **Fix the 2-decimal money check.** `core/validators/common.validator.ts:70` uses `Math.round(amount * 100) === amount * 100`, which fails for many valid amounts because of floating point (e.g. `0.07`, `0.29`, `1000.29`: about 9% of 2-decimal values up to ₹1000). Use the tolerant check already in `cash.validation.ts:69`: `Math.abs(amount * 100 - Math.round(amount * 100)) < 1e-6`. | Signup cash fields and every money field using the common validator reject valid input with "can have at most 2 decimal places." | The app validates decimals on the typed text, but the server still rejects those values. **Bug, fix first.** |
+| R2 | **`POST /auth/refresh`** (§5.2). | The access token lasts 15 min; users are sent back to Login every 15 min, including in the middle of a checkout. | Logout on 401 / expired `exp`, Login prefilled. |
+| R3 | **Stable `code` on 403/409 answers the app branches on.** Today they all come back `FORBIDDEN` / `CONFLICT`, so the app matches the message text, which breaks if a message is reworded. Suggested codes: `ACCOUNT_NOT_VERIFIED` ("Please verify your account first."), `ACCOUNT_EXISTS` (signup 409), `OTP_INVALID`, `OTP_EXPIRED`, `OTP_ATTEMPTS_EXCEEDED`, `OTP_NOT_FOUND`, `SUBSCRIPTION_NONE`, `SUBSCRIPTION_EXPIRED`, `SUBSCRIPTION_SUSPENDED`, `SUBSCRIPTION_CANCELLED`, `SUBSCRIPTION_PENDING`, `SUBSCRIPTION_NOT_STARTED`, `PLAN_FEATURE_MISSING` ("Your subscription does not include this feature."). | Paywall, upgrade prompt, OTP and "verify first" flows. | Exact message match (§7 list). |
+| R4 | **`POST /auth/resend-otp`** (§5.2). | Resending a code needs the whole signup again, including the password, which the app keeps only in memory. After an app restart the user must fill the signup form again. | "Send a new code" re-posts signup; after a restart it offers "Sign up again". |
+| R5 | **`plan.features[]` in `GET /subscriptions/current`** (same shape as in `/subscriptions/plans`). | Feature gating needs a second call to the public plans list and a lookup by plan id; a plan that was deactivated after purchase isn't in that list, so its features are lost. | Two calls; falls back to "no extra features" when the plan isn't listed. |
+| R6 | **Razorpay order + signature verify** (checklist 1.1–1.5). | Checkout is manual: `verify` accepts any `gatewayTransactionId`. | Checkout is wrapped in one `payForPlan()` function; manual flow only in dev builds. |
+| R7 | **Return `status` (`ACTIVE` / `INACTIVE`) in the agent object** (`agent.mapper.ts`). | `PATCH /agents/:agentId` can set it, but no response includes it, so the app can't show an inactive KO or offer to reactivate one. | Not shown. |
+| R8 | **Per-PC numbers in `GET /machines/list` and `GET /machines/:id`.** Both report the CSP *unit*: a CSP's PC counts the CSP's and all its KOs' transactions, and a KO's PC detail shows the parent CSP as `agent` and the unit's online status. | The Machines tab is per PC (canvas): it would show a CSP's PC with its KOs' transactions. | The app reads the matching entry in `children` (the PC's own agent), and `/heartbeat` for the live status. |
+| R9 | **`amount: null` for receipts without an amount** (`receipt.mapper.ts` sends `Number(amount ?? 0)`; KT §13 says `null`). | ₹0 and "no amount" look the same. | The app shows "—" for non-cash categories. |
+| R10 | **Commission per service**, set by the super admin (balance enquiry, withdrawal, deposit, money transfer, passbook, …), with the earned amount in the dashboard / reports. | The canvas KO and CSP views show "Commission ≈" for the period. No commission exists in the backend yet. | Not shown. |
+| R11 | **A CSP-only view in `/dashboard/summary`** (e.g. `agentId=<CSP>&includeKos=false`). `agentId=<CSP>` always adds its KOs. | "Your own view" for the CSP can't show just the CSP's own counter. | The CSP's own view says it includes its KOs. |
+
+### 19.2 Endpoints the v2 app screens need
+
+**Backend status (rev 23, 2026-11-04):**
+
+| # | Endpoint(s) | Status |
+|---|---|---|
+| R12 | Commission | **Done** (§13B, rev 24). Decided: **only the CSP earns** (KOs are salaried by the CSP), **by month**; FLAT / PERCENT rates per service set by the super admin (default, BC or CSP override), frozen per receipt. Differences from your draft: `month=` added; `byAgent` = where it was generated; `GET /commission/months` added; no `SLAB` rates yet; rates have no DRAFT state (a future `effectiveFrom` is the draft). |
+| R13 | Team today | **Done** (§13C, rev 24). Online = heartbeat sessions with at most one missed heartbeat; active = SBI work (activity start → stop); late / early against the CSP's `workdayStart` / `workdayEnd` (`/team/settings`). Adds `onlineSeconds` next to `activeSeconds`, `earlyLeaveMinutes`, `status`. |
+| R14 | Requests inbox | **Future scope** (not planned now; §19.3). Use §13A requests and the settlements feed. |
+| R15 | Receipt detail fields | **Partly done** (§13, rev 24): **no Aadhaar** — remove `customerAadhaarMasked` from the app. The super admin decides which optional fields the desktop may send (`bankName`, `balanceAfter`, `bankTransactionId` (your `transactionId`), `bankResponseCode`, `bankResponseMessage`, `customerName`, `customerAccount`, `rrn`, `stan`, `terminalId`, `location`); the detail returns them (`null` when not sent). Slip image, PDF and "report a problem" (`slipAvailable`, `…/slip`, `…/pdf`, `…/report`): **future scope** (§19.3). |
+| R16 | `?agentId=` on `GET /receipts/:receiptId` | **Done** (§13). |
+| R17 | `GET /cash-management/dues/:dueId` with `events` | **Done** (§13A); the desktop has `GET /machines/runtime/cash/dues/:dueId` too. |
+| R18 | `ownSubscription` on a BC's CSPs | **Done** (§9). |
+| R19 | Stable social-security metric codes in `cspSummary.socialSecurity` | **Confirmed**: `PMJJBY`, `PMSBY`, `APY`, … are seeded codes and won't change. |
+
+The app team's proposals, as they wrote them:
+
+The design canvas ("CSP v2 · commission, receipts, requests" and "KT draft · backend & admin") adds screens that need new endpoints. The app already calls the ones below; until they exist it gets **404** and hides that part of the screen (no error shown). Shapes follow §3: `{ success, message, data }`, money in rupees (numbers, 2 decimals), dates ISO-8601, day boundaries IST. Every endpoint is scoped like §4B (CSP: itself + its KOs; BC: its CSPs + KOs) and needs an active subscription (§7).
+
+#### R12 · Commission (Home hero, Commission screen, Receipts, KO detail)
+
+**Status: done** (§13B): only the CSP earns, by month.
+
+Admin sets rates per service; the app shows an **approximate** commission from successful receipts. Rates are frozen on each receipt when it's saved (past days are never recalculated); failed / reversed receipts earn 0.
+
+**Data model (backend):** `services` (`id, code, name, transactionCategory, group: FINANCIAL | NON_FINANCIAL | ENROLMENT, sortOrder, isActive`); `commission_rate_cards` (`id, scope: DEFAULT | BC | CSP, scopeId, name`); `commission_rates` (`cardId, serviceId, type: FLAT | PERCENT | SLAB, amount, percent, min, max, slabs json, appliesToKo, effectiveFrom, effectiveTo, status: DRAFT | LIVE | ENDED, createdBy, reason`; one LIVE rate per card + service at a time); receipts add `serviceId, commissionRateId, commissionAmount`. Card precedence: CSP override > BC override > DEFAULT.
+
+`GET /commission/summary?period=TODAY|WEEK|MONTH&agentId=`
+
+- `agentId` optional, same rule as `/dashboard/summary` (a CSP = CSP + KOs; a KO = that KO). `WEEK` = Monday → today, `MONTH` = 1st → today (IST).
+
+```json
+"data": {
+  "period": "TODAY", "from": "2026-11-03", "to": "2026-11-03",
+  "total": 615, "previousTotal": 543, "monthToDate": 1840,
+  "successCount": 50, "excludedFailedCount": 2,
+  "groups": { "FINANCIAL": 516, "NON_FINANCIAL": 13, "ENROLMENT": 86 },
+  "rows": [
+    { "serviceCode": "CW", "serviceName": "Cash withdrawal", "transactionCategory": "CASH_WITHDRAWAL", "group": "FINANCIAL",
+      "count": 14, "rateType": "FLAT", "rate": 15, "rateLabel": "₹15", "amount": 210 }
+  ],
+  "byAgent": [ { "agentId": "CSP-001", "name": "Ravi Kumar", "amount": 252 } ],
+  "updatedAt": "2026-11-03T13:12:00.000Z"
+}
+```
+
+`rows` lists **every active service** (count 0 / amount 0 included, ordered by `sortOrder`); `previousTotal` is the same period one step back (yesterday / last week / last month to the same day).
+
+`GET /commission/rates` → the live rates for this CSP (or BC):
+
+```json
+"data": { "effectiveFrom": "2026-11-01T00:00:00+05:30",
+  "rates": [ { "serviceCode": "CW", "serviceName": "Cash withdrawal", "transactionCategory": "CASH_WITHDRAWAL",
+               "rateType": "FLAT", "rateLabel": "₹15", "unit": "TRANSACTION" } ] }
+```
+
+`unit`: `TRANSACTION` | `ENROLMENT`. Admin side (super admin console, not the app): `GET/POST /admin/rate-cards`, `PUT /admin/rates/:id` (saves DRAFT, goes LIVE at `effectiveFrom`, which must be in the future), `GET /admin/rates/history`, CRUD `/admin/services`, CRUD `/admin/social-security-schemes`; every write to `audit_log`.
+
+Also add `commissionAmount` to `GET /receipts/stats` (same filters) and `commission: { amount, rateLabel } | null` to `GET /receipts/:receiptId`.
+
+#### R13 · Team today (Home "Team today": first login, active hours, late login)
+
+**Status: done** (§13C).
+
+**Data model:** `agent_sessions` (`agentId, machineId, date (IST), firstLoginAt, lastSeenAt, activeSeconds, status`), built from heartbeats + SBI login events; a gap > 5 min stops the active timer. CSP setting `workdayStart` ("09:30", nullable).
+
+`GET /team/today?agentId=`
+
+```json
+"data": {
+  "date": "2026-11-03", "startTime": "09:30",
+  "members": [
+    { "agentId": "KO-0014", "name": "Asha Mehra", "type": "KO", "machineName": "Village kiosk",
+      "online": false, "firstLoginAt": "2026-11-03T04:45:00.000Z", "lastSeenAt": "2026-11-03T10:50:00.000Z",
+      "activeSeconds": 21900, "lateMinutes": 45 }
+  ]
+}
+```
+
+`lateMinutes` = minutes after `startTime` of the first login (0 when on time or no `startTime`). Optional: `PATCH /team/settings { workdayStart: "09:30" | null }` (CSP).
+
+#### R14 · Requests inbox (Home bell, Requests screen)
+
+**Status: future scope** (§19.3).
+
+One feed of everything waiting for the CSP: KO cash requests (§13A), KO settlements to confirm, a BC asking to link this CSP, a KO asking for another PC.
+
+**Data model:** `requests` (`id, type: CASH | SETTLEMENT | BC_LINK | NEW_MACHINE, fromAgentId, toCspAgentId, payload json, status: PENDING | APPROVED | DECLINED | EXPIRED, actedBy, actedAt`).
+
+`GET /requests?status=PENDING|DONE_TODAY&page=&limit=` → `data: { items, pagination }`, item:
+
+```json
+{ "id": "req_…", "type": "CASH", "status": "PENDING",
+  "title": "Suresh needs ₹20,000 cash",
+  "body": "KO-0012 · Market branch · cash in hand ₹32,000 · pool after: ₹25,000 in account",
+  "fromAgentId": "KO-0012", "fromName": "Suresh Patel", "createdAt": "…",
+  "approveLabel": "Approve", "declineLabel": "Decline", "payload": { } }
+```
+
+`POST /requests/:id/approve` and `POST /requests/:id/decline` (body optional `{ remarks }`), header `Idempotency-Key` (same rules as §13A). Approving `CASH` writes to the cash ledger in the same DB transaction; approving `BC_LINK` links the CSP (the CSP consents, then the admin approves as in §10); `NEW_MACHINE` approve opens checkout in the app (no server change). Response: the updated request. Errors: 409 `This request has already been handled.`, 404 `Request not found.`. Until this exists the app shows §13A KO cash requests (approve/reject via `/cash-management/requests/:id/review`) and open settlements.
+
+#### R15 · Receipt detail fields (Receipt screen)
+
+**Status: partly done** (§13): no Aadhaar field (remove it from the app); optional fields allowed by the super admin; slip / PDF / report are future scope (§19.3).
+
+Add to `GET /receipts/:receiptId`: `bankName`, `customerAadhaarMasked` (`"XXXX XXXX 4821"`), `balanceAfter` (number | null), `transactionId`, `bankResponseCode`, `bankResponseMessage`, `slipAvailable` (boolean). New:
+
+- `GET /receipts/:receiptId/slip?agentId=` → `{ url }` signed image URL (5 min) of the original bank slip captured by the watcher.
+- `GET /receipts/:receiptId/pdf?agentId=` → `application/pdf` (like §17).
+- `POST /receipts/:receiptId/report?agentId=` `{ reason }` → 201 `Thanks, we'll look into it.`
+
+#### R16 · `agentId` on single-receipt calls
+
+**Status: done** (§13).
+
+`receiptId` is unique **per agent** (§13), but `GET /receipts/:receiptId` takes no agent, so two KOs with the same receipt number can't be told apart. Accept `?agentId=` on `GET /receipts/:receiptId` (and R15's calls) and use it when given.
+
+#### R17 · Balance due history (Due detail "History")
+
+**Status: done** (§13A).
+
+`GET /cash-management/dues/:dueId` → the due plus `events: [ { type: "CREATED" | "PART_SETTLED" | "SETTLED" | "CANCELLED", amount, cashSide, machineCode, createdAt } ]`. Until then the app shows recorded → (collected so far) → still due from the list fields.
+
+#### R18 · Own-plan status of a BC's CSPs (BC "CSPs" list)
+
+**Status: done** (§9).
+
+The canvas shows "Own plan active" / "No own plan yet" per CSP. Add `ownSubscription: { status, endDate } | null` to agents returned to a BC (`GET /agents?type=CSP`).
+
+#### R19 · BC summary tabs
+
+**Status: confirmed**: the codes are seeded and stable.
+
+`/dashboard/summary` already returns `cspSummary.transactions` and `cspSummary.socialSecurity`; the BC Home tabs use them. Keep the social-security metric `code`s stable (`PMJJBY`, `PMSBY`, `APY`, …): the app matches on them.
+
+### 19.3 Future scope (agreed, not planned yet)
+
+| Item | Notes |
+|---|---|
+| Requests inbox (R14): one feed of what waits for the CSP, with approve / decline | Today: §13A KO cash requests (`/cash-management/requests`) and the settlements feed. A BC asking the CSP to link, and a KO asking for another PC, would be new flows. |
+| Receipt slip image, PDF, "report a problem" (R15) | Needs the desktop to capture the slip; then `GET /receipts/:id/slip`, `/pdf`, `POST /receipts/:id/report`. |
+| Commission slabs | `SLAB` rates (amount bands) next to FLAT / PERCENT. |
+| Push notifications | Checklist 2.14 / 2.16 (link approvals, revoke results, settlements, CSP tasks). |
+| Forgot / reset password | §5.2. |
+
 ## 20. Changelog
+
+- 2026-11-04 (rev 24, update) — §13: receipt detail `fields` (only what the receipt has, with labels: build the screen from it), `GET /receipts/fields`; receipts can carry more or fewer optional fields as the super admin changes them.
+- 2026-11-04 (rev 24) — New §13B commission (only the CSP earns, by month; `/commission/summary`, `/months`, `/rates`; commission on receipt detail and stats) and §13C team today (`/team/today`, `/team/settings`). §13: optional receipt fields set by the super admin; **no Aadhaar** (remove `customerAadhaarMasked`). §12: a PC is online while its last heartbeat is ≤ 120 s old (at most one missed). §19.2 statuses; §19.3 future scope (requests inbox, slip / PDF / report, slabs).
+
+- 2026-11-04 (rev 23) — Backend answers to §19.1 / §19.2 (status tables). Built: money 2-decimal fix (R1); `POST /auth/refresh` with rotation, `POST /auth/logout` (R2, §5.2–5.3); `code`s for login / OTP / subscription errors (R3, §3); `POST /auth/resend-otp` (R4); `plan.features` in the current subscription (R5); agent `status` and inactive agents in the owner's list (R7); per-PC `pc` block in machines (R8, §12); `amount: null` (R9); `includeKos=false` (R11); `?agentId=` on the receipt detail (R16); due history `GET /cash-management/dues/:dueId` (R17); `ownSubscription` for a BC's CSPs (R18). The receipt detail now needs an active subscription like the list.
+
+- 2026-11-03 (rev 22) — New §19.2 (R12–R19): endpoints for the v2 app screens with request and response: commission summary and rates, team today, requests inbox with approve/decline, receipt detail fields + slip/PDF/report, `agentId` on single-receipt calls, due history, CSP own-plan status for BCs, BC summary metric codes.
+- 2026-11-03 (rev 21) — New §19.1: backend requirements found while building the app (money 2-decimal check bug, refresh token, stable codes for subscription/OTP/verify errors, resend OTP, plan features in the current subscription, Razorpay, agent `status`, per-PC machine numbers, `null` receipt amounts, commission, CSP-only dashboard view).
+
+- 2026-11-03 (rev 20) — New §4B: every app API by role (CSP / BC columns, the subscription or plan each needs, body → answer, section), and what each tab calls in order.
+
+- 2026-11-03 (rev 19) — `POST /agents/csp` only for BCs on a machine plan (₹199 / ₹399); the ₹799 plan only links (403 `PLAN_LINK_ONLY`). A BC-created CSP needs its own subscription for the app (§4A.5).
+- 2026-11-03 (rev 18) — New §4A: the full app flow by role (every launch, what each plan unlocks, CSP and BC journeys step by step with their calls, a CSP created by a BC, build order). §3: errors carry `code`.
+
+- 2026-11-03 (rev 17) — §13A: balance dues can be put on cash in hand / cash in account (they move against each other) or extra cash (with the new `cashDueExtra`, part of the rule); `cashSide` on dues; default labels for new pools; settlement request fields; ledger `cashDueExtraChange`. Every error answer now has a stable `code` next to `message` (e.g. `PLAN_NO_CASH_MANAGEMENT`, `VALIDATION_FAILED`, `RATE_LIMITED`); switch to it.
+
+- 2026-11-03 (rev 16) — §13A: other cash (`cashOther`, rule = limit + other cash; ADJUSTMENT `cashOther`); labels (`/cash-management/labels`), balance due (`/dues`), day closes (`/day-closes`) and tasks (`/tasks`) for the KOs' desktop cash extras; setup without `cashInAccount` takes the agents' saved activation counts into account; new ledger types `CUSTOM`, `DUE_*`, `EXCHANGE`, `DAY_CLOSE`.
 
 - 2026-11-02 (rev 15) — §13A: KO settlement direction `BANK_TO_HAND` (left in bank → cash in hand, one step, deducted from cash left in bank and held until approved); ledger type `SETTLEMENT_HELD`.
 

@@ -7,6 +7,7 @@ export function mapAgent(agent: Agent) {
     agentId: agent.agentId,
     name: agent.name,
     type: agent.type,
+    status: agent.status,
 
     mobile: agent.mobile,
     email: agent.email,

@@ -58,12 +58,15 @@ export default class MachineListService {
         repository.getMachineSummary(agentIds),
       ]);
 
+      const pcStats = await repository.getPcStats(machineResult.items, filter);
+
+      // `pc` = this PC on its own; the other fields stay the CSP unit's.
       const items = mapMachineList(
         machineResult.items,
         buildTransactionMap(transactionSummary),
         buildServiceMap(serviceSummary),
         buildMachineMap(machineSummary),
-      );
+      ).map((item, index) => ({ ...item, pc: pcStats.get(machineResult.items[index].id) ?? null }));
 
       // Float figures are null for CSP plans without CASH_MANAGEMENT.
       const canViewFloat = await new SubscriptionEntitlementService(
@@ -1192,12 +1195,17 @@ export default class MachineListService {
 
       const onlineHours = this.calculateRuntimeHours(sessions, from, to);
 
+      // This PC on its own (the rest of the answer is the CSP unit).
+      const pc = (await repository.getPcStats([machine], { from, to })).get(machine.id) ?? null;
+
       // ============================================================
       // 13. Final response
       // ============================================================
 
       return {
         machineId: machine.id,
+
+        pc,
 
         machineCode: machine.machineCode,
 

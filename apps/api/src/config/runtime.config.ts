@@ -5,7 +5,7 @@ const RuntimeConfig = {
 
   receiptUploadEnabled: process.env.RECEIPT_UPLOAD_ENABLED !== "false",
 
-  heartbeatTimeout: Number(process.env.HEARTBEAT_TIMEOUT ?? 180),
+  heartbeatTimeout: Number(process.env.HEARTBEAT_TIMEOUT ?? 120),
 
   sessionRetentionDays: Number(process.env.SESSION_RETENTION_DAYS ?? 180),
 
