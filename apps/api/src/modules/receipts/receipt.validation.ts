@@ -230,3 +230,56 @@ export function parseMinimalReceipt(raw: unknown):
       : "Invalid receipt.",
   };
 }
+
+const machineCredentials = {
+  machineCode: z.string().trim().min(1),
+  // Optional when the request is signed with the device key (X-Signature).
+  apiKey: z.string().trim().min(1).optional(),
+  fingerprint: z.string().trim().min(1),
+};
+
+/** Desktop: upload URL for the slip image of an uploaded receipt. */
+export const slipUploadUrlSchema = z.object({
+  ...machineCredentials,
+  receiptId: z.string().trim().min(1, "receiptId is required."),
+  contentType: z.enum(["image/jpeg", "image/png", "image/webp"], {
+    error: "contentType must be image/jpeg, image/png or image/webp.",
+  }),
+});
+
+/** Desktop: the slip is uploaded; attach it to the receipt. */
+export const slipConfirmSchema = z.object({
+  ...machineCredentials,
+  receiptId: z.string().trim().min(1, "receiptId is required."),
+  key: z.string().trim().min(1, "key is required."),
+});
+
+export const receiptReportSchema = z
+  .object({
+    reason: z.enum(
+      ["WRONG_AMOUNT", "WRONG_STATUS", "DUPLICATE", "MISSING_DETAILS", "NOT_MY_TRANSACTION", "OTHER"],
+      { error: "reason must be WRONG_AMOUNT, WRONG_STATUS, DUPLICATE, MISSING_DETAILS, NOT_MY_TRANSACTION or OTHER." },
+    ),
+    details: z.string().trim().max(1000, "Details are too long.").optional(),
+  })
+  .strict();
+
+const reportStatus = z.enum(["OPEN", "RESOLVED", "REJECTED"]);
+
+export const receiptReportListSchema = z.object({
+  status: reportStatus.optional(),
+});
+
+export const adminReceiptReportListSchema = z.object({
+  status: reportStatus.optional(),
+  ownerAgentId: z.string().trim().min(1).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+export const resolveReceiptReportSchema = z
+  .object({
+    status: z.enum(["RESOLVED", "REJECTED"]),
+    resolution: z.string().trim().min(1, "Write what was done.").max(1000, "Resolution is too long."),
+  })
+  .strict();

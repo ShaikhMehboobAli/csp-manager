@@ -20,6 +20,7 @@ import { BadRequestError } from "../../core/errors/BadRequestError";
 import { PrismaDb } from "../../core/database/prisma.types";
 import { AgentRepository } from "../agents/repository/agent.repository";
 import ActivationRepository from "../activations/activation.repository";
+import BillingSettingsService from "../settings/billing-settings.service";
 import {
   SubscriptionEventType,
   SubscriptionOwnerType,
@@ -55,12 +56,15 @@ export default class SubscriptionService {
   //   }
 
   async getPlans(data: GetPlansDto) {
-    const plans = await this.subscriptionRepository.getPlans(data.ownerType);
+    const [plans, { gstPercent }] = await Promise.all([
+      this.subscriptionRepository.getPlans(data.ownerType),
+      new BillingSettingsService().get(),
+    ]);
 
     return {
       success: true,
       message: "Plans fetched successfully.",
-      data: plans.map(mapPlan),
+      data: plans.map((plan) => mapPlan(plan, gstPercent)),
     };
   }
 
@@ -181,8 +185,13 @@ export default class SubscriptionService {
         data.ownerId,
       );
 
+      // A subscription in its grace period still counts as running, so a
+      // renewal continues from its end date.
       const isRunning =
-        latest?.status === SubscriptionStatus.ACTIVE && latest.endDate >= now;
+        latest?.status === SubscriptionStatus.ACTIVE &&
+        (latest.graceEndsAt ?? latest.endDate) >= now;
+
+      const billingSettings = new BillingSettingsService(db);
 
       /**
        * Renewal of the running plan (same machine count): extend the same
@@ -201,6 +210,7 @@ export default class SubscriptionService {
         const subscription = await repository.extendSubscription(
           latest.id,
           endDate,
+          await billingSettings.graceEndFor(endDate),
           amount,
         );
 
@@ -243,6 +253,7 @@ export default class SubscriptionService {
 
         startDate: now,
         endDate,
+        graceEndsAt: await billingSettings.graceEndFor(endDate),
       });
 
       if (latest) {

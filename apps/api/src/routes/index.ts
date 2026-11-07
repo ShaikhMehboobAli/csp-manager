@@ -17,6 +17,8 @@ import bcLinkRoutes from "../modules/bc-links/bc-link.routes";
 import teamRoutes from "../modules/team/team.routes";
 import { commissionAdminRoutes, commissionRoutes } from "../modules/commission/commission.routes";
 import desktopSettingsRoutes from "../modules/settings/desktop-settings.routes";
+import userStatusRoutes from "../modules/admin-users/user-status.routes";
+import receiptReportAdminRoutes from "../modules/receipts/receipt-report.routes";
 
 const router = Router();
 
@@ -42,6 +44,8 @@ router.use("/cash-management", cashRoutes);
 router.use("/team", teamRoutes);
 router.use("/commission", commissionRoutes);
 router.use("/admin/commission", commissionAdminRoutes);
+router.use("/admin/users", userStatusRoutes);
+router.use("/admin/receipt-reports", receiptReportAdminRoutes);
 router.use("/admin", desktopSettingsRoutes);
 
 export default router;

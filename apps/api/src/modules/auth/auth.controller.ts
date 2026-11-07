@@ -50,3 +50,21 @@ export const resendOtp = async (req: Request, res: Response) => {
 
   return res.status(200).json(result);
 };
+
+export const forgotPassword = async (req: Request, res: Response) => {
+  const result = await authService.forgotPassword(req.body);
+
+  return res.status(200).json(result);
+};
+
+export const resetPassword = async (req: Request, res: Response) => {
+  const result = await authService.resetPassword(req.body);
+
+  return res.status(200).json(result);
+};
+
+export const changePassword = async (req: Request, res: Response) => {
+  const result = await authService.changePassword(req.user!.userId, req.body, clientOf(req));
+
+  return res.status(200).json(result);
+};

@@ -69,6 +69,7 @@ export default class SubscriptionRepository {
 
     startDate: Date;
     endDate: Date;
+    graceEndsAt: Date | null;
   }) {
     return this.db.subscription.create({
       data: {
@@ -80,6 +81,7 @@ export default class SubscriptionRepository {
         amountPaid: data.amountPaid,
         startDate: data.startDate,
         endDate: data.endDate,
+        graceEndsAt: data.graceEndsAt,
         subscriptionType: SubscriptionType.PAID,
         status: SubscriptionStatus.ACTIVE,
       },
@@ -108,6 +110,7 @@ export default class SubscriptionRepository {
   extendSubscription(
     subscriptionId: string,
     endDate: Date,
+    graceEndsAt: Date | null,
     additionalAmount: number,
   ) {
     return this.db.subscription.update({
@@ -116,6 +119,7 @@ export default class SubscriptionRepository {
       },
       data: {
         endDate,
+        graceEndsAt,
         status: SubscriptionStatus.ACTIVE,
         amountPaid: {
           increment: additionalAmount,

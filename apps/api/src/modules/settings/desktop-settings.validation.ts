@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-import { RECEIPT_FIELD_NAMES } from "./receipt-fields-settings.service";
+import { MAX_GRACE_DAYS } from "./billing-settings.service";
+import {
+  FIXED_RECEIPT_FIELDS,
+  RECEIPT_FIELD_NAMES,
+  ReceiptField,
+} from "./receipt-fields-settings.service";
 
 import { DESKTOP_SERVICE_CODES } from "./desktop-settings.constants";
 
@@ -53,13 +58,35 @@ export const updateReceiptRetentionSchema = z
   })
   .strict();
 
-/** Each optional receipt field → allowed or not; only the known fields. */
+/** The selected extra receipt fields (multi-select); the defaults are always on. */
 export const updateReceiptFieldsSchema = z
-  .object(
-    Object.fromEntries(RECEIPT_FIELD_NAMES.map((name) => [name, z.boolean().optional()])) as Record<
-      (typeof RECEIPT_FIELD_NAMES)[number],
-      z.ZodOptional<z.ZodBoolean>
-    >,
-  )
+  .object({
+    extra: z
+      .array(z.string())
+      .refine((names) => names.every((name) => RECEIPT_FIELD_NAMES.includes(name as never)), {
+        message: `Unknown receipt field. Fields: ${RECEIPT_FIELD_NAMES.join(", ")}.`,
+      })
+      .refine((names) => !names.some((name) => FIXED_RECEIPT_FIELDS.includes(name as never)), {
+        message: `${FIXED_RECEIPT_FIELDS.join(", ")} are always shown; send only the extra fields.`,
+      })
+      .transform((names) => [...new Set(names)] as ReceiptField[]),
+  })
+  .strict();
+
+export const updateBillingSettingsSchema = z
+  .object({
+    graceDays: z
+      .number()
+      .int("Grace period must be a whole number of days.")
+      .min(0, "Grace period can't be negative.")
+      .max(MAX_GRACE_DAYS, `Grace period can be at most ${MAX_GRACE_DAYS} days.`)
+      .optional(),
+    gstPercent: z
+      .number()
+      .min(0, "GST can't be negative.")
+      .max(28, "GST can be at most 28%.")
+      .refine((value) => Number.isInteger(value * 100), { message: "GST can have at most 2 decimals." })
+      .optional(),
+  })
   .strict()
   .refine((data) => Object.keys(data).length > 0, { message: "Nothing to change." });

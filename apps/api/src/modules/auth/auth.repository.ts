@@ -239,4 +239,30 @@ export default class AuthRepository {
     });
   }
 
+  findUserById(id: string) {
+    return this.db.user.findUnique({ where: { id } });
+  }
+
+  findLatestOtp(userId: string, purpose: OtpPurpose) {
+    return this.db.otp.findFirst({ where: { userId, purpose }, orderBy: { createdAt: "desc" } });
+  }
+
+  deleteOtps(userId: string, purpose: OtpPurpose) {
+    return this.db.otp.deleteMany({ where: { userId, purpose } });
+  }
+
+  updatePassword(userId: string, passwordHash: string) {
+    return this.db.user.update({
+      where: { id: userId },
+      data: { passwordHash, passwordChangedAt: new Date() },
+    });
+  }
+
+  /** Signs the user out everywhere (password change, block). */
+  revokeUserSessions(userId: string) {
+    return this.db.userSession.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+  }
 }

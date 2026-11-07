@@ -393,6 +393,11 @@ model User {
 
   passwordChangedAt DateTime?
 
+  // Why the super admin blocked / suspended the account (shown at login).
+  statusReason String?
+
+  statusChangedAt DateTime?
+
   agent Agent @relation(fields: [agentId], references: [agentId])
 
   sessions UserSession[]
@@ -1182,6 +1187,11 @@ model Receipt {
   commissionAmount Decimal? @db.Decimal(12, 2)
   commissionRateId String?
 
+  /// S3 key of the slip image (when the super admin allows the slip field);
+  /// deleted with the receipt by retention.
+  slipKey String?
+  slipUploadedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1464,6 +1474,9 @@ model Payment {
   amount Decimal @db.Decimal(12, 2)
 
   taxAmount Decimal @default(0) @db.Decimal(12, 2)
+
+  // GST % applied at checkout (super admin setting at the time of the order).
+  taxPercent Decimal @default(0) @db.Decimal(5, 2)
 
   totalAmount Decimal @db.Decimal(12, 2)
 
@@ -2341,6 +2354,9 @@ enum CommissionRateType {
   PERCENT
   // BC / CSP override removed from this date: the next level applies
   INHERIT
+  // Amount bands (slabs), each FLAT or PERCENT; the band the receipt
+  // amount falls in applies
+  SLAB
 }
 
 enum CommissionScope {
@@ -2399,6 +2415,10 @@ model CommissionRate {
   minAmount Decimal? @db.Decimal(12, 2)
   maxAmount Decimal? @db.Decimal(12, 2)
 
+  /// SLAB: [{ from, to (null = no upper limit), type: FLAT | PERCENT,
+  /// amount?, percent? }] sorted by `from`; `from` inclusive, `to` exclusive.
+  slabs Json?
+
   effectiveFrom DateTime
 
   reason String?
@@ -2411,4 +2431,47 @@ model CommissionRate {
 
   @@index([serviceId, scope, scopeId, effectiveFrom])
   @@index([scope, scopeId])
+}
+
+enum ReceiptReportStatus {
+  OPEN
+  RESOLVED
+  REJECTED
+}
+
+/// "Report a problem" on a receipt, raised from the app. Keeps a copy of the
+/// receipt so the report survives receipt retention.
+model ReceiptReport {
+  id String @id @default(cuid())
+
+  /// Receipt row id (not a relation: the receipt can be deleted by retention).
+  receiptRowId String
+
+  receiptId String
+
+  /// Owner (CSP agentId) of the machine the receipt came from.
+  ownerAgentId String
+
+  reportedBy String
+
+  reason String
+
+  details String?
+
+  status ReceiptReportStatus @default(OPEN)
+
+  receiptSnapshot Json
+
+  resolution String?
+
+  resolvedBy String?
+
+  resolvedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([ownerAgentId, createdAt])
+  @@index([receiptRowId])
 }

@@ -541,7 +541,7 @@ export class AgentService {
       ? await this.prisma.subscription.findMany({
           where: { ownerId: { in: cspIds }, ownerType: SubscriptionOwnerType.CSP },
           orderBy: { createdAt: "desc" },
-          select: { ownerId: true, status: true, endDate: true, plan: { select: { code: true } } },
+          select: { ownerId: true, status: true, endDate: true, graceEndsAt: true, plan: { select: { code: true } } },
         })
       : [];
 
@@ -560,8 +560,10 @@ export class AgentService {
         ...item,
         ownSubscription: own
           ? {
-              status: own.endDate < new Date() && own.status === "ACTIVE" ? "EXPIRED" : own.status,
+              // Still ACTIVE during the grace period.
+              status: (own.graceEndsAt ?? own.endDate) < new Date() && own.status === "ACTIVE" ? "EXPIRED" : own.status,
               endDate: own.endDate,
+              graceEndsAt: own.graceEndsAt,
               planCode: own.plan.code,
             }
           : null,

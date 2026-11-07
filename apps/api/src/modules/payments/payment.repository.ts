@@ -110,7 +110,8 @@ export default class PaymentRepository {
     paymentId: string,
     subscriptionId: string,
     gatewayTransactionId: string,
-    transactionReference?: string,
+    transactionReference: string | undefined,
+    invoiceNumber: string,
   ) {
     return this.db.payment.update({
       where: {
@@ -118,6 +119,8 @@ export default class PaymentRepository {
       },
       data: {
         subscriptionId,
+
+        invoiceNumber,
 
         gatewayTransactionId,
 

@@ -72,7 +72,7 @@ export function mapReceiptDetail(receipt: any) {
     // Only the optional fields this receipt has, with display names, in a
     // fixed order: render these rows as they come (receipts differ).
     fields: RECEIPT_FIELD_NAMES.flatMap((field) => {
-      const value = receipt[field];
+      const value = field === "slip" ? null : receipt[field];
 
       if (value === null || value === undefined || value === "") {
         return [];
@@ -80,6 +80,9 @@ export function mapReceiptDetail(receipt: any) {
 
       return [{ field, label: RECEIPT_FIELDS[field].label, value: field === "balanceAfter" ? Number(value) : value }];
     }),
+
+    // Slip image uploaded by the desktop (GET /receipts/:receiptId/slip).
+    hasSlip: Boolean(receipt.slipKey),
 
     // What the CSP earned on it (the rate frozen at upload); null = no
     // commission service for it.

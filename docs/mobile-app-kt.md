@@ -3,7 +3,7 @@
 **Audience:** the React Native team building the CSP Manager mobile app for **BC** and **CSP** users.
 **Not covered here:** the Super Admin console (React / Next.js) → `docs/admin-web-kt.md`; the Windows desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api` (Express + Prisma + PostgreSQL).
-**Last updated:** 2026-11-04 (rev 24)
+**Last updated:** 2026-11-04 (rev 25)
 
 > Describes the backend once PRs #3–#8 are merged into `development`. Where an older build behaves differently it says so.
 
@@ -355,12 +355,15 @@ The last column points to the section with every field and error. Super-admin-on
 | POST | `/auth/resend-otp` | ✓ | ✓ | public | `{ agentId }` → `{ expiresAt, resendAvailableAt }` (1 per minute, 5 per hour) | 5.2 |
 | POST | `/auth/refresh` | ✓ | ✓ | public | `{ refreshToken }` → `{ accessToken, refreshToken (new), user }` | 5.2 |
 | POST | `/auth/logout` | ✓ | ✓ | public | `{ refreshToken }` → 200 (ends that session) | 5.2 |
+| POST | `/auth/forgot-password` | ✓ | ✓ | public | `{ agentId }` → always 200 `{ resendAvailableAt }` (emails a reset OTP if the account exists) | 5.2 |
+| POST | `/auth/reset-password` | ✓ | ✓ | public | `{ agentId, otp, password, confirmPassword }` → 200; every session ends | 5.2 |
+| POST | `/auth/change-password` | ✓ | ✓ | login | `{ currentPassword, password, confirmPassword }` → `{ accessToken, refreshToken }` (replace both); other devices signed out | 5.2 |
 
 ### Plans, subscription, payment (§6)
 
 | Method | Path | CSP | BC | Sub | Body → answer | § |
 |---|---|---|---|---|---|---|
-| GET | `/subscriptions/plans?ownerType=CSP\|BC` | ✓ | ✓ | public | → plans `{ id, code, name, machineLimit, pricing[], features[] }` | 6 |
+| GET | `/subscriptions/plans?ownerType=CSP\|BC` | ✓ | ✓ | public | → plans `{ id, code, name, machineLimit, pricing[] (with `gstPercent`, `gstAmount`, `priceWithGst`), features[] }` | 6 |
 | GET | `/subscriptions/current` | ✓ | ✓ | login | → current subscription or `null` | 6 |
 | GET | `/subscriptions/history` | ✓ | ✓ | login | → all subscriptions | 6 |
 | POST | `/payments/create-order` + `Idempotency-Key` | ✓ (`machineCount` 1–100) | ✓ (no `machineCount`) | login | `{ planId, billingCycle, machineCount? }` → payment `PENDING` | 6 |
@@ -406,7 +409,7 @@ The last column points to the section with every field and error. Super-admin-on
 
 | Method | Path | CSP | BC | Sub | Query → answer | § |
 |---|---|---|---|---|---|---|
-| GET | `/dashboard/summary` | ✓ | ✓ | active | `from, to, agentId, includeKos, machineId, receiptType, transactionCategory, search` → overview, services, cash, status, activations, recent, subscription (+ CSP: `float`, `machine`; BC: `machineMonitoring`, `cspSummary`) | 11 |
+| GET | `/dashboard/summary` | ✓ | ✓ | active | `from, to, agentId, includeKos, machineId, receiptType, transactionCategory, search` → overview, services, cash, **commission (today + month, rev 25)**, status, activations, recent, subscription (+ CSP: `float`, `machine`; BC: `machineMonitoring`, `cspSummary`) | 11 |
 | GET | `/dashboard/analytics` | ✓ | ✓ | active | same + `groupBy=hour\|day\|week\|month\|year` → trends | 11 |
 | GET | `/dashboard/csp/:agentId/detail?section=transaction\|socialSecurity&month=YYYY-MM` | (itself) | its CSPs | active | → day-by-day table for the month | 11 |
 
@@ -427,8 +430,12 @@ The last column points to the section with every field and error. Super-admin-on
 |---|---|---|---|---|---|---|
 | GET | `/receipts` | ✓ | ✓ | active | `page, limit, from, to, period, machineId, agentIds, receiptTypes, transactionCategories, status, search, sortBy, sortOrder` → items | 13 |
 | GET | `/receipts/stats` | ✓ | ✓ | active | same filters → `{ total, success, failed, totalAmount, commissionAmount }` | 13 |
-| GET | `/receipts/fields` | ✓ | ✓ | login | → `[{ field, label, personal, allowed }]`: optional fields and their display names | 13 |
-| GET | `/receipts/:receiptId?agentId=` | in scope | in scope | active | → detail (+ `cashDenomination` with `CASH_MANAGEMENT`); send `agentId` (receipt numbers are unique per agent) | 13 |
+| GET | `/receipts/fields` | ✓ | ✓ | login | → `[{ field, label, personal, fixed, allowed }]`: optional fields and their display names | 13 |
+| GET | `/receipts/:receiptId?agentId=` | in scope | in scope | active | → detail (+ `cashDenomination` with `CASH_MANAGEMENT`, `hasSlip`); send `agentId` (receipt numbers are unique per agent) | 13 |
+| GET | `/receipts/:receiptId/slip?agentId=` | in scope | in scope | active | → `{ url, expiresIn: 300 }` link to the slip image (404 when `hasSlip` is false) | 13 |
+| GET | `/receipts/:receiptId/pdf?agentId=` | in scope | in scope | active | → `application/pdf` (download / share) | 13, 17 |
+| POST | `/receipts/:receiptId/report?agentId=` | ✓ | ✓ | active | `{ reason, details? }` → the problem report (201) | 13 |
+| GET | `/receipts/reports?status=` | ✓ | ✓ | login | → your scope's problem reports (newest 100) | 13 |
 | GET | `/receipts/export` | ✓ | ✓ | active | same filters → `.xlsx` | 13, 17 |
 | GET | `/reports/summary` | ✓ | ✓ | active | `period, from, to, cspAgentId, agentId` → one row per CSP (with KOs) | 14 |
 | GET | `/reports/export` | ✓ | ✓ | active | same → `.xlsx` | 14, 17 |
@@ -437,21 +444,23 @@ The last column points to the section with every field and error. Super-admin-on
 
 BCs read a CSP's cash with `agentId` = the CSP (or one of its KOs); without it → 400. A CSP reads its own (optional `agentId` = one of its KOs).
 
+**BC cash scope (rev 25):** a BC sees **only the cash limit and its distribution**: `GET /cash-management` (without `cashOther` / `cashDueExtra`) and the dashboard `cash` block (same fields left out). Every other cash endpoint (ledger, settlements, requests, labels, dues, day closes, tasks) answers **403** to a BC: hide those screens in the BC app. "Other cash" is only for the CSP and its KOs.
+
 | Method | Path | CSP | BC | Sub | Body / query → answer | § |
 |---|---|---|---|---|---|---|
-| GET | `/cash-management?agentId=` | ✓ | *read* | cash | → pool: limit, cash in account, in bank, left in bank, other cash, extra cash held by dues, each agent's cash in hand + drawer, `pendingRequests`, `openSettlements` | 13A |
+| GET | `/cash-management?agentId=` | ✓ | *read* (no other cash) | cash | → pool: limit, cash in account, in bank, left in bank, other cash (CSP only), extra cash held by dues (CSP only), each agent's cash in hand + drawer, `pendingRequests`, `openSettlements` | 13A |
 | POST | `/cash-management/transactions` + `Idempotency-Key` | ✓ | — | cash | `{ type: SETTLEMENT, agentId, amount, direction }` or `{ type: ADJUSTMENT, cashLimit?, cashInAccount?, cashLeftInBank?, cashOther?, agents?, remarks }` → pool | 13A |
-| GET | `/cash-management/ledger` | ✓ | *read* | cash | `agentId, agentIds, types, period, from, to, page, limit` → audit entries | 13A |
-| GET | `/cash-management/settlements` | ✓ | *read* | cash | `agentId, agentIds, status, period, from, to, page, limit` → the KOs' settlement steps | 13A |
-| GET | `/cash-management/requests` | ✓ | *read* | cash | `status, agentId, page, limit` → KO correction requests | 13A |
+| GET | `/cash-management/ledger` | ✓ | — | cash | `agentId, agentIds, types, period, from, to, page, limit` → audit entries | 13A |
+| GET | `/cash-management/settlements` | ✓ | — | cash | `agentId, agentIds, status, period, from, to, page, limit` → the KOs' settlement steps | 13A |
+| GET | `/cash-management/requests` | ✓ | — | cash | `status, agentId, page, limit` → KO correction requests | 13A |
 | POST | `/cash-management/requests/:requestId/review` | ✓ | — | cash | `{ action: APPROVE\|REJECT, remarks? }` | 13A |
-| GET | `/cash-management/labels` | ✓ | *read* | cash | → labels | 13A |
+| GET | `/cash-management/labels` | ✓ | — | cash | → labels | 13A |
 | POST | `/cash-management/labels` | ✓ | — | cash | `{ name, direction: IN\|OUT\|BOTH }` | 13A |
 | PATCH | `/cash-management/labels/:labelId` | ✓ | — | cash | `{ name?, direction?, active? }` | 13A |
-| GET | `/cash-management/dues` | ✓ | *read* | cash | `agentId, status=OPEN\|CLOSED` → dues + totals | 13A |
-| GET | `/cash-management/dues/:dueId` | ✓ | *read* | cash | `agentId` → the due + `events` (history) | 13A |
-| GET | `/cash-management/day-closes` | ✓ | *read* | cash | `agentId, from, to` → today's state per agent + closes | 13A |
-| GET | `/cash-management/tasks` | ✓ | *read* | cash | `agentId, status=OPEN\|DONE\|ALL` → tasks | 13A |
+| GET | `/cash-management/dues` | ✓ | — | cash | `agentId, status=OPEN\|CLOSED` → dues + totals | 13A |
+| GET | `/cash-management/dues/:dueId` | ✓ | — | cash | `agentId` → the due + `events` (history) | 13A |
+| GET | `/cash-management/day-closes` | ✓ | — | cash | `agentId, from, to` → today's state per agent + closes | 13A |
+| GET | `/cash-management/tasks` | ✓ | — | cash | `agentId, status=OPEN\|DONE\|ALL` → tasks | 13A |
 | POST | `/cash-management/tasks` | ✓ | — | cash | `{ agentId, title, note?, dueAt? }` → task for a KO | 13A |
 | PATCH | `/cash-management/tasks/:taskId` | its own tasks | — | cash | `{ title?, note?, dueAt?, done? }` | 13A |
 | DELETE | `/cash-management/tasks/:taskId` | its own tasks | — | cash | → `Task deleted.` | 13A |
@@ -539,7 +548,7 @@ What the server does with them (CSP): stores them on the agent (`openingCash`, `
 - `KEPT`: the agent already exists and its pool is in use (KOs added, receipts, settlements or adjustments recorded), so balances, opening values and limit stay as they are. Changes go through cash management (§13A).
 Errors: 409 `Account already exists. Please login.`; 403 `KO cannot create login account.`
 
-**`POST /auth/verify-otp`** (public) `{ agentId, otp }` — `otp` exactly 6 digits. OTP is valid **10 minutes**, **5 attempts**.
+**`POST /auth/verify-otp`** (public) `{ agentId, otp }` — `otp` exactly 6 digits. OTP is valid **10 minutes**, **5 attempts** (rev 25: wrong codes now really count; the 5th wrong one deletes the OTP → "request a new OTP").
 → 200 `OTP verified successfully.` Then go to Login (no token is returned here).
 Errors (409 unless noted): `Invalid OTP.`, `OTP has expired. Please request a new OTP.`, `Maximum OTP attempts exceeded. Please request a new OTP.`, 404 `OTP not found. Please request a new OTP.`, 404 `User not found.` For "request a new OTP", call signup again with the same data.
 
@@ -552,11 +561,11 @@ Errors (409 unless noted): `Invalid OTP.`, `OTP has expired. Please request a ne
 }
 ```
 
-Login errors (all **403**, show `message`): `Invalid credentials.` (unknown ID **or** wrong password; the server doesn't say which), then, only after a correct password: `Please verify your account first.` (→ OTP screen), `Your account has been blocked.`, `Your account has been suspended.` Not 401, so the session-expired interceptor (§3) doesn't fire on the login screen.
+Login errors (all **403**, show `message`): `Invalid credentials.` (unknown ID **or** wrong password; the server doesn't say which), then, only after a correct password: `Please verify your account first.` (→ OTP screen), `Your account has been blocked.`, `Your account has been suspended.` (rev 25: followed by ` Reason: <the super admin's reason>` when one was given — show the whole message). Not 401, so the session-expired interceptor (§3) doesn't fire on the login screen.
 
 Errors: 404 `User not found.`; 403 `Please verify your account first.` (→ OTP screen), `Your account has been blocked.`, `Your account has been suspended.`, `Invalid credentials.`
 
-### 5.2 Refresh, logout, resend OTP (built, rev 23) and planned auth endpoints
+### 5.2 Refresh, logout, resend OTP (rev 23), forgot / reset / change password (rev 25)
 
 **`POST /auth/refresh`** (public) `{ refreshToken }` → 200 `Session refreshed.` `data: { accessToken, refreshToken, user }`.
 - Every refresh returns a **new** refresh token: store it and drop the old one. The old one stops working.
@@ -569,21 +578,31 @@ Errors: 404 `User not found.`; 403 `Please verify your account first.` (→ OTP 
 
 **`POST /auth/resend-otp`** (public) `{ agentId }` → 200 `OTP sent again.` `data: { expiresAt, resendAvailableAt }`: a new code to the same email (the old one stops working). Errors: 409 `OTP_RESEND_TOO_SOON` `Please wait N seconds before asking for a new OTP.` (one per minute: use `resendAvailableAt` for the countdown), 409 `OTP_RESEND_LIMIT` `Too many OTPs sent. Please try again in an hour.` (5 per hour), 409 `ACCOUNT_EXISTS` (already verified → Login), 404 `User not found.` Use it for "Send a new code"; signup again is no longer needed.
 
+**Forgot password (rev 25).** Login screen → "Forgot password?" → enter agent ID → OTP + new password screen → Login.
+
+**`POST /auth/forgot-password`** (public) `{ agentId }` → **always** 200 `If this agent ID has an account, an OTP has been sent to its registered email.` `data: { resendAvailableAt }`. The answer is the same for an unknown ID, a pending / blocked account, and when a send is skipped by the limits (one per minute, 5 per hour), so it never reveals whether an ID exists. Show the message as is, then the OTP screen with a "Send again" button enabled at `resendAvailableAt` (60 s). The OTP is valid 10 minutes, 5 attempts.
+
+**`POST /auth/reset-password`** (public) `{ agentId, otp, password, confirmPassword }` (password 8–100 chars, must match) → 200 `Password reset. Please log in with your new password.` **Every session of the user ends** (all phones: their refresh tokens fail; their access tokens get 401 `SESSION_ENDED` at once). Go to Login with the agent ID prefilled. Errors: 409 `OTP_INVALID` (`Invalid OTP.`), 409 `OTP_EXPIRED`, 409 `OTP_ATTEMPTS_EXCEEDED`, 404 `OTP_NOT_FOUND` (also for an unknown ID — ask for a new OTP), 400 validation (`Passwords do not match.`).
+
+**`POST /auth/change-password`** (logged in; Profile → Change password) `{ currentPassword, password, confirmPassword }` → 200 `Password changed. Other devices have been signed out.` `data: { accessToken, refreshToken }`: **replace both tokens** with these (the old ones stop working at once). Errors: 400 `CURRENT_PASSWORD_INCORRECT`, 400 `PASSWORD_UNCHANGED` (`New password must be different from the current one.`), 400 validation. Under the `/auth` rate limit (20 / 15 min).
+
+**Blocked while logged in (rev 25).** The super admin can block or suspend an account; access stops **at once**: the next API call with a still-valid access token gets **403 `ACCOUNT_BLOCKED` / `ACCOUNT_SUSPENDED`** (message includes ` Reason: …`), and refresh fails too. On either code: clear tokens and show a full-screen "Your account has been blocked / suspended" with the message (no retry loop, no refresh). **401 `SESSION_ENDED`** (`Session ended. Please log in again.`) means the password was changed or reset elsewhere: don't refresh, go to Login.
+
 Still planned (not built; proposals):
 
 | Endpoint (proposed) | Body | Purpose |
 |---|---|---|
-| `POST /auth/forgot-password` | `{ agentId }` | email a reset OTP |
-| `POST /auth/reset-password` | `{ agentId, otp, password, confirmPassword }` | set a new password with the OTP |
 | `POST /notifications/devices` / `DELETE /notifications/devices/:token` | `{ token, platform: "ios" \| "android" }` | register/unregister the push token (Expo or FCM, provider TBD) |
 | (no endpoint) activation email | — | assign/regenerate will email the code + password to the agent |
+
+Email is still a console stub on the server: OTPs (signup and reset) are not delivered yet in any environment except through the server log.
 
 The 401 interceptor (§5.3) calls `/auth/refresh` once, retries the request, and logs out only if the refresh fails.
 
 ### 5.3 Session
 
 - Store `accessToken` and `user` in secure storage. **Don't store the password.**
-- The access token lasts **15 minutes**. Store `refreshToken` in secure storage too. On 401 (`TOKEN_EXPIRED` / `TOKEN_INVALID`): call `POST /auth/refresh` **once** (one refresh at a time: queue the other requests until it answers), save both new tokens, retry the request. If the refresh fails (401 `REFRESH_TOKEN_INVALID` or 403) → Login prefilled with the `agentId`. You can also refresh shortly before `exp`.
+- The access token lasts **15 minutes**. Store `refreshToken` in secure storage too. On 401 `SESSION_ENDED` → Login (no refresh). On 403 `ACCOUNT_BLOCKED` / `ACCOUNT_SUSPENDED` from **any** endpoint → blocked screen (above). On 401 (`TOKEN_EXPIRED` / `TOKEN_INVALID`): call `POST /auth/refresh` **once** (one refresh at a time: queue the other requests until it answers), save both new tokens, retry the request. If the refresh fails (401 `REFRESH_TOKEN_INVALID` or 403) → Login prefilled with the `agentId`. You can also refresh shortly before `exp`.
 - Logout = `POST /auth/logout { refreshToken }`, then delete tokens + `queryClient.clear()`.
 - On app start: token present → decode `exp` (e.g. `jwt-decode`); expired → Login.
 
@@ -598,15 +617,17 @@ The 401 interceptor (§5.3) calls `/auth/refresh` once, retries the request, and
 | `POST /payments/verify` `{ paymentId, gatewayTransactionId, transactionReference? }` | completes it, creates/extends the subscription |
 | `GET /payments/history`, `GET /payments/:paymentId` | own payments only |
 
-Plan: `{ id, code, name, ownerType, level, machineLimit, pricing: [{ billingCycle, durationDays, price }], features: [{ code, name, description, category }] }` (`price` is a **string**).
+Plan: `{ id, code, name, ownerType, level, machineLimit, pricing: [{ billingCycle, durationDays, price, gstPercent, gstAmount, priceWithGst }], features: [{ code, name, description, category }] }` (`price`, `gstAmount`, `priceWithGst` are **strings**; for CSP plans they're per machine).
+
+**GST (rev 25): price + GST, subscriptions only.** The plan price is before tax; GST (rate set by the super admin, **18 %** today, `gstPercent`) is added at checkout. Show "₹550 + 18% GST = ₹649" on the plan card and the checkout total = `priceWithGst × machines` (the server computes the same: `create-order` returns `amount` = price × machines, `taxPercent`, `taxAmount`, `totalAmount` = amount + tax — **charge `totalAmount`**). A paid payment gets an `invoiceNumber` (`INV…`) in the payment detail / history: show it on the payment receipt. Nothing else in the app (receipts, cash, commission) has GST.
 Current subscription: `{ id, subscriptionNumber, status, subscriptionType, machineLimit, amountPaid (string), startDate, endDate, graceEndsAt, plan: { id, code, name, ownerType, level, features: [{ code, name, description, category }] }, latestPayment: { paymentNumber, status, amount, totalAmount, paidAt } }`.
-`create-order` returns the payment: `{ id, paymentNumber, amount, totalAmount, currency: "INR", status: "PENDING", planId, billingCycle, … }`.
+`create-order` returns the payment: `{ id, paymentNumber, amount, taxPercent, taxAmount, totalAmount, currency: "INR", status: "PENDING", planId, billingCycle, invoiceNumber (null until paid), … }` (money fields are strings).
 
 **CSP checkout (per machine):**
 
 ```
 [Plan + cycle] → [Machines: − 2 +]  → total = price × machines (show it; the server computes the same)
-   → POST /payments/create-order { planId, billingCycle, machineCount: 2 }   → amount "500", machineCount 2
+   → POST /payments/create-order { planId, billingCycle, machineCount: 2 }   → amount "500", taxAmount "90", totalAmount "590", machineCount 2
    → POST /payments/verify …                                                → subscription.machineLimit = 2
    → GET /activations: 2 activation codes → assign one to the CSP, one to a KO (section 8)
 ```
@@ -626,13 +647,14 @@ Current subscription: `{ id, subscriptionNumber, status, subscriptionType, machi
 **Purchase rules (server):**
 - Same plan **and same machine count** while it's running → **renewal**: the end date is extended from the current end date; machines keep working.
 - Same plan with a **different machine count** (adding/removing machines) → a new subscription starts now with the new count; the old one ends; activated machines carry over (up to the new count); missing codes are generated. No credit for unused days.
-- Different plan → **upgrade/switch**: a new subscription starts now and the old one ends immediately. Machines already activated move to the new plan (up to its machine limit). No refund/credit for unused days.
-- After the plan ended → new subscription from now. No grace period.
+- Different plan → **upgrade/switch**: a new subscription starts now and the old one ends immediately. Machines already activated move to the new plan (up to its machine limit). **No refund/credit for unused days** (decided; say so on the upgrade confirmation: "Your current plan ends now; unused days aren't credited.").
+- **Grace period (rev 25):** the super admin sets a grace period (0 days today, up to 30). During grace (after `endDate`, until `graceEndsAt`) everything keeps working, in the app and on the PCs; a renewal in grace continues from the old `endDate` (no days lost). `graceEndsAt` is `null` when there's no grace. Show "Expired on `endDate` — renew before `graceEndsAt` to keep using CSP Manager" as a banner while `endDate < now ≤ graceEndsAt`. When the super admin changes the grace period, running subscriptions follow it.
+- After the plan (and its grace) ended → new subscription from now.
 - Buying a plan of the wrong owner type → 400 `This plan is not available for your account.`; unknown cycle → 400 `Selected billing cycle is not available.`
 
 **Payment status — PENDING backend work:** today the payment is "manual": the app calls `create-order` and then `verify` with any `gatewayTransactionId`. Razorpay is being integrated (pre-production checklist 1.1–1.5). Build the checkout behind one function `payForPlan(planId, billingCycle)` so swapping in `react-native-razorpay` later only changes that function. Don't ship the manual flow to production users.
 
-**UI notes:** plan cards list every `pricing` entry (cycle selector); CSP plans show "per machine" and a machine stepper (default: current `machineLimit`). Show "Renews on `endDate`". Switching a machine plan to `BC_CSP_LINK` (0 machines) must warn: "Your machines will stop working."
+**UI notes:** plan cards list every `pricing` entry (cycle selector) with "+ GST"; CSP plans show "per machine" and a machine stepper (default: current `machineLimit`). Show "Renews on `endDate`". Switching a machine plan to `BC_CSP_LINK` (0 machines) must warn: "Your machines will stop working."
 
 ## 7. Paywall and feature gating
 
@@ -807,13 +829,17 @@ Common fields:
 overview:          { totalTransactions, successfulTransactions, failedTransactions, totalTransactionAmount, lastTransactionAt, successRate, failureRate }
 services:          [{ transactionCategory, receiptType, successCount, failedCount, successAmount, failedAmount }]
 servicesByCategory:[{ transactionCategory, totalCount, successCount, failedCount, pendingCount, successAmount }]   // all receipt types together, most-used first; use for the "services" tiles
-cash:              { totals: { cashLimit, cashInAccount, totalCashInHand, drawer, drawerTotal },
+cash:              { totals: { cashLimit, cashInAccount, cashInTransit, cashLeftInBank, cashOther*, cashDueExtra*, totalCashInHand, drawer, drawerTotal },
                      pools: [ <pool view, §13A> ] } | null   // null for CSP plans without CASH_MANAGEMENT; the agents in view only (agentId=KO → that KO)
+                                                             // * CSP only: a BC gets the limit and its distribution, without cashOther / cashDueExtra (rev 25)
+commission:        { today: { from, to, amount, successCount }, month: { from, to, amount, successCount } }   // rev 25
 statusSummary:     { success, failed, total }
 activationSummary: { total, used, unused }
 recentTransactions:[{ receiptId, receiptType, transactionCategory, status, amount, transactionAt, customerName, customerAccount, rrn, stan }]
 subscription:      { subscriptionNumber, subscriptionType, status, machineLimit, amountPaid, startDate, endDate, graceEndsAt, createdSource } | null
 ```
+
+**Commission cards (rev 25):** `commission.today` = today (IST) and `commission.month` = the 1st of this month → today, for the agents in view (a CSP: itself + its KOs; a KO: what that KO generated; a BC: its CSPs). `amount` is ₹ earned by the CSP (rates set by the super admin, frozen per receipt; §13B), `successCount` the successful receipts counted. `from` / `to` are `YYYY-MM-DD`. They come from the daily counts, so they don't depend on the date filter of the rest of the summary. Tap → the Commission screen (§13B).
 
 Single-agent view (CSP, or BC with `agentId`) adds:
 
@@ -894,11 +920,19 @@ Item: `{ receiptId, receiptType, transactionCategory, status, amount, transactio
 
   Render one row per entry (`label`: `value`). When the super admin switches on a new field, it appears here on new receipts with no app change. Money-like values (`balanceAfter`) come as numbers: format them as ₹.
 - The same values are also flat on the detail (`rrn`, `stan`, `terminalId`, `location`, `bankName`, `bankTransactionId`, `bankResponseCode`, `bankResponseMessage`, `balanceAfter`, `customerName`, `customerAccount`; `null` when missing) for screens that need one by name.
-- **`GET /receipts/fields`** (any login) → `[{ field, label, personal, allowed }]`: every optional field, its display name and whether it's switched on now. Use it for filter chips, table / export column headers and an "about this receipt" legend; refetch on app start (it changes rarely).
+- **Defaults and extras (rev 25):** only `rrn` and `location` are **fixed defaults** (always on, `fixed: true`); the super admin picks any extra ones from a multi-select (`stan`, `terminalId`, `bankName`, `bankTransactionId`, `bankResponseCode`, `bankResponseMessage`, `balanceAfter`, `customerName`, `customerAccount`, `slip`). `slip` is not a text row: it means the PC uploads the slip image (below).
+- **`GET /receipts/fields`** (any login) → `[{ field, label, personal, fixed, allowed }]`: every optional field, its display name and whether it's switched on now. Use it for filter chips, table / export column headers and an "about this receipt" legend; refetch on app start (it changes rarely).
 - Fields that aren't allowed are never stored, so they can't appear later for that receipt. A receipt keeps the fields it was saved with even if the super admin later switches a field off.
 - **There is no Aadhaar field** (and there won't be): remove `customerAadhaarMasked` from the app. Personal fields (`customerName`, `customerAccount`, `balanceAfter`; `personal: true`) are off by default.
 
 `GET /receipts/:receiptId?agentId=<the receipt's agent>` (use **`receiptId`**, and send `agentId` from the list item: receipt numbers are unique per agent, so two agents can have the same one; outside your scope → 403) → `{ …, cashDenomination: { notes500, notes200, notes100, notes50, notes20, notes10, notes5, coins20, coins10, coins5, coins2, coins1 } | null, machine: { machineCode, machineName }, agent: { agentId, name, type } }`. `cashDenomination` is `null` when none was captured or the CSP plan lacks `CASH_MANAGEMENT`.
+
+**Slip image, PDF, report a problem (rev 25)** — three actions on the receipt detail:
+
+- **Slip:** when the detail has **`hasSlip: true`**, show a "View slip" button → `GET /receipts/:receiptId/slip?agentId=` → `data: { receiptId, url, expiresIn: 300 }`; open `url` (an image, JPEG/PNG/WebP) right away — it expires in 5 minutes, so fetch a new one each time (don't cache the URL). 404 `This receipt has no slip.` when there's none. Slips exist only when the super admin selected the `slip` field, and are deleted with the receipt after the retention period.
+- **PDF:** "Download / Share PDF" → `GET /receipts/:receiptId/pdf?agentId=` with the bearer token → `application/pdf` (`Content-Disposition: attachment; filename="receipt-<receiptId>.pdf"`). Save it with `react-native-blob-util` / `expo-file-system` and open the share sheet (§17). It has the amount, status, date, service, agent, machine and the receipt's optional fields (amounts print as "Rs.").
+- **Report a problem:** "Report a problem" → pick a reason → optional note → `POST /receipts/:receiptId/report?agentId=` `{ reason, details? }`. `reason`: `WRONG_AMOUNT` (Wrong amount), `WRONG_STATUS` (Wrong status), `DUPLICATE` (Duplicate receipt), `MISSING_DETAILS` (Missing or wrong details), `NOT_MY_TRANSACTION` (Not my transaction), `OTHER` (Other — `details` required, max 1000). → 201 `Problem reported. The support team will look into it.` `data: { id, receiptId, ownerAgentId, reportedBy, reason, reasonLabel, details, status: "OPEN", resolution: null, resolvedAt: null, createdAt, receipt: { amount, status, transactionCategory, transactionAt } }`. 409 `This receipt already has an open problem report.` (one open report per receipt). The super admin resolves or rejects it with a note.
+- **My reports:** `GET /receipts/reports?status=OPEN|RESOLVED|REJECTED` → the newest 100 reports on receipts in your scope (or raised by you), same item shape. Show `status` + `resolution` ("What was done"). The report keeps its own copy of the receipt, so it stays readable after the receipt itself is deleted by retention. No push yet: refresh on screen focus.
 
 `GET /receipts/stats` (same filters) → `{ total, success, failed, totalAmount }`. Without `search` it reads the daily counts (up to a year back); with `search` it counts receipts (last 60 days). With `status=SUCCESS`, `failed` is now `0` (older builds ignored the filter for `failed`).
 
@@ -1097,7 +1131,7 @@ To-dos shared between the CSP and its agents. A KO manages its own on the deskto
 
 **Who earns:** only the **CSP**. A KO is paid a salary by its CSP, so every successful receipt of the CSP **or of its KOs** earns commission for the CSP. Commission is earned **by month** (the Home hero shows this month so far; "Monthly" lists past months).
 
-**Rates** are set by the super admin per service: `FLAT` (₹ per transaction / enrolment) or `PERCENT` (of the amount, optional min / max per receipt). A rate can be the default for everyone, or an override for one BC's CSPs or for one CSP (CSP > BC > default). New rates start now or later, never in the past: the rate is frozen on each receipt when it's uploaded, so past days never change. Failed receipts earn nothing. With no rate set a service earns ₹0.
+**Rates** are set by the super admin per service: `FLAT` (₹ per transaction / enrolment), `PERCENT` (of the amount, optional min / max per receipt) or **`SLAB`** (rev 25: amount bands, e.g. ₹0–1000 → ₹5, ₹1000+ → 1%; each band FLAT or PERCENT; optional min / max per receipt). For a SLAB rate `rate` is `null` and **`slabs`** lists the bands `[{ from, to (null = and above), type: FLAT|PERCENT, amount?, percent? }]` (`from` inclusive, `to` exclusive); `rateLabel` reads `₹0–1000: ₹5; ₹1000+: 1% (max ₹25)` — show `rateLabel`, or a small table from `slabs`. A rate can be the default for everyone, or an override for one BC's CSPs or for one CSP (CSP > BC > default). New rates start now or later, never in the past: the rate is frozen on each receipt when it's uploaded, so past days never change. Failed receipts earn nothing. With no rate set a service earns ₹0.
 
 Services (`serviceCode`): `CW`, `CD`, `MT`, `FT`, `MATM`, `BBPS`, `LOAN` (FINANCIAL); `BE`, `MS`, `PB` (NON_FINANCIAL); `AO`, `PMJJBY`, `PMSBY`, `APY`, `SS_OTHER` (ENROLMENT).
 
@@ -1125,7 +1159,7 @@ Summary `data`:
 - `byAgent`: where it was generated (all of it belongs to the CSP). Show it on the KO detail as "Commission generated", not "earned".
 - Commission totals come from the daily counts, so they stay after receipts are deleted (retention).
 
-Also: `GET /receipts/stats` adds `commissionAmount`; `GET /receipts/:receiptId` adds `commission: { amount, rateLabel } | null` (null = no commission service for that receipt).
+Also: the dashboard summary has `commission.today` / `commission.month` (§11, rev 25); `GET /receipts/stats` adds `commissionAmount`; `GET /receipts/:receiptId` adds `commission: { amount, rateLabel } | null` (null = no commission service for that receipt).
 
 ## 13C. Team today (CSP)
 
@@ -1233,7 +1267,7 @@ await Sharing.shareAsync(res.uri, { mimeType: "application/vnd.openxmlformats-of
 
 | Gap | Impact on the app | Plan |
 |---|---|---|
-| No forgot-password endpoint yet | no password reset | planned (§5.2) |
+| OTP emails are a console stub on the server | signup / reset OTPs aren't delivered yet (dev: read them from the server log) | email provider before launch |
 | Payments are manual (no Razorpay yet) | don't ship checkout to production | checklist 1.1–1.5 |
 | No push notifications / activation emails yet | poll lists for link approvals and machine status; show passwords from the assign response | planned (§5.2) |
 | `POST /auth/check-agent` returns the full agent record | only use `success` | backend to trim |
@@ -1255,7 +1289,7 @@ await Sharing.shareAsync(res.uri, { mimeType: "application/vnd.openxmlformats-of
 | R7 | `status` (`ACTIVE` / `INACTIVE`) in the agent object | **Done** (§9). Inactive agents are now also listed in `GET /agents` / `GET /agents/:id` for their owner, so they can be reactivated. |
 | R8 | Per-PC numbers in the machine list and detail | **Done** (§12): a new `pc` block per machine; the existing fields stay the CSP unit's. |
 | R9 | `amount: null` for receipts without an amount | **Done** (§13). |
-| R10 | Commission per service | **Open**: see R12 (product decisions pending). |
+| R10 | Commission per service | **Done**: see R12 (§13B; rev 25 adds `SLAB` rates and the dashboard `commission` today / month). |
 | R11 | CSP-only dashboard view | **Done** (§11): `includeKos=false`. |
 
 The app team's list, as they wrote it (found while building the app against this KT; ordered by priority; the app has a workaround for each until it's done):
@@ -1283,7 +1317,7 @@ The app team's list, as they wrote it (found while building the app against this
 | R12 | Commission | **Done** (§13B, rev 24). Decided: **only the CSP earns** (KOs are salaried by the CSP), **by month**; FLAT / PERCENT rates per service set by the super admin (default, BC or CSP override), frozen per receipt. Differences from your draft: `month=` added; `byAgent` = where it was generated; `GET /commission/months` added; no `SLAB` rates yet; rates have no DRAFT state (a future `effectiveFrom` is the draft). |
 | R13 | Team today | **Done** (§13C, rev 24). Online = heartbeat sessions with at most one missed heartbeat; active = SBI work (activity start → stop); late / early against the CSP's `workdayStart` / `workdayEnd` (`/team/settings`). Adds `onlineSeconds` next to `activeSeconds`, `earlyLeaveMinutes`, `status`. |
 | R14 | Requests inbox | **Future scope** (not planned now; §19.3). Use §13A requests and the settlements feed. |
-| R15 | Receipt detail fields | **Partly done** (§13, rev 24): **no Aadhaar** — remove `customerAadhaarMasked` from the app. The super admin decides which optional fields the desktop may send (`bankName`, `balanceAfter`, `bankTransactionId` (your `transactionId`), `bankResponseCode`, `bankResponseMessage`, `customerName`, `customerAccount`, `rrn`, `stan`, `terminalId`, `location`); the detail returns them (`null` when not sent). Slip image, PDF and "report a problem" (`slipAvailable`, `…/slip`, `…/pdf`, `…/report`): **future scope** (§19.3). |
+| R15 | Receipt detail fields | **Done** (§13, rev 24 + rev 25): **no Aadhaar** — remove `customerAadhaarMasked` from the app. The super admin decides which optional fields the desktop may send (`bankName`, `balanceAfter`, `bankTransactionId` (your `transactionId`), `bankResponseCode`, `bankResponseMessage`, `customerName`, `customerAccount`, `rrn`, `stan`, `terminalId`, `location`); the detail returns them (`null` when not sent). Rev 25: `rrn` and `location` are fixed defaults; `stan`, `terminalId` and the rest are extras the super admin selects. Slip image, PDF and "report a problem" **built** (§13): your `slipAvailable` is **`hasSlip`**; `GET …/slip` returns a 5-minute link; `GET …/pdf`; `POST …/report { reason, details? }`; `GET /receipts/reports`. |
 | R16 | `?agentId=` on `GET /receipts/:receiptId` | **Done** (§13). |
 | R17 | `GET /cash-management/dues/:dueId` with `events` | **Done** (§13A); the desktop has `GET /machines/runtime/cash/dues/:dueId` too. |
 | R18 | `ownSubscription` on a BC's CSPs | **Done** (§9). |
@@ -1414,12 +1448,13 @@ The canvas shows "Own plan active" / "No own plan yet" per CSP. Add `ownSubscrip
 | Item | Notes |
 |---|---|
 | Requests inbox (R14): one feed of what waits for the CSP, with approve / decline | Today: §13A KO cash requests (`/cash-management/requests`) and the settlements feed. A BC asking the CSP to link, and a KO asking for another PC, would be new flows. |
-| Receipt slip image, PDF, "report a problem" (R15) | Needs the desktop to capture the slip; then `GET /receipts/:id/slip`, `/pdf`, `POST /receipts/:id/report`. |
-| Commission slabs | `SLAB` rates (amount bands) next to FLAT / PERCENT. |
-| Push notifications | Checklist 2.14 / 2.16 (link approvals, revoke results, settlements, CSP tasks). |
-| Forgot / reset password | §5.2. |
+| Push notifications | Checklist 2.14 / 2.16 (link approvals, revoke results, settlements, CSP tasks, problem report answered). |
+
+Built in rev 25 (were future scope): receipt slip / PDF / report a problem (§13), commission slabs (§13B), forgot / reset / change password (§5.2).
 
 ## 20. Changelog
+
+- 2026-11-04 (rev 25) — §5.2: forgot / reset / change password; blocking cuts access at once (403 `ACCOUNT_BLOCKED` / `ACCOUNT_SUSPENDED` with a reason on any call; 401 `SESSION_ENDED` after a password change elsewhere); OTP attempts now really count. §6: **price + GST** (`gstPercent`, `gstAmount`, `priceWithGst` on plans; `taxPercent`, `taxAmount`, `totalAmount`, `invoiceNumber` on payments), grace period (`graceEndsAt`, set by the super admin), no credit on upgrade. §11: dashboard `commission` (today + month). §13: fixed default receipt fields (`rrn`, `location`; `stan` and `terminalId` are now optional, off until the super admin selects them) + super-admin-selected extras (`fixed` in `/receipts/fields`), receipt **slip** (`hasSlip`, `GET …/slip`), **PDF** (`GET …/pdf`), **report a problem** (`POST …/report`, `GET /receipts/reports`). §13A: a BC sees only the cash limit and its distribution (other cash hidden; other cash endpoints 403). §13B: `SLAB` rates (`slabs`).
 
 - 2026-11-04 (rev 24, update) — §13: receipt detail `fields` (only what the receipt has, with labels: build the screen from it), `GET /receipts/fields`; receipts can carry more or fewer optional fields as the super admin changes them.
 - 2026-11-04 (rev 24) — New §13B commission (only the CSP earns, by month; `/commission/summary`, `/months`, `/rates`; commission on receipt detail and stats) and §13C team today (`/team/today`, `/team/settings`). §13: optional receipt fields set by the super admin; **no Aadhaar** (remove `customerAadhaarMasked`). §12: a PC is online while its last heartbeat is ≤ 120 s old (at most one missed). §19.2 statuses; §19.3 future scope (requests inbox, slip / PDF / report, slabs).

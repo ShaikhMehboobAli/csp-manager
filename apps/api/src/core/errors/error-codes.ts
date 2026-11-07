@@ -21,6 +21,9 @@ const MESSAGE_CODES: [RegExp, string][] = [
   [/^Invalid token\.|^Invalid authorization header\./, "TOKEN_INVALID"],
   [/^Authorization token is required\./, "TOKEN_REQUIRED"],
   [/^Invalid refresh token\.|^Refresh token has expired\./, "REFRESH_TOKEN_INVALID"],
+  [/^Session ended\. Please log in again\./, "SESSION_ENDED"],
+  [/^Current password is incorrect\./, "CURRENT_PASSWORD_INCORRECT"],
+  [/^New password must be different/, "PASSWORD_UNCHANGED"],
   // Subscription
   [/^No subscription found\./, "SUBSCRIPTION_NONE"],
   [/^Your subscription has expired\./, "SUBSCRIPTION_EXPIRED"],
