@@ -60,6 +60,20 @@ export interface HeartbeatResponse {
   // before a cash transaction. Null when the agent isn't part of a CSP.
   cash: Awaited<ReturnType<CashService["getMachineCash"]>>;
 
+  // Agents allowed on this PC (owner CSP + its KOs), for machineConfig.
+  accessAgent: string[];
+  accessAgents: {
+    agentId: string;
+    name: string;
+    type: string;
+    emailMasked: string | null;
+    emailVerified: boolean;
+  }[];
+
+  // Whose cash `cash` is, and how they logged in (null = the PC's agent).
+  cashAgentId: string | null;
+  cashLoginMethod: "KIOSK" | "EMAIL_OTP" | null;
+
   // Optional receipt fields the super admin allows the desktop to send.
   receiptFields: { allowed: string[] };
 }

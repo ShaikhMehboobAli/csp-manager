@@ -21,6 +21,11 @@ router.post(
   MachineController.activateMachine,
 );
 
+// Activation form (desktop, before activating): pre-fill and KO email OTP.
+router.post("/activate/preview", activationRateLimit, MachineController.previewActivation);
+router.post("/activate/email/otp", activationRateLimit, MachineController.sendActivationEmailOtp);
+router.post("/activate/email/verify", activationRateLimit, MachineController.verifyActivationEmail);
+
 router.get("/list", authMiddleware, MachineController.getMachines);
 router.get(
   "/:machineId/heartbeat",

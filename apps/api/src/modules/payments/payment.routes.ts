@@ -12,6 +12,7 @@ import { createOrderSchema } from "./validations/create-order.validation";
 import { validate } from "../../core/middlewares/validate";
 import { verifyPaymentSchema } from "./validations/verify-payment.validation";
 import { paymentWebhookSchema } from "./validations/webhook-payment.validation";
+import { mandateWebhook } from "./mandate-webhook";
 
 const router = Router();
 
@@ -34,6 +35,9 @@ router.post(
 );
 
 router.get("/history", authMiddleware, PaymentController.getPaymentHistory);
+
+// UPI mandate events (activated, revoked, renewal charge result).
+router.post("/mandates/webhook", webhookAuth, mandateWebhook);
 
 router.get("/:paymentId", authMiddleware, PaymentController.getPaymentDetails);
 

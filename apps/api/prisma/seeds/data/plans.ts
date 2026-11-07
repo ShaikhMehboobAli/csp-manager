@@ -130,26 +130,10 @@ export const plans = [
     featureCodes: ["DESKTOP_AUTOMATION", "RECEIPT_SYNC"],
   },
 
-  {
-    code: "CSP_AUTOMATION_CASH_MANAGEMENT",
-    name: "CSP Automation + Cash Management",
-    ownerType: PlanOwnerType.CSP,
-    level: 2,
-    machineLimit: 1,
-
-    pricing: [
-      {
-        billingCycle: BillingCycle.MONTHLY,
-        durationDays: 30,
-        price: 450,
-      },
-    ],
-    featureCodes: [
-      "DESKTOP_AUTOMATION",
-      "RECEIPT_SYNC",
-      "CASH_MANAGEMENT",
-    ],
-  },
+  // CSP_AUTOMATION_CASH_MANAGEMENT (₹450) was removed on 2026-11-07: CSP
+  // plans are ₹250 (automation only) and ₹550 (complete, incl. cash
+  // management and the app). The seed deactivates it; running
+  // subscriptions on it keep working until they end and can upgrade.
 
   {
     code: "CSP_COMPLETE",

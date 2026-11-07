@@ -24,13 +24,29 @@ const agentFields = {
  */
 const koFields = {
   ...agentFields,
-  openingCash: requiredMoneyValidator("Cash in hand"),
+  // The KO's cash in hand, given by the CSP. Used only when the CSP's plan
+  // has cash management (then required); ignored otherwise.
+  openingCash: moneyValidator("Cash in hand"),
+  // The new cash in hand of existing agents (CSP and/or KOs) the CSP moved
+  // cash from / to in the form. Omit to take it from the CSP's own cash in
+  // hand.
+  cashAdjustments: z
+    .array(
+      z
+        .object({
+          agentId: z.string().trim().min(1).max(50),
+          cashInHand: requiredMoneyValidator("Cash in hand"),
+        })
+        .strict(),
+    )
+    .max(51)
+    .optional(),
 };
 
 /**
- * A new CSP needs all three, and cash in hand + cash in account = CSP limit
- * (checked when the CSP is created: for an existing CSP, a link request,
- * they're ignored).
+ * A new CSP needs its cash in hand and cash in account; the CSP limit is
+ * their sum (`cashLimit` is ignored). For an existing CSP (a link request)
+ * they're ignored.
  */
 const cspFields = {
   ...agentFields,
@@ -39,11 +55,28 @@ const cspFields = {
   openingCashInAccount: moneyValidator("Cash in account"),
 };
 
+// KOs listed with a new CSP take their cash in hand from the CSP's.
+const cspKoFields = {
+  ...agentFields,
+  openingCash: moneyValidator("Cash in hand"),
+};
+
 export const createKoSchema = z.object(koFields);
+
+/** Replace a KO with a new one: the old KO's machine and cash move to it. */
+export const replaceKoSchema = z.object({
+  agentId: agentFields.agentId,
+  name: agentFields.name,
+  mobile: agentFields.mobile,
+  email: agentFields.email,
+  address: agentFields.address,
+});
+
+export type ReplaceKoDto = z.infer<typeof replaceKoSchema>;
 
 export const createCspSchema = z.object({
   ...cspFields,
-  kos: z.array(z.object(koFields)).max(50).optional(),
+  kos: z.array(z.object(cspKoFields)).max(50).optional(),
 });
 
 export type CreateKoDto = z.infer<typeof createKoSchema>;

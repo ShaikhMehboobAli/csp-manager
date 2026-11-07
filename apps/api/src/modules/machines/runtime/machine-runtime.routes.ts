@@ -23,7 +23,15 @@ import {
   machineSettlementSchema,
   machineTaskChangeSchema,
   machineTaskSchema,
+  machineAdjustmentCompleteSchema,
+  machineTransferSchema,
 } from "../../cash/cash.validation";
+import {
+  machineCashLoginOtpSchema,
+  machineCashLoginVerifySchema,
+  machineEmailOtpSchema,
+  machineEmailVerifySchema,
+} from "./machine-runtime.validation";
 import { validate } from "../../../core/middlewares/validate";
 import { machineIdempotency } from "../../../core/middlewares/machine-idempotency.middleware";
 
@@ -69,7 +77,7 @@ router.post(
  * Writes accept an `Idempotency-Key` header (a retry gets the first answer);
  * the POST forms of the reads don't need one.
  */
-const CASH_READS = new Set(["/", "/labels", "/days"]);
+const CASH_READS = new Set(["/", "/labels", "/days", "/session", "/adjustments"]);
 
 router.use("/cash", (req, res, next) =>
   req.method === "GET" || (req.method === "POST" && CASH_READS.has(req.path))
@@ -212,6 +220,78 @@ router.delete(
   "/cash/tasks/:taskId",
   validate(machineCashSchema),
   asyncHandler(controller.deleteTask.bind(controller)),
+);
+
+// "Adjust" requests: the CSP changed this agent's cash in hand in the app;
+// the notes given / taken are counted here (mandatory).
+router.get(
+  "/cash/adjustments",
+  validate(machineCashSchema),
+  asyncHandler(controller.getAdjustments.bind(controller)),
+);
+
+router.post(
+  "/cash/adjustments",
+  validate(machineCashSchema),
+  asyncHandler(controller.getAdjustments.bind(controller)),
+);
+
+router.post(
+  "/cash/adjustments/:adjustmentId/complete",
+  validate(machineAdjustmentCompleteSchema),
+  asyncHandler(controller.completeAdjustment.bind(controller)),
+);
+
+// Cash in hand ⇄ cash in account in one step.
+router.post(
+  "/cash/transfer",
+  validate(machineTransferSchema),
+  asyncHandler(controller.transferCash.bind(controller)),
+);
+
+// Cash management login on a shared PC: automatic on SBI kiosk login
+// (/activity/start); email OTP as the fallback.
+router.get(
+  "/cash/session",
+  validate(machineCashSchema),
+  asyncHandler(controller.getCashSession.bind(controller)),
+);
+
+router.post(
+  "/cash/session",
+  validate(machineCashSchema),
+  asyncHandler(controller.getCashSession.bind(controller)),
+);
+
+router.post(
+  "/cash/login/otp",
+  validate(machineCashLoginOtpSchema),
+  asyncHandler(controller.sendCashLoginOtp.bind(controller)),
+);
+
+router.post(
+  "/cash/login/verify",
+  validate(machineCashLoginVerifySchema),
+  asyncHandler(controller.verifyCashLoginOtp.bind(controller)),
+);
+
+router.post(
+  "/cash/logout",
+  validate(machineCashSchema),
+  asyncHandler(controller.cashLogout.bind(controller)),
+);
+
+// The logged-in agent's email (KOs verify it here when not done at activation).
+router.post(
+  "/cash/email/otp",
+  validate(machineEmailOtpSchema),
+  asyncHandler(controller.sendEmailVerificationOtp.bind(controller)),
+);
+
+router.post(
+  "/cash/email/verify",
+  validate(machineEmailVerifySchema),
+  asyncHandler(controller.verifyEmail.bind(controller)),
 );
 
 export default router;

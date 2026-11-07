@@ -58,7 +58,15 @@ const settlementSchema = z
 const adjustmentSchema = z
   .object({
     type: z.literal("ADJUSTMENT"),
-    cashLimit: moneyValidator("Cash limit"),
+    // The cash limit is worked out (all cash in hand + cash in account + …);
+    // sending one is refused.
+    cashLimit: z
+      .unknown()
+      .optional()
+      .refine((value) => value === undefined, {
+        message:
+          "The cash limit can't be set: it is cash in hand + cash in account (+ balance due). Change those instead.",
+      }),
     cashInAccount: moneyValidator("Cash in account"),
     // Clears (or corrects) what partly delivered KO settlements left in bank.
     cashLeftInBank: moneyValidator("Left in bank"),
@@ -86,7 +94,6 @@ const adjustmentSchema = z
   .strict()
   .refine(
     (data) =>
-      data.cashLimit !== undefined ||
       data.cashInAccount !== undefined ||
       data.cashLeftInBank !== undefined ||
       data.cashOther !== undefined ||
@@ -94,10 +101,60 @@ const adjustmentSchema = z
     { message: "Nothing to change." },
   );
 
-export const cashTransactionSchema = z.discriminatedUnion("type", [
-  settlementSchema,
-  adjustmentSchema,
+/**
+ * Increase / decrease (app button): cash brought in or taken out of one
+ * agent's cash in hand, or the shared cash in account. The limit moves.
+ */
+const changeSchema = z
+  .object({
+    type: z.enum(["INCREASE", "DECREASE"]),
+    target: z.enum(["CASH_IN_HAND", "CASH_IN_ACCOUNT"]),
+    // CASH_IN_HAND: whose (the CSP itself only with a running machine).
+    agentId: z.string().trim().min(1).optional(),
+    amount: positiveMoney("Amount"),
+    remarks: z.string().trim().min(1, "Remarks are required.").max(500),
+  })
+  .strict()
+  .refine((data) => data.target === "CASH_IN_ACCOUNT" || !!data.agentId, {
+    message: "agentId is required to change an agent's cash in hand.",
+    path: ["agentId"],
+  });
+
+export const cashTransactionSchema = z.union([
+  z.discriminatedUnion("type", [settlementSchema, adjustmentSchema]),
+  changeSchema,
 ]);
+
+export const cashAdjustmentsQuerySchema = z.object({
+  agentId: z.string().trim().min(1).optional(),
+  status: z.enum(["PENDING", "COMPLETED", "CANCELLED"]).optional(),
+});
+
+/** Desktop: the agent counted the notes for the CSP's change. */
+export const machineAdjustmentCompleteSchema = z
+  .object({
+    machineCode: z.string().trim().min(1),
+    apiKey: z.string().optional(),
+    fingerprint: z.string().trim().min(1),
+    // The whole counted drawer, or only the notes given / taken.
+    drawer: drawerSchema.optional(),
+    notes: drawerSchema.optional(),
+  })
+  .refine((data) => !!data.drawer !== !!data.notes, {
+    message: "Send either drawer (the whole count) or notes (given / taken), not both.",
+  });
+
+/** Desktop: one-step move between cash in hand and cash in account. */
+export const machineTransferSchema = z.object({
+  machineCode: z.string().trim().min(1),
+  apiKey: z.string().optional(),
+  fingerprint: z.string().trim().min(1),
+  direction: z.enum(["HAND_TO_ACCOUNT", "ACCOUNT_TO_HAND"]),
+  amount: positiveMoney("Amount"),
+  // Notes taken out of (HAND_TO_ACCOUNT) or put into the drawer; total = amount.
+  cashDenomination: drawerSchema,
+  remarks: z.string().trim().max(500).optional(),
+});
 
 export const cashLedgerQuerySchema = z.object({
   agentId: z.string().trim().min(1).optional(),

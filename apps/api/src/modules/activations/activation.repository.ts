@@ -357,6 +357,36 @@ export default class ActivationRepository {
     });
   }
 
+  /**
+   * An activation the agent already holds: assigned and not yet used, or
+   * running on a machine, on a subscription that hasn't ended. An agent (KO
+   * or the CSP itself) holds at most one.
+   */
+  findHeldActivation(agentId: string, exceptActivationId?: string) {
+    const now = new Date();
+
+    return this.db.activation.findFirst({
+      where: {
+        assignedAgentId: agentId,
+        isCurrent: true,
+        status: {
+          in: [ActivationStatus.NOT_ACTIVATED, ActivationStatus.ACTIVE],
+        },
+        ...(exceptActivationId && { id: { not: exceptActivationId } }),
+        subscription: {
+          status: "ACTIVE",
+          OR: [{ endDate: { gte: now } }, { graceEndsAt: { gte: now } }],
+        },
+      },
+      select: {
+        id: true,
+        activationCode: true,
+        status: true,
+        machine: { select: { machineCode: true } },
+      },
+    });
+  }
+
   findAgentWithHierarchy(agentId: string) {
     return this.db.agent.findUnique({
       where: {

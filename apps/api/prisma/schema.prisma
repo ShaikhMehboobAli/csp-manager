@@ -132,6 +132,42 @@ enum SubscriptionEventType {
   UPGRADE
   RENEWAL
   CANCELLATION
+  // A mandate charge failed (one row per attempt).
+  RENEWAL_FAILED
+  // Renewal failed after every retry; the subscription stopped at once.
+  LAPSED
+}
+
+/// What a payment pays for.
+enum PaymentPurpose {
+  // New subscription (first one, or after the last one ended / was cancelled).
+  PURCHASE
+  // Higher plan and/or more machines on the running subscription (difference only).
+  UPGRADE
+  // Monthly mandate charge (auto renewal).
+  RENEWAL
+}
+
+/// Recurring UPI mandate (autopay) that renews a subscription every month.
+enum MandateStatus {
+  // Created; waiting for the customer to approve it in the UPI app.
+  PENDING
+  ACTIVE
+  // Cancelled by the CSP in our app (subscription cancelled).
+  CANCELLED
+  // Removed by the customer in the UPI app / bank, or rejected by the gateway.
+  REVOKED
+  // Ran its full term (25 years) or the gateway closed it.
+  COMPLETED
+  // The plan's price changed: cancelled and replaced by a new mandate at the
+  // new price.
+  REPLACED
+}
+
+enum MandateProvider {
+  RAZORPAY
+  // Development stand-in: charges succeed/fail per DEV_MANDATE_RESULT.
+  MANUAL
 }
 
 enum SubscriptionType {
@@ -341,6 +377,18 @@ enum PaymentProvider {
   MANUAL
 }
 
+enum NotificationKind {
+  GENERAL
+  CASH_ACTIVATION_DIFFERENCE
+  SUBSCRIPTION_RENEWED
+  SUBSCRIPTION_RENEWAL_FAILED
+  SUBSCRIPTION_LAPSED
+  SUBSCRIPTION_CANCELLED
+  MANDATE_REVOKED
+  // The plan price changed; a new mandate at the new price replaced the old one.
+  MANDATE_REPLACED
+}
+
 enum NotificationType {
   INFO
   SUCCESS
@@ -540,6 +588,10 @@ model Agent {
   email   String?
   address String?
 
+  /// When `email` was verified by OTP (KOs verify at machine activation or
+  /// in the desktop cash panel). Cleared when the email changes.
+  emailVerifiedAt DateTime?
+
   status AgentStatus @default(ACTIVE)
 
   selfRegistered Boolean @default(false)
@@ -576,12 +628,14 @@ model Agent {
   receiptDailyCounts ReceiptDailyCount[]
   cashPool           CashPool?
   agentCash          AgentCash?
-  cashLedgerEntries  CashLedger[]        @relation("CashLedgerAgent")
+  cashLedgerEntries  CashLedger[]           @relation("CashLedgerAgent")
   cashRequests       CashRequest[]
   cashSettlements    CashSettlement[]
   cashDues           CashDue[]
   cashDayCloses      CashDayClose[]
   cashTasks          CashTask[]
+  cashAdjustments    CashDrawerAdjustment[]
+  emailOtps          AgentEmailOtp[]
 
   users User?
 
@@ -697,6 +751,31 @@ model Subscription {
 
   subscriptionNumber String @unique
 
+  /// Price per machine (base, without GST) of the current plan, used to
+  /// price an upgrade's difference. Null on rows created before upgrades.
+  pricePerMachine Decimal? @db.Decimal(10, 2)
+
+  /// Start of the current monthly period (purchase, or the last renewal).
+  /// Upgrades are allowed only in the first 12 days of it.
+  currentPeriodStart DateTime?
+
+  /// Renews by mandate at endDate unless cancelled.
+  autoRenew Boolean @default(true)
+
+  /// Cancelled by the CSP: no refund, works until endDate, never renews.
+  cancelledAt  DateTime?
+  cancelReason String?
+  cancelledBy  String?
+
+  /// Failed mandate charges for the renewal due at endDate (0–3).
+  renewalAttempts      Int       @default(0)
+  nextRenewalAttemptAt DateTime?
+  lastRenewalFailure   String?
+  /// Set when renewal failed after every retry (stopped at once).
+  lapsedAt             DateTime?
+
+  mandates SubscriptionMandate[]
+
   planId String
 
   amountPaid Decimal @db.Decimal(10, 2)
@@ -742,6 +821,58 @@ model Subscription {
 ///////////////////////////
 //Subscription History Model
 ///////////////////////////
+
+/// UPI autopay mandate for a subscription: charges the monthly amount on the
+/// subscription's end date/time, for up to 25 years.
+model SubscriptionMandate {
+  id String @id @default(cuid())
+
+  subscriptionId String
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  ownerId String
+
+  provider MandateProvider
+
+  /// Gateway ids (Razorpay subscription / token / customer).
+  providerMandateId  String? @unique
+  providerCustomerId String?
+
+  status MandateStatus @default(PENDING)
+
+  /// Amount charged every month (incl. GST).
+  amount Decimal @db.Decimal(12, 2)
+
+  /// Upgrade changed the monthly amount; the gateway mandate must be
+  /// updated / re-approved before the next charge (Razorpay: update the
+  /// subscription or create a new mandate).
+  amountChangePending Boolean @default(false)
+
+  frequency BillingCycle @default(MONTHLY)
+
+  startAt DateTime
+
+  /// startAt + 25 years.
+  endAt DateTime
+
+  /// Approval link for the customer (gateway), when there is one.
+  authUrl String?
+
+  activatedAt  DateTime?
+  cancelledAt  DateTime?
+  revokedAt    DateTime?
+  revokeReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  payments Payment[]
+
+  @@index([subscriptionId])
+  @@index([ownerId])
+  @@index([status])
+}
 
 model SubscriptionHistory {
   id String @id @default(cuid())
@@ -931,6 +1062,13 @@ model Machine {
   desktopControls Json?
 
   currentAgentId String?
+
+  /// Who is logged in to cash management on this PC: any agent of the
+  /// owner CSP's family (the CSP or one of its KOs). Set by the SBI kiosk
+  /// login (activity start) or an email OTP login; null = currentAgentId.
+  cashAgentId          String?
+  cashAgentLoginMethod CashLoginMethod?
+  cashAgentLoginAt     DateTime?
 
   lastHeartbeatAt DateTime?
 
@@ -1189,7 +1327,7 @@ model Receipt {
 
   /// S3 key of the slip image (when the super admin allows the slip field);
   /// deleted with the receipt by retention.
-  slipKey String?
+  slipKey        String?
   slipUploadedAt DateTime?
 
   createdAt DateTime @default(now())
@@ -1519,7 +1657,19 @@ model Payment {
   // payment instead of opening a second one.
   idempotencyKey String?
 
+  purpose PaymentPurpose @default(PURCHASE)
+
+  /// UPGRADE: the plan and machine count before the upgrade.
+  previousPlanId       String?
+  previousMachineCount Int?
+
+  /// RENEWAL: the mandate charged and the attempt (1–3).
+  mandateId     String?
+  mandate       SubscriptionMandate? @relation(fields: [mandateId], references: [id], onDelete: SetNull)
+  attemptNumber Int?
+
   @@unique([ownerId, idempotencyKey])
+  @@index([mandateId])
   @@index([subscriptionId])
   @@index([status])
   @@index([paymentMethod])
@@ -1541,6 +1691,11 @@ model Notification {
   message String
 
   type NotificationType @default(INFO)
+
+  kind NotificationKind @default(GENERAL)
+
+  /// Extra data for the app (e.g. { agentId, difference, source }).
+  data Json?
 
   isRead Boolean @default(false)
 
@@ -1858,6 +2013,116 @@ enum CashLedgerType {
   SETTLEMENT_FROM_BANK
   // An open settlement step was cancelled; money went back to where it came from.
   SETTLEMENT_CANCELLED
+  // CSP increased / decreased an agent's cash in hand or the cash in account
+  // (the cash limit moves with it).
+  INCREASE
+  DECREASE
+  // The agent counted the notes for a CSP change (drawer only).
+  DRAWER_ADJUSTED
+  // KO removed (deleted): its cash in hand left the pool.
+  AGENT_REMOVED
+  // KO replaced: its cash in hand and drawer moved to the new KO.
+  AGENT_TRANSFERRED
+  // Desktop one-step move between cash in hand and cash in account.
+  TRANSFER
+}
+
+enum CashLoginMethod {
+  // SBI kiosk login with fingerprint (desktop activity start).
+  KIOSK
+  // Email OTP to the agent's verified email.
+  EMAIL_OTP
+}
+
+enum AgentOtpPurpose {
+  // Verify a (KO's) email at machine activation or in the cash panel.
+  EMAIL_VERIFICATION
+  // Log in to cash management on a PC of the family.
+  CASH_LOGIN
+}
+
+/// Email OTPs for agents (KOs have no User, so Otp can't be used).
+model AgentEmailOtp {
+  id String @id @default(cuid())
+
+  agentId String
+
+  email String
+
+  purpose AgentOtpPurpose
+
+  codeHash String
+
+  /// Machine the OTP was asked from (CASH_LOGIN / desktop verification).
+  machineId String?
+
+  expiresAt DateTime
+
+  attempts Int @default(0)
+
+  consumedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  agent Agent @relation(fields: [agentId], references: [agentId], onDelete: Cascade)
+
+  @@index([agentId, purpose, createdAt])
+}
+
+enum CashAdjustmentSource {
+  // The CSP moved cash in hand between agents while creating a KO.
+  KO_CREATION
+  // The CSP edited the agent's cash in hand in the app.
+  CSP_EDIT
+  // The CSP increased / decreased the agent's cash in hand in the app.
+  CSP_INCREASE
+  CSP_DECREASE
+}
+
+enum CashAdjustmentStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+}
+
+/// The CSP changed an agent's cash in hand from the app: the agent must
+/// count the notes given / taken on the desktop (mandatory "Adjust" request)
+/// so the drawer matches the new cash in hand.
+model CashDrawerAdjustment {
+  id String @id @default(cuid())
+
+  cspAgentId String
+
+  agentId String
+
+  source CashAdjustmentSource
+
+  status CashAdjustmentStatus @default(PENDING)
+
+  cashInHandBefore Decimal @db.Decimal(14, 2)
+  cashInHandAfter  Decimal @db.Decimal(14, 2)
+
+  /// after − before (+ = the CSP gave cash, − = the CSP took cash).
+  amount Decimal @db.Decimal(14, 2)
+
+  drawerBefore Json
+  drawerAfter  Json?
+
+  remarks String?
+
+  requestedBy String
+
+  completedAt DateTime?
+  /// machineCode that completed it.
+  completedBy String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  agent Agent @relation(fields: [agentId], references: [agentId])
+
+  @@index([agentId, status])
+  @@index([cspAgentId, status])
 }
 
 enum CashSettlementDirection {

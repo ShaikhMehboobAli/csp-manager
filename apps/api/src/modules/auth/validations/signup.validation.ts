@@ -29,8 +29,9 @@ export const signupSchema = z
 
     confirmPassword: passwordValidator,
 
-    // CSP only (required): the opening float and the CSP limit. Cash
-    // management and the float ledger start from these.
+    // CSP only (required): the opening cash in hand and cash in account.
+    // The CSP limit is their sum; `cspLimit` is accepted from older apps and
+    // ignored.
     cashInHand: moneyValidator("Cash in hand"),
 
     cashInAccount: moneyValidator("Cash in account"),
@@ -49,30 +50,12 @@ export const signupSchema = z
     const required = [
       ["cashInHand", "Cash in hand is required."],
       ["cashInAccount", "Cash in account is required."],
-      ["cspLimit", "CSP limit is required."],
     ] as const;
 
     for (const [field, message] of required) {
       if (data[field] === undefined) {
         ctx.addIssue({ code: "custom", path: [field], message });
       }
-    }
-
-    const { cashInHand, cashInAccount, cspLimit } = data;
-
-    // Compared in paise, so 0.1 + 0.2 = 0.3.
-    if (
-      cashInHand !== undefined &&
-      cashInAccount !== undefined &&
-      cspLimit !== undefined &&
-      Math.round(cashInHand * 100) + Math.round(cashInAccount * 100) !==
-        Math.round(cspLimit * 100)
-    ) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["cspLimit"],
-        message: "Cash in hand + cash in account must equal the CSP limit.",
-      });
     }
   });
 

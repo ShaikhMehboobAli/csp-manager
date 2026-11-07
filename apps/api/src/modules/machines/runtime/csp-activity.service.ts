@@ -5,8 +5,10 @@ import { ForbiddenError } from "../../../core/errors/ForbiddenError";
 import { createCodeGeneratorService } from "../../../core/services/service.factory";
 import {
   ActivityEndReason,
+  CashLoginMethod,
   MachineSessionStatus,
 } from "../../../generated/prisma/enums";
+import MachineFamilyService from "../family/machine-family.service";
 
 import CspActivityRepository from "./csp-activity.repository";
 import MachineAuthenticationService from "./machine-auth.service";
@@ -44,11 +46,11 @@ export default class CspActivityService {
     return withTransaction(async (tx) => {
       const authenticated = await this.authenticate(tx, request);
 
-      if (authenticated.machine.currentAgentId !== request.agentId) {
-        throw new ForbiddenError(
-          "The supplied agent does not match this machine's assignment.",
-        );
-      }
+      // Any agent of the owner CSP's family (the CSP or one of its KOs) may
+      // log in to SBI on this PC; agents of another CSP may not.
+      const family = new MachineFamilyService(tx);
+
+      await family.requireMember(authenticated, request.agentId);
 
       const repository = new CspActivityRepository(tx);
 
@@ -74,7 +76,11 @@ export default class CspActivityService {
 
       await this.markMachineAlive(tx, authenticated.machine);
 
-      return this.toResponse(session, false);
+      // The SBI kiosk login (fingerprint done) logs the agent in to cash
+      // management on this PC automatically.
+      await family.setCashAgent(authenticated.machine.id, request.agentId, CashLoginMethod.KIOSK);
+
+      return { ...this.toResponse(session, false), cashAgentId: request.agentId };
     });
   }
 
@@ -131,7 +137,13 @@ export default class CspActivityService {
         );
       }
 
-      if (!authenticated.machine.currentAgentId) {
+      // Continue for whoever was logged in (the timed-out session's agent).
+      const agentId =
+        session?.agentId ??
+        (authenticated.machine as { cashAgentId?: string | null }).cashAgentId ??
+        authenticated.machine.currentAgentId;
+
+      if (!agentId) {
         throw new ForbiddenError(
           "No agent is currently assigned to this machine.",
         );
@@ -140,7 +152,7 @@ export default class CspActivityService {
       const restarted = await this.createSession(
         tx,
         authenticated.machine.id,
-        authenticated.machine.currentAgentId,
+        agentId,
       );
 
       return this.toResponse(restarted, true);
@@ -167,6 +179,21 @@ export default class CspActivityService {
             ? ActivityEndReason.HEARTBEAT_TIMEOUT
             : request.reason,
         );
+      }
+
+      // SBI logout ends the kiosk cash login; an email OTP login stays until
+      // the agent logs out of cash management.
+      const machine = authenticated.machine as {
+        id: string;
+        cashAgentId?: string | null;
+        cashAgentLoginMethod?: CashLoginMethod | null;
+      };
+
+      if (
+        machine.cashAgentLoginMethod === CashLoginMethod.KIOSK &&
+        (!session || machine.cashAgentId === session.agentId)
+      ) {
+        await new MachineFamilyService(tx).setCashAgent(machine.id, null, null);
       }
 
       return {

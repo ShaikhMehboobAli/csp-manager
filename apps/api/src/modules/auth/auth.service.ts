@@ -149,16 +149,16 @@ export default class AuthService {
 
       await this.createAgentIfNeeded(repository, data);
 
-      // Validation requires these for CSP signups.
+      // Validation requires both for CSP signups. The CSP limit is their
+      // sum (the CSP holds all the cash in hand until it adds KOs).
       const cash = {
         openingCash: data.cashInHand!,
         openingCashInAccount: data.cashInAccount!,
-        cashLimit: data.cspLimit!,
+        cashLimit: data.cashInHand! + data.cashInAccount!,
       };
 
       const openingFloat = await new CashService(tx).openPool({
         cspAgentId: data.agentId,
-        cashLimit: cash.cashLimit,
         cashInAccount: cash.openingCashInAccount,
         cashInHand: cash.openingCash,
         actor: { type: "SYSTEM", id: null },

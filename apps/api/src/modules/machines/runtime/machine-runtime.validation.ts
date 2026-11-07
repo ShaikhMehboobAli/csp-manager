@@ -58,6 +58,28 @@ export const activityStopSchema = z.object({
   ]),
 });
 
+export const machineCashLoginOtpSchema = z.object({
+  ...machineCredentials,
+  agentId: z.string().trim().min(1, "Choose the agent."),
+});
+
+export const machineCashLoginVerifySchema = z.object({
+  ...machineCredentials,
+  agentId: z.string().trim().min(1, "Choose the agent."),
+  otp: z.string().trim().regex(/^\d{6}$/, "Enter the 6-digit OTP."),
+});
+
+export const machineEmailOtpSchema = z.object({
+  ...machineCredentials,
+  // A new / corrected email; omitted = the agent's saved email.
+  email: z.string().trim().email("Invalid email address.").optional(),
+});
+
+export const machineEmailVerifySchema = z.object({
+  ...machineCredentials,
+  otp: z.string().trim().regex(/^\d{6}$/, "Enter the 6-digit OTP."),
+});
+
 export type HeartbeatRequest = z.infer<typeof heartbeatSchema>;
 export type ActivityStartRequest = z.infer<typeof activityStartSchema>;
 export type ActivityHeartbeatRequest = z.infer<typeof activityHeartbeatSchema>;

@@ -327,6 +327,22 @@ export default class ActivationService {
         hierarchyAgent,
       );
 
+      /**
+       * Step 7
+       * One activation per agent: a KO (or the CSP) that already holds one,
+       * unused or running on a machine, can't get another.
+       */
+      const held = await repository.findHeldActivation(agent.agentId, activation.id);
+
+      if (held) {
+        throw new BadRequestError(
+          held.status === ActivationStatus.ACTIVE
+            ? `This agent already has a running activation (${held.activationCode}${held.machine ? ` on ${held.machine.machineCode}` : ""}). Assign codes only to agents without one.`
+            : `This agent already has an activation assigned (${held.activationCode}) that isn't used yet. Assign codes only to agents without one.`,
+          "AGENT_ALREADY_HAS_ACTIVATION",
+        );
+      }
+
       const credentials = await this.passwordService.generateCredentials();
 
       await repository.assignActivation(

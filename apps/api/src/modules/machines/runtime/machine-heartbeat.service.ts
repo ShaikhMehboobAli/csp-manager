@@ -13,6 +13,7 @@ import SubscriptionEntitlementService from "../../subscriptions/subscription-ent
 import DesktopSettingsService from "../../settings/desktop-settings.service";
 import { resolveReceiptWatcher } from "./receipt-watcher-policy";
 import CashService from "../../cash/cash.service";
+import MachineFamilyService from "../family/machine-family.service";
 
 export default class MachineHeartbeatService {
   private readonly authService: MachineAuthenticationService;
@@ -53,7 +54,10 @@ export default class MachineHeartbeatService {
       lastTransactionAt: input.lastTransactionAt,
     });
 
-    const [{ plan, features }, watcher, desktop, cash, receiptFields] = await Promise.all([
+    const family = new MachineFamilyService(this.db);
+    const cashAgent = await family.cashAgentOf(authenticated);
+
+    const [{ plan, features }, watcher, desktop, cash, receiptFields, accessAgents] = await Promise.all([
       new SubscriptionEntitlementService(this.db).getPlanEntitlements(
         authenticated.subscription.planId,
       ),
@@ -61,10 +65,9 @@ export default class MachineHeartbeatService {
       new DesktopSettingsService(this.db).resolveForMachine(
         authenticated.machine.desktopControls,
       ),
-      new CashService(this.db).getMachineCash(
-        authenticated.machine.currentAgentId,
-      ),
+      new CashService(this.db).getMachineCash(cashAgent.agentId),
       new ReceiptFieldsSettingsService(this.db).allowed(),
+      family.agents(authenticated),
     ]);
 
     return {
@@ -86,6 +89,14 @@ export default class MachineHeartbeatService {
       graceEndsAt: authenticated.subscription.graceEndsAt,
       features: features.map((feature) => feature.code),
       cash,
+      // Who may use this PC (save in machineConfig): the owner CSP and its
+      // KOs. `accessAgent` is the agentId list; the cash login dropdown
+      // shows `accessAgents`.
+      accessAgent: accessAgents.map((agent) => agent.agentId),
+      accessAgents: accessAgents.map(({ email: _email, ...agent }) => agent),
+      // Whose cash is shown now (kiosk / email OTP login, else the PC's agent).
+      cashAgentId: cashAgent.agentId,
+      cashLoginMethod: cashAgent.method,
       // Optional receipt fields the desktop may send (save in machineConfig).
       receiptFields: { allowed: receiptFields },
     };

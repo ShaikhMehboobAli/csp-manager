@@ -113,6 +113,7 @@ export function skipReasonCode(reason: string) {
   if (reason === "Receipt already exists.") return "RECEIPT_ALREADY_EXISTS";
   if (reason === "Duplicate receipt in request.") return "DUPLICATE_IN_REQUEST";
   if (reason.startsWith("Receipt is older than")) return "OLDER_THAN_RETENTION";
+  if (reason === "Failed transaction: not recorded.") return "FAILED_TRANSACTION";
 
   return "INVALID_RECEIPT";
 }

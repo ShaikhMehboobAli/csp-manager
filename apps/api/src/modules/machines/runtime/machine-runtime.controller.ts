@@ -24,6 +24,8 @@ import {
 import SubscriptionEntitlementService from "../../subscriptions/subscription-entitlement.service";
 import MachineAuthenticationService from "./machine-auth.service";
 import MachineRuntimeValidator from "./machine-runtime-validator";
+import MachineFamilyService from "../family/machine-family.service";
+import AgentEmailOtpService from "../family/agent-email-otp.service";
 
 export default class MachineRuntimeController {
   async heartbeat(req: Request, res: Response) {
@@ -44,7 +46,7 @@ export default class MachineRuntimeController {
    */
   async createCashRequest(req: Request, res: Response) {
     const data = await withTransaction(async (tx) => {
-      const { agentId, machineCode } = await this.machineAgent(tx, req.body);
+      const { agentId, machineCode } = await this.machineAgent(tx, req.body, { write: true });
 
       return new CashService(tx).createRequest({
         agentId,
@@ -63,20 +65,21 @@ export default class MachineRuntimeController {
   }
 
   /**
-   * The machine's agent and its assigned-agent check, inside a transaction.
-   * Cash management calls also need CASH_MANAGEMENT on the PC's plan (CSP
-   * plans; BC plans aren't restricted), the same rule as the app.
+   * Whose cash a desktop call works on, inside a transaction: the agent
+   * logged in to cash management on this PC (SBI kiosk login or email OTP;
+   * any agent of the owner CSP's family), else the PC's own agent. Cash
+   * management calls also need CASH_MANAGEMENT on the PC's plan (CSP plans;
+   * BC plans aren't restricted), the same rule as the app. `write`: refused
+   * while the agent has an open "Adjust" request (mandatory first).
    */
-  private async machineAgent(tx: Parameters<Parameters<typeof withTransaction>[0]>[0], body: Request["body"]) {
-    const authenticated = await new MachineAuthenticationService(tx).authenticate({
-      machineCode: body.machineCode,
-      apiKey: body.apiKey,
-      fingerprint: body.fingerprint,
-    });
+  private async machineAgent(
+    tx: Parameters<Parameters<typeof withTransaction>[0]>[0],
+    body: Request["body"],
+    options: { write?: boolean } = {},
+  ) {
+    const authenticated = await this.authenticated(tx, body);
 
-    MachineRuntimeValidator.validateHeartbeat(authenticated);
-
-    const agentId = authenticated.machine.currentAgentId;
+    const { agentId } = await new MachineFamilyService(tx).cashAgentOf(authenticated);
 
     if (!agentId) {
       throw new ForbiddenError("No agent is currently assigned to this machine.");
@@ -90,7 +93,23 @@ export default class MachineRuntimeController {
       throw new ForbiddenError("This plan doesn't include cash management.");
     }
 
-    return { agentId, machineCode: authenticated.machine.machineCode };
+    if (options.write) {
+      await new CashService(tx).requireNoPendingAdjustment(agentId);
+    }
+
+    return { agentId, machineCode: authenticated.machine.machineCode, authenticated };
+  }
+
+  private async authenticated(tx: Parameters<Parameters<typeof withTransaction>[0]>[0], body: Request["body"]) {
+    const authenticated = await new MachineAuthenticationService(tx).authenticate({
+      machineCode: body.machineCode,
+      apiKey: body.apiKey,
+      fingerprint: body.fingerprint,
+    });
+
+    MachineRuntimeValidator.validateHeartbeat(authenticated);
+
+    return authenticated;
   }
 
   private async agentCsp(tx: Parameters<Parameters<typeof withTransaction>[0]>[0], agentId: string) {
@@ -125,7 +144,7 @@ export default class MachineRuntimeController {
 
   async createSettlement(req: Request, res: Response) {
     const data = await withTransaction(async (tx) => {
-      const { agentId, machineCode } = await this.machineAgent(tx, req.body);
+      const { agentId, machineCode } = await this.machineAgent(tx, req.body, { write: true });
 
       return new CashSettlementService(tx).create({
         agentId,
@@ -146,7 +165,7 @@ export default class MachineRuntimeController {
 
   async actOnSettlement(req: Request, res: Response) {
     const data = await withTransaction(async (tx) => {
-      const { agentId, machineCode } = await this.machineAgent(tx, req.body);
+      const { agentId, machineCode } = await this.machineAgent(tx, req.body, { write: true });
       const service = new CashSettlementService(tx);
       const input = {
         agentId,
@@ -193,7 +212,7 @@ export default class MachineRuntimeController {
 
   async createCustomTransaction(req: Request, res: Response) {
     const data = await withTransaction(async (tx) => {
-      const { agentId, machineCode } = await this.machineAgent(tx, req.body);
+      const { agentId, machineCode } = await this.machineAgent(tx, req.body, { write: true });
 
       return new CashDeskService(tx).createCustomTransaction({
         agentId,
@@ -238,7 +257,7 @@ export default class MachineRuntimeController {
 
   async createDue(req: Request, res: Response) {
     const data = await withTransaction(async (tx) => {
-      const { agentId, machineCode } = await this.machineAgent(tx, req.body);
+      const { agentId, machineCode } = await this.machineAgent(tx, req.body, { write: true });
 
       return new CashDeskService(tx).createDue({
         agentId,
@@ -262,7 +281,7 @@ export default class MachineRuntimeController {
 
   async actOnDue(req: Request, res: Response) {
     const result = await withTransaction(async (tx) => {
-      const { agentId, machineCode } = await this.machineAgent(tx, req.body);
+      const { agentId, machineCode } = await this.machineAgent(tx, req.body, { write: true });
       const service = new CashDeskService(tx);
       const dueId = req.params.dueId as string;
 
@@ -289,7 +308,7 @@ export default class MachineRuntimeController {
 
   async createExchange(req: Request, res: Response) {
     const data = await withTransaction(async (tx) => {
-      const { agentId, machineCode } = await this.machineAgent(tx, req.body);
+      const { agentId, machineCode } = await this.machineAgent(tx, req.body, { write: true });
 
       return new CashDeskService(tx).createExchange({
         agentId,
@@ -320,7 +339,7 @@ export default class MachineRuntimeController {
 
   async closeDay(req: Request, res: Response) {
     const result = await withTransaction(async (tx) => {
-      const { agentId, machineCode } = await this.machineAgent(tx, req.body);
+      const { agentId, machineCode } = await this.machineAgent(tx, req.body, { write: true });
 
       return new CashDayService(tx).closeDay({
         agentId,
@@ -422,6 +441,202 @@ export default class MachineRuntimeController {
     });
 
     return res.status(200).json({ success: true, message: "Task deleted." });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Adjust requests and the one-step transfer
+  // ---------------------------------------------------------------------------
+
+  /** Open (or all) "Adjust" requests of the logged-in agent. */
+  async getAdjustments(req: Request, res: Response) {
+    const status = req.query.status === "ALL" ? undefined : "PENDING";
+
+    const data = await withReadOnly(async (tx) => {
+      const { agentId } = await this.machineAgent(tx, req.body);
+
+      return new CashService(tx).listDrawerAdjustments({ agentIds: [agentId], status });
+    });
+
+    return res.status(200).json({ success: true, message: "Adjust requests fetched successfully.", data });
+  }
+
+  async completeAdjustment(req: Request, res: Response) {
+    const data = await withTransaction(async (tx) => {
+      const { agentId, machineCode } = await this.machineAgent(tx, req.body);
+
+      return new CashService(tx).completeDrawerAdjustment({
+        agentId,
+        adjustmentId: req.params.adjustmentId as string,
+        drawer: req.body.drawer,
+        notes: req.body.notes,
+        machineCode,
+      });
+    });
+
+    return res.status(200).json({ success: true, message: "Notes counted. Your drawer is up to date.", data });
+  }
+
+  /** Cash in hand ⇄ cash in account in one step (simple settlement). */
+  async transferCash(req: Request, res: Response) {
+    const data = await withTransaction(async (tx) => {
+      const { agentId, machineCode } = await this.machineAgent(tx, req.body, { write: true });
+
+      return new CashService(tx).transfer({
+        agentId,
+        direction: req.body.direction,
+        amount: req.body.amount,
+        drawer: req.body.cashDenomination,
+        remarks: req.body.remarks,
+        machineCode,
+      });
+    });
+
+    return res.status(201).json({
+      success: true,
+      message:
+        req.body.direction === "HAND_TO_ACCOUNT"
+          ? "Moved to cash in account."
+          : "Moved to cash in hand.",
+      data,
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Cash management login (any agent of the family) and email verification
+  // ---------------------------------------------------------------------------
+
+  /** Who is logged in to cash management now, and who may log in (dropdown). */
+  async getCashSession(req: Request, res: Response) {
+    const data = await withReadOnly(async (tx) => {
+      const authenticated = await this.authenticated(tx, req.body);
+      const family = new MachineFamilyService(tx);
+      const [current, accessAgents] = await Promise.all([
+        family.cashAgentOf(authenticated),
+        family.agents(authenticated),
+      ]);
+
+      return {
+        cashAgent: accessAgents.find((agent) => agent.agentId === current.agentId) ?? null,
+        loginMethod: current.method,
+        accessAgents: accessAgents.map(({ email: _email, ...agent }) => agent),
+      };
+    });
+
+    return res.status(200).json({ success: true, message: "Cash session fetched successfully.", data });
+  }
+
+  /** Fallback login: OTP to the agent's email (before / without the kiosk login). */
+  async sendCashLoginOtp(req: Request, res: Response) {
+    const data = await withTransaction(async (tx) => {
+      const authenticated = await this.authenticated(tx, req.body);
+      const member = await new MachineFamilyService(tx).requireMember(authenticated, req.body.agentId);
+
+      if (!member.email) {
+        throw new BadRequestError(
+          "This agent has no email. Ask the CSP to add it in the app, then verify it here.",
+          "AGENT_EMAIL_MISSING",
+        );
+      }
+
+      return new AgentEmailOtpService(tx).send({
+        agentId: member.agentId,
+        email: member.email,
+        purpose: "CASH_LOGIN",
+        machineId: authenticated.machine.id,
+      });
+    });
+
+    return res.status(200).json({ success: true, message: "OTP sent to the agent's email.", data });
+  }
+
+  async verifyCashLoginOtp(req: Request, res: Response) {
+    const data = await withTransaction(async (tx) => {
+      const authenticated = await this.authenticated(tx, req.body);
+      const family = new MachineFamilyService(tx);
+      const member = await family.requireMember(authenticated, req.body.agentId);
+
+      const { email } = await new AgentEmailOtpService(tx).verify({
+        agentId: member.agentId,
+        purpose: "CASH_LOGIN",
+        code: req.body.otp,
+      });
+
+      // A login OTP also proves the email.
+      if (!member.emailVerified && email === member.email?.toLowerCase()) {
+        await tx.agent.update({ where: { agentId: member.agentId }, data: { emailVerifiedAt: new Date() } });
+      }
+
+      await family.setCashAgent(authenticated.machine.id, member.agentId, "EMAIL_OTP");
+
+      return {
+        cashAgent: { ...member, email: undefined, emailVerified: true },
+        loginMethod: "EMAIL_OTP",
+        cash: await new CashService(tx).getMachineCash(member.agentId),
+      };
+    });
+
+    return res.status(200).json({ success: true, message: "Logged in to cash management.", data });
+  }
+
+  async cashLogout(req: Request, res: Response) {
+    await withTransaction(async (tx) => {
+      const authenticated = await this.authenticated(tx, req.body);
+
+      await new MachineFamilyService(tx).setCashAgent(authenticated.machine.id, null, null);
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Logged out of cash management. The PC's own agent is shown again.",
+    });
+  }
+
+  /** Verify (or set) the logged-in agent's email from the cash panel. */
+  async sendEmailVerificationOtp(req: Request, res: Response) {
+    const data = await withTransaction(async (tx) => {
+      const authenticated = await this.authenticated(tx, req.body);
+      const family = new MachineFamilyService(tx);
+      const { agentId } = await family.cashAgentOf(authenticated);
+      const member = await family.requireMember(authenticated, agentId ?? "");
+      const email = (req.body.email as string | undefined)?.trim().toLowerCase() ?? member.email;
+
+      if (!email) {
+        throw new BadRequestError("Enter the email to verify.", "AGENT_EMAIL_MISSING");
+      }
+
+      return new AgentEmailOtpService(tx).send({
+        agentId: member.agentId,
+        email,
+        purpose: "EMAIL_VERIFICATION",
+        machineId: authenticated.machine.id,
+      });
+    });
+
+    return res.status(200).json({ success: true, message: "OTP sent to the email.", data });
+  }
+
+  async verifyEmail(req: Request, res: Response) {
+    const data = await withTransaction(async (tx) => {
+      const authenticated = await this.authenticated(tx, req.body);
+      const family = new MachineFamilyService(tx);
+      const { agentId } = await family.cashAgentOf(authenticated);
+      const member = await family.requireMember(authenticated, agentId ?? "");
+
+      const { email } = await new AgentEmailOtpService(tx).verify({
+        agentId: member.agentId,
+        purpose: "EMAIL_VERIFICATION",
+        code: req.body.otp,
+      });
+
+      await tx.agent.update({
+        where: { agentId: member.agentId },
+        data: { email, emailVerifiedAt: new Date() },
+      });
+
+      return { agentId: member.agentId, emailVerified: true };
+    });
+
+    return res.status(200).json({ success: true, message: "Email verified.", data });
   }
 
   async getEntitlements(req: Request, res: Response) {

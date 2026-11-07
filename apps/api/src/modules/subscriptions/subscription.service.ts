@@ -22,10 +22,14 @@ import { AgentRepository } from "../agents/repository/agent.repository";
 import ActivationRepository from "../activations/activation.repository";
 import BillingSettingsService from "../settings/billing-settings.service";
 import {
+  BillingCycle,
+  PlanOwnerType,
   SubscriptionEventType,
   SubscriptionOwnerType,
   SubscriptionStatus,
 } from "../../generated/prisma/enums";
+import { Logger } from "../../core/utils/logger";
+import SubscriptionBillingService from "./billing/subscription-billing.service";
 
 function addDays(date: Date, days: number) {
   const result = new Date(date);
@@ -88,8 +92,10 @@ export default class SubscriptionService {
       );
     }
 
-    // Applies to new purchases and renewals; running subscriptions keep the
-    // amount they paid.
+    // Applies to new purchases at once. CSP subscriptions renewing by UPI
+    // mandate renew at the new price too: their mandate is cancelled and a new
+    // one is created for the new amount (the current period isn't charged
+    // again). BC plans pay the new price at their next renewal.
     const pricing = await this.subscriptionRepository.upsertPlanPricing({
       planId,
       billingCycle: data.billingCycle,
@@ -97,6 +103,42 @@ export default class SubscriptionService {
       durationDays,
       isActive: data.isActive ?? existing?.isActive ?? true,
     });
+
+    const priceChanged = !existing || !existing.price.equals(pricing.price);
+    let mandatesReplaced = 0;
+    let mandateFailures = 0;
+
+    if (priceChanged && data.billingCycle === BillingCycle.MONTHLY && plan.ownerType === PlanOwnerType.CSP) {
+      const subscriptions = await this.db.subscription.findMany({
+        where: {
+          planId,
+          ownerType: SubscriptionOwnerType.CSP,
+          status: SubscriptionStatus.ACTIVE,
+          autoRenew: true,
+          cancelledAt: null,
+          lapsedAt: null,
+        },
+        select: { id: true, subscriptionNumber: true },
+      });
+
+      // One transaction per subscription: a gateway error on one doesn't undo
+      // the others (the call can be repeated; done ones are skipped).
+      for (const subscription of subscriptions) {
+        try {
+          const replaced = await withTransaction((tx) =>
+            new SubscriptionBillingService(tx).replaceMandateForPrice(subscription.id, pricing.price),
+          );
+
+          if (replaced) {
+            mandatesReplaced += 1;
+          }
+        } catch (error) {
+          mandateFailures += 1;
+          Logger.error(`[updatePlanPricing] mandate replace failed for ${subscription.subscriptionNumber}`);
+          console.error(error);
+        }
+      }
+    }
 
     return {
       success: true,
@@ -108,6 +150,10 @@ export default class SubscriptionService {
         durationDays: pricing.durationDays,
         price: pricing.price.toString(),
         isActive: pricing.isActive,
+        // CSP subscriptions moved to a new mandate at the new price, and
+        // those that failed (repeat the same call to retry them).
+        mandatesReplaced,
+        mandateFailures,
       },
     };
   }
@@ -199,9 +245,12 @@ export default class SubscriptionService {
        * nothing is re-activated. A different machine count starts a new
        * subscription below, carrying activated machines over.
        */
+      // A cancelled subscription is never extended: a purchase after a cancel
+      // starts a new one (the old one ends now, no refund).
       if (
         latest &&
         isRunning &&
+        !latest.cancelledAt &&
         latest.planId === plan.id &&
         latest.machineLimit === machineLimit
       ) {

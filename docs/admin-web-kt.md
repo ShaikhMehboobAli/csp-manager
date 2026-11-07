@@ -3,7 +3,11 @@
 **Audience:** the web team building the **Super Admin** console in React / Next.js.
 **Not covered here:** the BC/CSP mobile app → `docs/mobile-app-kt.md` (read its sections 3 and 18 for API conventions, errors and dates; they apply here too); the desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api`.
-**Last updated:** 2026-11-04 (rev 17)
+**Last updated:** 2026-11-07 (rev 19)
+
+> **Rev 19 (2026-11-07):** a price change in §5 now **replaces running CSP mandates at the new price** (response adds `mandatesReplaced`, `mandateFailures`); CSP plans are **blocked during renewal retries** and have **no grace period** (§9D, §9G).
+
+> **Rev 18 (2026-11-07):** read §9G (CSP billing: ₹450 removed, upgrade-only with the difference, UPI mandate renewals, cancel, plan blocking), §9H (cash: worked-out limit, KO cash moves, Adjust requests, activation differences, shared PCs) and §9I (data cleanup script). The super admin is never blocked by a plan.
 
 > Describes the backend once PRs #3–#8 are merged into `development`.
 
@@ -131,7 +135,7 @@ Errors: 409 `This request has already been reviewed.` (another admin was faster,
 
 → `data: { planId, planCode, billingCycle, durationDays, price (string), isActive }`. Errors: 404 `Plan not found.`, 400 validation, 403 for non-admins.
 
-Rules: new prices apply to new purchases and renewals; running subscriptions keep what they paid. The seed script never overwrites prices set here. ₹799 BC plan (`BC_CSP_LINK`) defaults: 799 / 4794 / 9588 (monthly / half-yearly / yearly = 799 × months).
+Rules: new prices apply to new purchases; running subscriptions keep what they paid. **Rev 18 (CSP):** a CSP subscription stores its **price per machine** (`pricePerMachine`) at purchase / upgrade, **Rev 19 (owner decision): changing a CSP plan's monthly price moves its running subscriptions to the new price from their next renewal.** For each running CSP subscription on the plan (ACTIVE, auto renew, not cancelled, not lapsed) the server sets `pricePerMachine` to the new price, **cancels the running mandate** (`status REPLACED`, `revokeReason` "Plan price changed.") and **creates a new mandate** for new price × machines + GST, first charge at `endDate`; the current period isn't charged again. The CSP is notified (`MANDATE_REPLACED`); with Razorpay the CSP must approve the new mandate in the UPI app before the end date, or the plan stops then. The `PATCH /subscriptions/plans/:planId/pricing` response adds `mandatesReplaced` (count) and `mandateFailures` (gateway errors; **save the same price again to retry them**, done ones are skipped). UI: before saving a new CSP monthly price, confirm "N running subscriptions will move to the new price and get a new UPI mandate". Same price saved again → nothing happens. Half-yearly / yearly and BC prices don't touch mandates. Upgrade differences use the stored price and the current new price. The ₹450 `CSP_AUTOMATION_CASH_MANAGEMENT` plan is **inactive** (removed 2026-11-07); it no longer appears in `GET /subscriptions/plans` — keep it out of the pricing UI (or show it greyed "retired"). The seed script never overwrites prices set here. ₹799 BC plan (`BC_CSP_LINK`) defaults: 799 / 4794 / 9588 (monthly / half-yearly / yearly = 799 × months).
 
 **UI:** a page per owner type; one card per plan (code, name, machine limit, features) with an editable row per cycle (price, duration, active toggle, Save). "Add billing cycle" asks for cycle, price and duration. The plan list returns only active cycles, so an inactive cycle disappears after a refetch: keep it in local state for the session, and show "inactive cycles are hidden".
 
@@ -277,8 +281,45 @@ Which receipt fields the desktop sends. **`rrn` and `location` are fixed default
 - `GET /admin/billing-settings` → `{ graceDays, gstPercent }` (defaults 0 and 18).
 - `PATCH /admin/billing-settings` `{ graceDays?, gstPercent? }` — `graceDays` 0–30 whole days; `gstPercent` 0–28, at most 2 decimals → `{ graceDays, gstPercent, updatedSubscriptions }`.
 - **GST** applies to **subscriptions only**: plan prices are before tax; checkout adds GST (`create-order`: `amount` + `taxAmount` = `totalAmount`, with `taxPercent`); plans show `gstPercent`, `gstAmount`, `priceWithGst`. A paid payment gets an `invoiceNumber` (`INV…`). Revenue (§12) and `Subscription.amountPaid` are **without GST**; show GST collected separately (sum of `taxAmount`) when the revenue console is built. A new rate applies to new orders (orders already created keep theirs); cached up to a minute.
-- **Grace period**: running subscriptions get `graceEndsAt = endDate + graceDays` (updated at once for every ACTIVE subscription when you change it — `updatedSubscriptions` says how many; 0 clears it). The app and the PCs keep working until `graceEndsAt`; a renewal during grace continues from the old end date. Expired subscriptions aren't revived.
+- **Grace period** (**BC plans only** since rev 19 — CSP plans renew by mandate and always have `graceEndsAt: null`; changing `graceDays` sets CSP ones to null): running BC subscriptions get `graceEndsAt = endDate + graceDays` (updated at once for every ACTIVE subscription when you change it — `updatedSubscriptions` says how many; 0 clears it). The app and the PCs keep working until `graceEndsAt`; a renewal during grace continues from the old end date. Expired subscriptions aren't revived.
 - UI: two number fields with Save; for grace, warn "applies to every running subscription now".
+
+## 9G. CSP billing rules (rev 18) — READY (gateway: dev stand-in)
+
+What the console needs to know to support CSPs (no new admin endpoints yet; the revenue / subscribers console §12 should show these fields when built):
+
+| Topic | Rule |
+|---|---|
+| Plans | CSP: `CSP_AUTOMATION` ₹250 (desktop automation only), `CSP_COMPLETE` ₹550 (+ cash management + the app's dashboard / machines / cash / reports). ₹450 retired. |
+| Purchase | `Payment.purpose = PURCHASE`; creates the subscription, its activations and a **monthly UPI mandate** (`SubscriptionMandate`: `status` PENDING / ACTIVE / CANCELLED / REVOKED / COMPLETED / REPLACED (price change, rev 19), `amount` incl. GST, `startAt` = first charge = end date, `endAt` = +25 years, `provider` MANUAL in dev / RAZORPAY later). |
+| Upgrade | Only higher plan and/or more machines, only in the first **12 days** of the period (`currentPeriodStart`), charged the **difference** `(new − old price) × old machines + new price × added machines` + GST; `purpose = UPGRADE`, `previousPlanId`, `previousMachineCount`; same subscription and dates; history `UPGRADE` (`remarks` "Machines 1 → 2"). No downgrade / fewer machines (cancel + new purchase). |
+| Renewal | `SubscriptionRenewalJob` (every minute) charges the mandate at `endDate`; success → +30 days, history `RENEWAL`, payment `purpose = RENEWAL` (`attemptNumber`, `mandateId`); failure → retry after 15 min, max 3 attempts (history `RENEWAL_FAILED`), then **stopped at once**: `status EXPIRED`, `lapsedAt`, history `LAPSED`. **During the retries the plan is blocked** (rev 19, owner decision): `status` stays `ACTIVE` but `endDate` has passed and `graceEndsAt` is null, so the app (403 `RENEWAL_PENDING`) and the PCs stop until a charge succeeds. The hourly expiry job leaves these to the renewal job. A purchase meanwhile → 409 `RENEWAL_IN_PROGRESS`; the CSP may cancel meanwhile (ends now). A charge unanswered for 30 min counts as failed; a renewal unresolved 6 h after `endDate` is lapsed (safety net). A late success after a new plan was bought (or for a period already renewed) is recorded as `SUCCESS` with `failureReason` "…refund due." — **list these for manual refunds** (`purpose = RENEWAL`, `failureReason` ending "refund due."). In subscriber lists show them as **"Renewal in progress"** (ACTIVE, `endDate < now`, `autoRenew`, no `cancelledAt` / `lapsedAt`). |
+| Cancel | By the CSP: `cancelledAt`, `cancelledBy`, `cancelReason`, `autoRenew = false`, mandate CANCELLED, history `CANCELLATION` (amount 0); **no refund**; works until `endDate` (no grace). |
+| Mandate removed in the UPI app | Gateway webhook → mandate `REVOKED`; no retries; the plan stops at `endDate`. |
+| Blocking | A CSP without a running subscription can only manage KOs, see payments / plan history and subscribe; ₹250 CSPs get "Please upgrade the plan." on dashboard / machines / cash / reports (server 403 `SUBSCRIPTION_REQUIRED` / `PLAN_UPGRADE_REQUIRED`). PCs stop automation and cash at once. **SUPER_ADMIN and BC users aren't gated by this.** |
+| One activation per agent | Assigning a code to an agent that already holds one (unused or running) → 400 `AGENT_ALREADY_HAS_ACTIVATION`. Dev data has agents that got two before the fix; revoke the extra one if needed (§4A). |
+
+**Ops endpoints (not for the console UI):** `POST /payments/mandates/webhook` (header `x-webhook-secret`) with `{ event: "MANDATE_ACTIVATED" | "MANDATE_REVOKED", mandateId, reason? }` or `{ event: "CHARGE_SUCCEEDED", paymentId, gatewayTransactionId }` / `{ event: "CHARGE_FAILED", paymentId, reason, retryable }`. Dev: server env `DEV_MANDATE_RESULT=SUCCESS|FAILED|PENDING` drives the stand-in gateway. `prisma/scripts/backfill-mandates.ts` gave subscriptions created before mandates a mandate (run 2026-11-07 on dev).
+
+**Suggested console additions (with §12):** subscription detail with mandate status / amount / next charge, renewal attempts and `lastRenewalFailure`, payment list filter by `purpose`, a "Lapsed this week" count card.
+
+## 9H. Cash management changes (rev 18) — READY
+
+The super admin reads cash with `agentId` as before (`GET /cash-management`, `/ledger`, and the new **`GET /cash-management/adjustments?agentId=&status=`**). What changed:
+
+- **The cash limit is worked out**, never entered: Σ cash in hand (CSP + KOs) + cash in account + in bank + left in bank + balance due − other cash. No check compares anything with it. CSP signup and BC CSP creation take only cash in hand + cash in account; ADJUSTMENT refuses `cashLimit`.
+- **KO creation** takes the KO's cash in hand from the CSP's own cash in hand (or from the agents the CSP edited in the form); what isn't covered raises the limit (ledger `AGENT_ADDED` with `cashLimitChange`, `ADJUSTMENT` reason `KO_CREATION`).
+- **Increase / decrease** by the CSP (ledger `INCREASE` / `DECREASE`, reason `CASH_IN_HAND` / `CASH_IN_ACCOUNT`) moves the limit.
+- **Adjust requests** (`CashDrawerAdjustment`): every cash in hand change by the CSP makes a mandatory request for the agent to count the notes on its desktop (`DRAWER_ADJUSTED` in the ledger when done).
+- **KO activation difference**: the KO says whether the difference came from / went to cash in account or "other" (limit moves; the CSP gets a notification); ledger `ACTIVATION` with `reason` (`DIFFERENCE_FROM_CASH_IN_ACCOUNT`, `DIFFERENCE_TO_CASH_IN_ACCOUNT`, `OTHER_INCREASED_BY_CSP`, `OTHER_DECREASED_BY_CSP`).
+- **KO deleted** → `AGENT_REMOVED` (limit down by its cash in hand); **KO replaced** (`POST /agents/:id/replace`, CSP) → `AGENT_TRANSFERRED` ×2 (PC, cash, dues, tasks, settlements, adjust requests move).
+- **Shared PCs:** any KO of a CSP (and the CSP) may use any PC of that CSP; cash follows who logged in to SBI (`Machine.cashAgentId`, `cashAgentLoginMethod` KIOSK / EMAIL_OTP). KO emails are verified by OTP on the desktop (`Agent.emailVerifiedAt`, shown on agent objects).
+- **Failed receipts** (SBI receipt page FAILED) are skipped on upload: no counts, commission or cash.
+- Agents directory (§7): show `emailVerifiedAt` for KOs; the ledger viewer should show `reason` and `actorType` / `actorId` (audit).
+
+## 9I. Data cleanup script (rev 18) — DEV / PRE-LAUNCH, run by a developer
+
+`npm run cleanup:keep-cash` (in `apps/api`; dry run by default, prints counts) → add `--confirm` to delete; `--with-billing` also deletes subscriptions, payments, mandates, activations, revoke requests and machines (every PC re-activates, every CSP subscribes again). **Keeps:** users, BCs, CSPs and KOs, each CSP's cash in account, every agent's cash in hand and denomination, **open** balance dues, labels and all configuration (plans, prices, features, settings, commission rates, running numbers). **Deletes:** receipts (+ denominations, reports), daily counts, every cash ledger / request / settlement / custom transaction / exchange / day close / task / adjust request, settled dues, machine and activity sessions, idempotency keys, audit logs, float ledger, metric values, CSP visits, notifications, communications, OTPs, user sessions. Then each pool's in bank / left in bank / other cash are set to 0, the **limit is recomputed** (cash in hand + cash in account + balance due) and an `OPENING` ledger row "Baseline after data cleanup" is written. Refuses `NODE_ENV=production`. **Not run yet** — the owner decides when.
 
 ## 9E. Users: block / suspend at once — READY (rev 17)
 
@@ -393,6 +434,9 @@ The data exists today: `Subscription` (`ownerType`, `ownerId`, `planId`, `status
 - **Machines dropped:** a renewal with fewer machines (5 → 3) isn't a lost subscription but does lose 2 machines. This shows on the home page as its own figure, `machinesDropped`, with a list of the owners who reduced.
 
 ## 13. Changelog
+
+- 2026-11-07 (rev 19) — Owner decisions: a CSP monthly price change replaces running mandates at the new price (§5: `mandatesReplaced`, `mandateFailures`; mandate status `REPLACED`); blocked during renewal retries (§9G); grace days apply to BC plans only (§9D); a purchase after a cancel starts now (confirmed).
+- 2026-11-07 (rev 18) — New §9G CSP billing rules (₹450 retired, upgrade-only with the difference in the first 12 days, UPI mandate renewals with 2 retries then stop, cancel without refund, plan blocking that never applies to the super admin, one activation per agent, mandate webhook + dev switches), §9H cash changes (worked-out limit, KO cash moves, increase / decrease, Adjust requests and `GET /cash-management/adjustments`, activation differences, KO delete / replace, shared PCs, failed receipts skipped), §9I data cleanup script. §5: renewals keep the subscription's stored price.
 
 - 2026-11-04 (rev 17) — New §9D billing settings (GST % on subscriptions, grace days), §9E block / suspend users at once, §9F receipt problem reports. §9B: `SLAB` commission rates. §9C: fixed default receipt fields (`rrn`, `location`) + multi-select extras (`stan`, `terminalId` now optional too) (`{ extra: [...] }`; new `slip` option). Password reset / change for every login (mobile KT §5.2).
 

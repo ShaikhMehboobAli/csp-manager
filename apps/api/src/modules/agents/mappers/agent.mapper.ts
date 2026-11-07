@@ -11,6 +11,8 @@ export function mapAgent(agent: Agent) {
 
     mobile: agent.mobile,
     email: agent.email,
+    // Verified by OTP on the desktop (null = not verified; cleared when the email changes).
+    emailVerifiedAt: agent.emailVerifiedAt ?? null,
     address: agent.address,
 
     bcId: agent.bcId,

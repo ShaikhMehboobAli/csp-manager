@@ -106,6 +106,10 @@ export const minimalReceiptSchema = z
     count: z.literal(1),
     amount: z.number().positive().finite().optional(),
     cashDenomination: cashDenominationSchema.optional(),
+    // The outcome on SBI's receipt page. Only SUCCESS is recorded: a FAILED
+    // or PENDING receipt is skipped (no count, commission or cash). Omitted
+    // = SUCCESS (older desktops).
+    status: z.nativeEnum(ReceiptStatus).optional(),
   })
   .superRefine((receipt, ctx) => {
     if (

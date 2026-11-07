@@ -40,12 +40,10 @@ import { UpdateAgentDto } from "../validations/update-agent.validation";
 
 /** A new CSP brings its cash limit, cash in hand and cash in account. */
 function requireNewCspCash(input: {
-  cashLimit?: unknown;
   openingCash?: unknown;
   openingCashInAccount?: unknown;
 }) {
   const missing = [
-    ["cashLimit", "CSP limit is required."],
     ["openingCash", "Cash in hand is required."],
     ["openingCashInAccount", "Cash in account is required."],
   ] as const;
@@ -57,6 +55,21 @@ function requireNewCspCash(input: {
   }
 }
 
+
+/**
+ * Whether the CSP's own plan includes cash management. A CSP on a BC
+ * machine plan (no plan of its own) keeps the earlier behaviour: cash is
+ * tracked.
+ */
+async function planHasCashManagement(db: Prisma.TransactionClient, cspAgentId: string) {
+  const subscription = await new SubscriptionResolver(db).getEffectiveSubscription(cspAgentId);
+
+  if (!subscription || subscription.ownerType !== "CSP") {
+    return true;
+  }
+
+  return new SubscriptionEntitlementService(db).hasFeature(subscription.planId, "CASH_MANAGEMENT");
+}
 
 /**
  * A BC adds CSPs (and their KOs) only on a machine plan (BC_BASIC / BC_PRO).
@@ -227,6 +240,8 @@ export class AgentService {
 
       return {
         ko: mapAgent(ko),
+        // Cash moved for this KO (plan with cash management), else null.
+        cash: (ko as { cash?: unknown }).cash ?? null,
       };
     }, TRANSACTION_OPTIONS);
   }
@@ -331,7 +346,8 @@ export class AgentService {
 
         bcId,
 
-        cashLimit: input.cashLimit,
+        // The CSP limit is cash in hand + cash in account.
+        cashLimit: Number(input.openingCash) + Number(input.openingCashInAccount),
         openingCash: input.openingCash,
         openingCashInAccount: input.openingCashInAccount,
 
@@ -340,10 +356,10 @@ export class AgentService {
         createdBy,
       });
 
-      // Shared cash limit and cash in account for the CSP and its KOs.
+      // Shared cash in account for the CSP and its KOs; the CSP holds all
+      // the cash in hand until it gives some to its KOs.
       await new CashService(tx).openPool({
         cspAgentId: csp.agentId,
-        cashLimit: Number(input.cashLimit),
         cashInAccount: Number(input.openingCashInAccount),
         cashInHand: Number(input.openingCash),
         actor: { type: "USER", id: createdBy },
@@ -427,15 +443,27 @@ export class AgentService {
       });
     }
 
-    // The KO's cash in hand comes out of the CSP's cash in account. If the
-    // CSP hasn't set up cash management yet, it's set during setup.
-    if (input.openingCash !== undefined) {
-      await new CashService(tx).addAgent({
+    // Cash only on a plan with cash management. The KO's cash in hand comes
+    // out of the CSP's own (or the agents the CSP adjusted in the form);
+    // what isn't covered raises the cash limit. Agents whose cash in hand
+    // changed get an "Adjust" request on the desktop.
+    const cashManagement = await planHasCashManagement(tx, parentAgentId);
+
+    if (cashManagement && input.openingCash === undefined) {
+      throw new BadRequestError("Cash in hand is required.");
+    }
+
+    if (cashManagement && input.openingCash !== undefined) {
+      const cash = await new CashService(tx).addAgent({
         cspAgentId: parentAgentId,
         agentId: ko.agentId,
         cashInHand: input.openingCash,
+        adjustments: input.cashAdjustments,
+        drawerRequests: true,
         actor: { type: "USER", id: createdBy },
       });
+
+      return Object.assign(ko, { cash });
     }
 
     return ko;
@@ -576,13 +604,15 @@ export class AgentService {
     data: UpdateAgentDto,
     currentUser: CurrentUser,
   ) {
-    const resolver = new SubscriptionResolver(this.prisma);
+    // A CSP manages its KOs even without a running plan (renew / subscribe
+    // and KO management stay open); others need one.
+    if (currentUser.role !== UserRole.CSP_ADMIN) {
+      const subscription = await new SubscriptionResolver(
+        this.prisma,
+      ).getEffectiveSubscription(currentUser.agentId);
 
-    const subscription = await resolver.getEffectiveSubscription(
-      currentUser.agentId,
-    );
-
-    SubscriptionAccessValidator.validate(subscription);
+      SubscriptionAccessValidator.validate(subscription);
+    }
 
     const repository = new AgentRepository(this.prisma);
     const agent = await repository.findByAgentId(agentId);
@@ -598,8 +628,14 @@ export class AgentService {
 
     await this.ensureNotViewOnlyLink(repository, currentUser, agent);
 
+    const emailChanged =
+      data.email !== undefined &&
+      (data.email ?? "").toLowerCase() !== (agent.email ?? "").toLowerCase();
+
     const updatedAgent = await repository.updateAgent(agentId, {
       ...data,
+      // A new email must be verified again (desktop cash panel / activation).
+      ...(emailChanged && { emailVerifiedAt: null }),
       updatedBy: currentUser.agentId,
     });
 
@@ -635,13 +671,13 @@ export class AgentService {
   }
 
   async deleteAgent(agentId: string, currentUser: CurrentUser) {
-    const resolver = new SubscriptionResolver(this.prisma);
+    if (currentUser.role !== UserRole.CSP_ADMIN) {
+      const subscription = await new SubscriptionResolver(
+        this.prisma,
+      ).getEffectiveSubscription(currentUser.agentId);
 
-    const subscription = await resolver.getEffectiveSubscription(
-      currentUser.agentId,
-    );
-
-    SubscriptionAccessValidator.validate(subscription);
+      SubscriptionAccessValidator.validate(subscription);
+    }
 
     const repository = new AgentRepository(this.prisma);
     const agent = await repository.findByAgentId(agentId);
@@ -666,6 +702,119 @@ export class AgentService {
       throw new BadRequestError("Delete child agents first.");
     }
 
-    await repository.softDeleteAgent(agentId, currentUser.agentId);
+    await this.prisma.$transaction(async (tx) => {
+      // A deleted KO's cash management goes with it: its cash in hand and
+      // drawer leave the pool (the limit goes down by it).
+      if (agent.type === AgentType.KO && agent.parentAgentId) {
+        await new CashService(tx).removeAgent({
+          cspAgentId: agent.parentAgentId,
+          agentId: agent.agentId,
+          actor: { type: "USER", id: currentUser.userId },
+        });
+      }
+
+      await new AgentRepository(tx).softDeleteAgent(agentId, currentUser.agentId);
+    }, TRANSACTION_OPTIONS);
+  }
+
+  /**
+   * Replace a KO (CSP): a new KO takes the old one's place. Its activation
+   * (machine) and its cash management (cash in hand, drawer, open dues,
+   * tasks, open settlements, adjust requests) move to the new KO, and the
+   * old KO is deleted. The new KO re-verifies its email on the desktop.
+   */
+  async replaceKO(
+    oldAgentId: string,
+    input: { agentId: string; name: string; mobile?: string; email?: string; address?: string },
+    currentUser: CurrentUser,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const repository = new AgentRepository(tx);
+      const old = await repository.findByAgentId(oldAgentId);
+
+      if (
+        !old ||
+        old.isDeleted ||
+        old.type !== AgentType.KO ||
+        old.parentAgentId !== currentUser.agentId
+      ) {
+        throw new NotFoundError("KO not found.");
+      }
+
+      if (input.agentId === oldAgentId) {
+        throw new BadRequestError("The new KO needs a different Agent ID.");
+      }
+
+      const existing = await repository.findAgentByAgentId({ agentId: input.agentId });
+
+      if (existing && !existing.isDeleted) {
+        throw new BadRequestError("An agent with this Agent ID already exists.");
+      }
+
+      const ko = await repository.createAgent({
+        agentId: input.agentId,
+        name: input.name,
+        type: AgentType.KO,
+        mobile: input.mobile,
+        email: input.email,
+        address: input.address,
+        bcId: old.bcId ?? undefined,
+        parentAgentId: currentUser.agentId,
+        linkedAt: new Date(),
+        createdBy: currentUser.userId,
+      });
+
+      const cash = await new CashService(tx).transferAgent({
+        cspAgentId: currentUser.agentId,
+        fromAgentId: oldAgentId,
+        toAgentId: ko.agentId,
+        actor: { type: "USER", id: currentUser.userId },
+      });
+
+      // The machine keeps working for the new KO (no re-activation).
+      const activations = await tx.activation.findMany({
+        where: {
+          assignedAgentId: oldAgentId,
+          isCurrent: true,
+          status: { in: ["ACTIVE", "NOT_ACTIVATED"] },
+        },
+        select: { id: true, machineId: true },
+      });
+
+      await tx.activation.updateMany({
+        where: { id: { in: activations.map((activation) => activation.id) } },
+        data: { assignedAgentId: ko.agentId, assignedAt: new Date() },
+      });
+
+      const machineIds = activations.flatMap((activation) =>
+        activation.machineId ? [activation.machineId] : [],
+      );
+
+      await tx.machine.updateMany({
+        where: { id: { in: machineIds } },
+        data: {
+          currentAgentId: ko.agentId,
+          agentId: ko.agentId,
+          cashAgentId: null,
+          cashAgentLoginMethod: null,
+          cashAgentLoginAt: null,
+          updatedBy: currentUser.userId,
+        },
+      });
+
+      await tx.machine.updateMany({
+        where: { cashAgentId: oldAgentId },
+        data: { cashAgentId: null, cashAgentLoginMethod: null, cashAgentLoginAt: null },
+      });
+
+      await repository.softDeleteAgent(oldAgentId, currentUser.agentId);
+
+      return {
+        ko: mapAgent(ko),
+        replaced: oldAgentId,
+        cash,
+        machines: machineIds.length,
+      };
+    }, TRANSACTION_OPTIONS);
   }
 }
