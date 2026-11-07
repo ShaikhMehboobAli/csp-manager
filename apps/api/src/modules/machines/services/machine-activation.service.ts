@@ -173,7 +173,7 @@ export default class MachineActivationService {
         throw new BadRequestError("Activation has already been used.");
       }
 
-      if (activation.expiresAt.getTime() < Date.now()) {
+      if (activationStopsAt(activation).getTime() < Date.now()) {
         throw new BadRequestError("Activation has expired.");
       }
 
@@ -281,7 +281,7 @@ export default class MachineActivationService {
       );
     }
 
-    if (activation.expiresAt.getTime() < Date.now()) {
+    if (activationStopsAt(activation).getTime() < Date.now()) {
       throw new BadRequestError("Activation has expired.");
     }
 
@@ -487,4 +487,14 @@ export default class MachineActivationService {
       machine: registeredMachine,
     };
   }
+}
+
+/** An activation expires with its subscription's end date, and works through its grace period. */
+function activationStopsAt(activation: {
+  expiresAt: Date;
+  subscription?: { graceEndsAt: Date | null } | null;
+}) {
+  const graceEndsAt = activation.subscription?.graceEndsAt;
+
+  return graceEndsAt && graceEndsAt > activation.expiresAt ? graceEndsAt : activation.expiresAt;
 }

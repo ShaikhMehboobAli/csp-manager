@@ -27,6 +27,8 @@ export interface CreatePaymentInput {
 
   taxAmount: number;
 
+  taxPercent: number;
+
   totalAmount: number;
 
   paymentMethod: PaymentMethod;

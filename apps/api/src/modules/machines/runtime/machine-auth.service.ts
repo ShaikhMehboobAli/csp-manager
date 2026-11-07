@@ -184,7 +184,10 @@ export default class MachineAuthenticationService {
       throw new BadRequestError("Subscription is not active.");
     }
 
-    if (subscription.endDate && subscription.endDate < new Date()) {
+    // Works until the end of the grace period, if any.
+    const stopsAt = subscription.graceEndsAt ?? subscription.endDate;
+
+    if (stopsAt && stopsAt < new Date()) {
       throw new BadRequestError("Subscription has expired.");
     }
   }

@@ -314,8 +314,9 @@ export default class ReceiptDailyCountRepository {
    * whole recent days intact. Cash denominations cascade; float ledger rows stay and lose only
    * their receipt link.
    */
+  /** Deletes a batch; returns how many and the slip images to delete. */
   async deleteReceiptsBefore(cutoff: Date, limit: number) {
-    return this.db.$executeRaw`
+    const rows = await this.db.$queryRaw<{ slipKey: string | null }[]>`
       DELETE FROM "Receipt"
       WHERE "id" IN (
         SELECT "id" FROM "Receipt"
@@ -324,7 +325,13 @@ export default class ReceiptDailyCountRepository {
         ORDER BY "transactionAt" ASC NULLS FIRST
         LIMIT ${limit}
       )
+      RETURNING "slipKey"
     `;
+
+    return {
+      deleted: rows.length,
+      slipKeys: rows.flatMap((row) => (row.slipKey ? [row.slipKey] : [])),
+    };
   }
 
   async deleteCountsBefore(date: Date) {

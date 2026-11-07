@@ -2,7 +2,7 @@
 
 **Audience:** the engineer/agent implementing changes in the C# desktop repo (`ReceiptWarcher/`).
 **Source of truth for the backend:** `csp-manager/apps/api` (Express + Prisma). This doc lists what the desktop must add, modify, or remove to match the backend.
-**Last updated:** 2026-11-04 (rev 23)
+**Last updated:** 2026-11-04 (rev 24)
 
 > Paths below are relative to the desktop project root (`ReceiptWarcher/`). The doc was written against `ReceiptWarcher.zip` (Downloads, 2026-10-24); verify each location against your current checkout before editing.
 
@@ -42,6 +42,7 @@
 | 21 | Cash management: `cash` in the heartbeat (check before each transaction), `cash` result per uploaded receipt, cash count at activation, today's cash screen, KO settlements, change requests | READY (build the cash screen + pre-check) |
 | 22 | Cash management extras (your requirements doc item 6; **rev 21: your 6.8 answered in 22.9**: due `cashSide`, error `code`s, `Idempotency-Key`, settlement request fields, heartbeat waiting items, default labels, speed): labels + custom transactions, balance due, cash exchange, close the day, history, tasks; "other cash"; server plan check; activation count saved before setup | READY (read 22.0 first: ⚠ differences) |
 | 23 | Optional receipt fields chosen by the super admin (`receiptFields.allowed` in heartbeat + entitlements → machineConfig); heartbeat timeout now 120 s (one missed heartbeat); commission is computed by the server | READY |
+| 24 | **Rev 24:** receipt **slip image** upload (when the super admin selects `slip`), the four default receipt fields are fixed, the **grace period** keeps the PC working after the end date | READY |
 | 20 | Receipts older than the retention period (default 60 days, at least 15) are refused on upload; `totalCount` covers the last 12 months | READY (handle the new skip reason) |
 | — | **Part 3: Endpoint quick reference** (URL, request, response, how to use) | READY |
 | — | **Part 2: Desktop API reference** (all endpoints, validation, logic) | READY |
@@ -992,8 +993,8 @@ Most receipt fields are optional. **Which optional fields the desktop may send i
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `rrn` | string | allowed | |
-| `stan` | string (≤ 50) | allowed | |
-| `terminalId` | string (≤ 50) | allowed | |
+| `stan` | string (≤ 50) | off (rev 24) | |
+| `terminalId` | string (≤ 50) | off (rev 24) | |
 | `location` | string | allowed | |
 | `bankName` | string (≤ 100) | off | |
 | `bankTransactionId` | string (≤ 100) | off | the bank's transaction id |
@@ -1024,6 +1025,37 @@ A machine session is on while heartbeats arrive with **at most one missed**: the
 ### 23.3 Commission
 
 The server computes the CSP's commission on every successful receipt at upload (rates set by the super admin; only the CSP earns, KOs are salaried). Nothing for the desktop to send or show; it isn't in any desktop answer.
+
+## 24. Slip image, fixed default fields, grace period (rev 24) — READY
+
+### 24.1 Receipt fields: fixed defaults + extras
+
+Only **`rrn` and `location` are fixed defaults**: always in `receiptFields.allowed`, the super admin can't switch them off. **`stan` and `terminalId` are now optional** (off by default, like the rest): send them only when they're in the list. The super admin adds extras from a multi-select (`stan`, `terminalId`, `bankName`, `bankTransactionId`, `bankResponseCode`, `bankResponseMessage`, `balanceAfter`, `customerName`, `customerAccount`, **`slip`**). Nothing changes in how you use the list (§23.1): save it, send only those fields. **`slip` is not a field on the receipt JSON**: it means "upload the slip image" (24.2). Don't put `slip` in the upload body.
+
+### 24.2 Slip image (only when `receiptFields.allowed` contains `"slip"`)
+
+After the receipt itself has been uploaded and **saved** (it's in `inserted` of the upload answer, or in `skipped` with `RECEIPT_ALREADY_EXISTS`), upload a picture of the SBI slip in three steps. Same machine credentials as `upload-counts` (body, or headers / signed request, §19):
+
+1. **`POST /api/v1/receipts/slip/upload-url`** `{ machineCode, apiKey?, fingerprint, receiptId, contentType: "image/jpeg" | "image/png" | "image/webp" }` →
+   ```json
+   "data": { "receiptId": "R-1", "key": "receipt-slips/KO-0012/2026/11/<id>-<uuid>.jpg",
+             "uploadUrl": "https://<bucket>.s3.<region>.amazonaws.com/", "fields": { "key": "…", "Content-Type": "image/jpeg", "Policy": "…", "X-Amz-Signature": "…", … },
+             "maxSizeBytes": 2097152, "expiresIn": 300 }
+   ```
+2. **Upload straight to S3** (not to the API): `multipart/form-data` **POST** to `uploadUrl` with **every** entry of `fields` as form fields (in any order), then the file last as the form field **`file`**. No auth header. S3 answers **204**. The image must be ≤ **2 MB** and of the `contentType` you asked for (else S3 answers 403). The URL is valid **5 minutes**: if it expired, ask for a new one.
+3. **`POST /api/v1/receipts/slip`** `{ machineCode, apiKey?, fingerprint, receiptId, key }` (the `key` from step 1) → 200 `Slip saved.` `data: { receiptId, hasSlip: true, slipUploadedAt }`. Sending a new slip for the same receipt replaces the old one. Calling it again with the same key is fine (same answer).
+
+Errors (all have a `code`, §22.9): 403 `Receipt slips aren't enabled. Ask the super admin to allow the slip field.` (`slip` not in the list: stop uploading slips); 404 `Receipt not found. Upload the receipt before its slip.` (upload the receipt first; `receiptId` must be from **this** PC); 400 `Only JPEG, PNG and WebP images are allowed.`; 400 `This slip key doesn't belong to this receipt.`; 400 `The slip hasn't been uploaded yet.` (step 2 failed: retry it). The usual machine-auth errors apply (§6).
+
+**What to build:** compress the slip (JPEG, ~1200 px on the long side, quality ~70, usually 100–300 KB); keep a small **slip queue** next to the receipt queue (receiptId, file path, attempts) and retry with backoff; drop the image file after step 3 succeeds or after 7 days. Never block or delay the receipt upload for a slip. Slips count against the machine runtime rate limit (120 / min), so send at most a few per minute in a backlog. The CSP app shows "View slip" when it exists; the server deletes slips with their receipts after the retention period.
+
+### 24.3 Grace period
+
+The super admin can now set a **grace period** (0 days today, up to 30). During grace — after `subscription.endDate`, until `subscription.graceEndsAt` (in the heartbeat and entitlements; `null` = no grace) — **the PC keeps working**: heartbeats, uploads and cash calls are accepted, although `activation.expiresAt` (= the end date) has passed, and an unused code can still be activated (or a PC re-activated). After `graceEndsAt` the usual `400 SUBSCRIPTION_EXPIRED` (§6). Desktop to-do: when `endDate < now ≤ graceEndsAt`, show a banner "Subscription expired — renew before <graceEndsAt> to keep this PC working"; don't stop the watcher on `endDate` or `activation.expiresAt` yourself — let the server decide.
+
+### 24.4 Nothing else changes for the desktop
+
+GST on subscriptions, forgot / change password, blocking a user (the CSP's app login; **PCs keep working**, they don't use the login), problem reports and receipt PDFs are app / server only.
 
 ---
 
@@ -1586,6 +1618,8 @@ Response 200: `{ approved, next }` (next = step 2 or null) or `{ cancelled, next
 ---
 
 ## Changelog
+
+- 2026-11-04 (rev 24) — Item #24: slip image upload (`POST /receipts/slip/upload-url` → S3 → `POST /receipts/slip`) when `slip` is in `receiptFields.allowed`; `rrn` / `location` fixed defaults (`stan`, `terminalId` now optional, off by default); grace period keeps the PC working until `graceEndsAt`.
 
 - 2026-11-04 (rev 23, update) — §23.1: what to build for receipt fields (save the list in machineConfig, send only those, per-field types and defaults, example), receipts may carry different fields.
 - 2026-11-04 (rev 23) — Item #23: `receiptFields.allowed` in heartbeat + entitlements (send only those optional fields; no Aadhaar); `upload-counts` accepts the optional fields; heartbeat timeout 120 s (one missed heartbeat) for machine and activity sessions; commission is server-side.

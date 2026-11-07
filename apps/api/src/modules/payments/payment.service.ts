@@ -27,6 +27,7 @@ import { Payment } from "../../generated/prisma/client";
 import { PaymentWebhookDto } from "./validations/webhook-payment.validation";
 import ActivationService from "../activations/activation.service";
 import prisma from "../../config/prisma";
+import BillingSettingsService from "../settings/billing-settings.service";
 
 export default class PaymentService {
   async createOrder(data: CreatePaymentOrderInput) {
@@ -117,7 +118,11 @@ export default class PaymentService {
 
       const paymentNumber = await codeGenerator.generatePaymentNumber();
 
-      const amount = Number(pricing.price) * machineCount;
+      // GST is added on top of the plan price (subscriptions only).
+      const { amount, taxAmount, totalAmount, gstPercent } =
+        await new BillingSettingsService(tx).withGst(
+          Number(pricing.price) * machineCount,
+        );
 
       const payment = await repository.createPayment({
         paymentNumber,
@@ -136,11 +141,13 @@ export default class PaymentService {
 
         idempotencyKey: data.idempotencyKey,
 
-        amount,
+        amount: amount.toNumber(),
 
-        taxAmount: 0,
+        taxAmount: taxAmount.toNumber(),
 
-        totalAmount: amount,
+        taxPercent: gstPercent,
+
+        totalAmount: totalAmount.toNumber(),
 
         paymentMethod: PaymentMethod.MANUAL,
 
@@ -216,6 +223,7 @@ export default class PaymentService {
       subscription.id,
       gatewayTransactionId,
       transactionReference,
+      await createCodeGeneratorService(tx).generateInvoiceNumber(),
     );
 
     return {

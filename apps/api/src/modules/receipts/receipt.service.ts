@@ -1,6 +1,7 @@
 import { skipReasonCode } from "../../core/errors/error-codes";
 import { createCodeGeneratorService } from "../../core/services/service.factory";
 import prisma from "../../config/prisma";
+import { PrismaDb } from "../../core/database/prisma.types";
 
 import ReceiptRepository from "./repository/receipt-upload.repository";
 
@@ -524,34 +525,41 @@ export default class ReceiptService {
     agentIds: string[],
     currentAgentId: string,
   ) {
-    return withReadOnly(async (tx) => {
-      const subscription = await new SubscriptionResolver(
-        tx,
-      ).getEffectiveSubscription(currentAgentId);
+    return withReadOnly(async (tx) => (await this.loadReceipt(tx, receiptId, agentIds, currentAgentId)).detail);
+  }
 
-      SubscriptionAccessValidator.validate(subscription);
+  /**
+   * A receipt the caller can see (after the subscription check), as the raw
+   * row and the detail the app shows. Shared by the detail, slip, PDF and
+   * report-a-problem endpoints.
+   */
+  async loadReceipt(tx: PrismaDb, receiptId: string, agentIds: string[], currentAgentId: string) {
+    const subscription = await new SubscriptionResolver(
+      tx,
+    ).getEffectiveSubscription(currentAgentId);
 
-      const repository = new ReceiptDetailRepository(tx);
+    SubscriptionAccessValidator.validate(subscription);
 
-      const receipt = await repository.getReceipt(receiptId, agentIds);
+    const repository = new ReceiptDetailRepository(tx);
 
-      if (!receipt) {
-        throw new NotFoundError("Receipt not found.");
-      }
+    const receipt = await repository.getReceipt(receiptId, agentIds);
 
-      const canViewCash = await new SubscriptionEntitlementService(
-        tx,
-      ).canViewCashManagement(subscription);
+    if (!receipt) {
+      throw new NotFoundError("Receipt not found.");
+    }
 
-      const rate = receipt.commissionRateId
-        ? await tx.commissionRate.findUnique({ where: { id: receipt.commissionRateId } })
-        : null;
+    const canViewCash = await new SubscriptionEntitlementService(
+      tx,
+    ).canViewCashManagement(subscription);
 
-      const detail = mapReceiptDetail({ ...receipt, commissionRateLabel: rateLabel(rate) });
+    const rate = receipt.commissionRateId
+      ? await tx.commissionRate.findUnique({ where: { id: receipt.commissionRateId } })
+      : null;
 
-      // Cash denomination is part of CASH_MANAGEMENT on CSP plans.
-      return canViewCash ? detail : { ...detail, cashDenomination: null };
-    });
+    const detail = mapReceiptDetail({ ...receipt, commissionRateLabel: rateLabel(rate) });
+
+    // Cash denomination is part of CASH_MANAGEMENT on CSP plans.
+    return { receipt, detail: canViewCash ? detail : { ...detail, cashDenomination: null } };
   }
 
   async getStats(filter: ReceiptFilter) {

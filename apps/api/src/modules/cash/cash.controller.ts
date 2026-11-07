@@ -110,7 +110,7 @@ export const getCash = async (req: Request, res: Response) => {
   return res.status(200).json({
     success: true,
     message: "Cash details fetched successfully.",
-    data,
+    data: req.user!.role === UserRole.BC_ADMIN ? withoutOtherCash(data) : data,
   });
 };
 
@@ -448,3 +448,14 @@ export const deleteTask = async (req: Request, res: Response) => {
 
   return res.status(200).json({ success: true, message: "Task deleted." });
 };
+
+/** A BC sees the cash limit and its distribution, not the CSP's other cash. */
+function withoutOtherCash<T>(data: T): T {
+  const strip = (pool: Record<string, unknown>) => {
+    const { cashOther: _other, cashDueExtra: _dueExtra, ...rest } = pool;
+
+    return rest;
+  };
+
+  return (Array.isArray(data) ? data.map(strip) : strip(data as Record<string, unknown>)) as T;
+}

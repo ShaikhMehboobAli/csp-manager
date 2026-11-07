@@ -3,7 +3,7 @@
 **Audience:** the web team building the **Super Admin** console in React / Next.js.
 **Not covered here:** the BC/CSP mobile app → `docs/mobile-app-kt.md` (read its sections 3 and 18 for API conventions, errors and dates; they apply here too); the desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api`.
-**Last updated:** 2026-11-04 (rev 16)
+**Last updated:** 2026-11-04 (rev 17)
 
 > Describes the backend once PRs #3–#8 are merged into `development`.
 
@@ -245,23 +245,59 @@ Only the **CSP** earns commission (KOs are paid a salary by their CSP): every su
 | `GET /admin/commission/services` | the 15 services (`code`, `name`, `transactionCategory`, `receiptType`, `group`, `sortOrder`, `isActive`) |
 | `PATCH /admin/commission/services/:code` | `{ name?, isActive?, sortOrder? }`; an inactive service earns nothing and is hidden in the app |
 | `GET /admin/commission/rates?scope=DEFAULT\|BC\|CSP&scopeId=` | per service: `live` and `next` rate of that scope |
-| `POST /admin/commission/rates` | `{ serviceCode, scope, scopeId (BC id / CSP agentId; not for DEFAULT), type: FLAT\|PERCENT\|INHERIT, amount (FLAT ₹), percent (PERCENT), minAmount?, maxAmount? (PERCENT, per receipt), effectiveFrom? (now or later; default now), reason? }` → 201 |
+| `POST /admin/commission/rates` | `{ serviceCode, scope, scopeId (BC id / CSP agentId; not for DEFAULT), type: FLAT\|PERCENT\|SLAB\|INHERIT, amount (FLAT ₹), percent (PERCENT), slabs (SLAB), minAmount?, maxAmount? (PERCENT / SLAB, per receipt), effectiveFrom? (now or later; default now), reason? }` → 201 |
 | `DELETE /admin/commission/rates/:rateId` | only a rate that hasn't started (`This rate is already in use; set a new rate instead.`) |
 | `GET /admin/commission/rates/history?serviceCode=&scope=&scopeId=` | every rate, newest first |
 
 - **Precedence** at upload: the CSP's own rate, else its BC's, else DEFAULT. `INHERIT` on a BC / CSP scope removes its override from that date (the next level applies again). DEFAULT can't inherit. No rate = ₹0.
 - A new rate replaces the scope's rate from its `effectiveFrom`; a past `effectiveFrom` is refused (400).
-- Errors: 404 `Service not found.` / `BC not found.` / `CSP not found.`; 400 `amount is required for a FLAT rate.`, `percent is required for a PERCENT rate.`, `minAmount can't be more than maxAmount.`, `scopeId is required for a BC or CSP rate.`
+- **Slabs (rev 17):** `type: "SLAB"` with `slabs: [{ from, to, type: "FLAT"|"PERCENT", amount?, percent? }]` — amount bands sorted by `from` (`from` inclusive, `to` exclusive; `to: null` = "and above", only on the last band; gaps allowed and earn ₹0; at most 20). The band the receipt amount falls in applies; `minAmount` / `maxAmount` then cap the result per receipt. Example: `{ "serviceCode": "CW", "scope": "DEFAULT", "type": "SLAB", "maxAmount": 25, "slabs": [ { "from": 0, "to": 1000, "type": "FLAT", "amount": 5 }, { "from": 1000, "to": null, "type": "PERCENT", "percent": 1 } ] }` → `rateLabel` `₹0–1000: ₹5; ₹1000+: 1% (max ₹25)`. Rates in answers carry `slabs` (null unless SLAB). UI: a band editor (add row, from / to / FLAT ₹ or %), validated live.
+- Errors: 404 `Service not found.` / `BC not found.` / `CSP not found.`; 400 `amount is required for a FLAT rate.`, `percent is required for a PERCENT rate.`, `slabs are required for a SLAB rate.`, `Slab N overlaps slab N+1: sort them by amount, without overlaps.`, `Slab N: "to" must be more than "from".`, `Slab N: amount is required for a FLAT slab.`, `minAmount can't be more than maxAmount.`, `scopeId is required for a BC or CSP rate.`
+- The CSP app shows today's and this month's commission on its dashboard (`commission.today` / `.month`); the console's global dashboard gets the same block (whole system without `agentId`).
 
 UI: a rate card per scope (Default; search a BC or CSP for overrides): one row per service with the live rate, the next one and "Change"; a history drawer.
 
 ## 9C. Receipt fields — READY
 
-Which **optional** receipt fields the desktop may send. The list reaches every PC in the next heartbeat; fields that aren't allowed are never stored. **There's no Aadhaar field.**
+Which receipt fields the desktop sends. **`rrn` and `location` are fixed defaults** (always on); the super admin **selects extra fields** from a multi-select (rev 17). The list reaches every PC in the next heartbeat; fields that aren't allowed are never stored. **There's no Aadhaar field.**
 
-- `GET /admin/receipt-fields` → `[{ field, label, personal, allowed }]` for `rrn`, `stan`, `terminalId`, `location` (allowed by default), `bankName`, `bankTransactionId`, `bankResponseCode`, `bankResponseMessage`, `balanceAfter`, `customerName`, `customerAccount` (off by default; `personal: true` for customer data and balance).
-- `PATCH /admin/receipt-fields` `{ "customerName": true, "bankName": true }` (any of the fields; unknown → 400) → the updated list.
-- UI: a switch per field; confirm before turning on a `personal` one ("customer data will be stored on the server").
+- `GET /admin/receipt-fields` →
+  ```json
+  { "fixed":   [ { "field": "rrn", "label": "RRN", "personal": false }, … ],
+    "options": [ { "field": "bankName", "label": "Bank name", "personal": false }, …, { "field": "slip", "label": "Slip image", "personal": true } ],
+    "selected": ["bankName"],
+    "allowed":  ["rrn", "stan", "terminalId", "location", "bankName"] }
+  ```
+  Options: `stan`, `terminalId`, `bankName`, `bankTransactionId`, `bankResponseCode`, `bankResponseMessage`, `balanceAfter`, `customerName`, `customerAccount`, `slip` (the PC uploads a picture of the slip; the CSP app shows "View slip").
+- `PATCH /admin/receipt-fields` `{ "extra": ["bankName", "customerName"] }` — the **full** selection (replaces the previous one; `[]` = defaults only) → the same shape. 400 for an unknown field or a fixed one (`rrn, location are always shown; send only the extra fields.`). The old `{ "customerName": true }` form is gone (400).
+- UI: the fixed two as locked chips, then a multi-select dropdown of `options` pre-filled with `selected`; Save sends the whole selection. Confirm before adding a `personal` one ("customer data will be stored on the server").
+
+## 9D. Billing: GST and grace period — READY (rev 17)
+
+- `GET /admin/billing-settings` → `{ graceDays, gstPercent }` (defaults 0 and 18).
+- `PATCH /admin/billing-settings` `{ graceDays?, gstPercent? }` — `graceDays` 0–30 whole days; `gstPercent` 0–28, at most 2 decimals → `{ graceDays, gstPercent, updatedSubscriptions }`.
+- **GST** applies to **subscriptions only**: plan prices are before tax; checkout adds GST (`create-order`: `amount` + `taxAmount` = `totalAmount`, with `taxPercent`); plans show `gstPercent`, `gstAmount`, `priceWithGst`. A paid payment gets an `invoiceNumber` (`INV…`). Revenue (§12) and `Subscription.amountPaid` are **without GST**; show GST collected separately (sum of `taxAmount`) when the revenue console is built. A new rate applies to new orders (orders already created keep theirs); cached up to a minute.
+- **Grace period**: running subscriptions get `graceEndsAt = endDate + graceDays` (updated at once for every ACTIVE subscription when you change it — `updatedSubscriptions` says how many; 0 clears it). The app and the PCs keep working until `graceEndsAt`; a renewal during grace continues from the old end date. Expired subscriptions aren't revived.
+- UI: two number fields with Save; for grace, warn "applies to every running subscription now".
+
+## 9E. Users: block / suspend at once — READY (rev 17)
+
+- `GET /admin/users/:agentId/status` → `{ id, agentId, email, role, status, statusReason, statusChangedAt, lastLoginAt, activeSessions }`.
+- `PATCH /admin/users/:agentId/status` `{ status: "BLOCKED" | "SUSPENDED" | "ACTIVE", reason? }` — `reason` (≤ 300) **required** to block / suspend; it's shown to the user ("Your account has been blocked. Reason: …"). → `{ …, revokedSessions }`, audited (`AuditLog`, entity USER).
+- **Effect at once:** every session ends and the user's next API call (even with a still-valid token) gets 403 `ACCOUNT_BLOCKED` / `ACCOUNT_SUSPENDED`; login and refresh refuse too. `ACTIVE` lifts it (reason cleared). With several API servers it can take up to 10 s on the others.
+- Errors: 404 `User not found.`; 400 `A super admin account can't be blocked here.`; 400 `This account hasn't finished signing up yet.` (PENDING).
+- **Not affected:** the user's desktop PCs (they authenticate with their own machine key). To stop a PC, revoke its activation (§4A).
+- UI: on the agent detail (§7): status badge, "Block" / "Suspend" / "Reactivate" with a reason dialog; show `activeSessions`.
+
+## 9F. Receipt problem reports — READY (rev 17)
+
+CSPs and BCs report a problem on a receipt from the app (reason + optional note). One open report per receipt; each keeps a copy of the receipt, so it stays readable after retention deletes the receipt.
+
+- `GET /admin/receipt-reports?status=OPEN|RESOLVED|REJECTED&ownerAgentId=&page=&limit=` (limit ≤ 100, default 20) → `{ items: [{ id, receiptId, ownerAgentId (the CSP), reportedBy, reason, reasonLabel, details, status, resolution, resolvedAt, createdAt, receipt: <full receipt copy> }], openCount, pagination }`.
+- `PATCH /admin/receipt-reports/:reportId` `{ status: "RESOLVED" | "REJECTED", resolution }` (resolution 1–1000, required) → the report. 409 when already closed.
+- Reasons: `WRONG_AMOUNT`, `WRONG_STATUS`, `DUPLICATE`, `MISSING_DETAILS`, `NOT_MY_TRANSACTION`, `OTHER`.
+- UI: an inbox with an `openCount` badge (poll, no push yet), filter by status / CSP, detail with the receipt copy and a resolve / reject form. The CSP sees `status` and `resolution` in the app.
+- The receipt PDF and slip are also available to the super admin: `GET /receipts/:receiptId/pdf?agentId=` and `GET /receipts/:receiptId/slip?agentId=` (mobile KT §13).
 
 ## 10. Other endpoints the console can use
 
@@ -274,8 +310,8 @@ Which **optional** receipt fields the desktop may send. The list reaches every P
 |---|---|---|---|
 | G1 | ~~Super admin blocked by subscription checks~~ | — | **fixed 2026-10-25** |
 | G2 | ~~No way to create a super admin~~ | — | **fixed 2026-10-25**: `npm run seed:super-admin` |
-| G3 | No admin APIs for users (block/suspend), subscriptions (grant/extend/cancel) or payments (list all) | those pages can't be built | backend; the read-only lists and count cards are planned in §12 |
-| G4 | 15-minute access token, no refresh endpoint | frequent re-login | `POST /auth/refresh` |
+| G3 | No admin APIs for subscriptions (grant/extend/cancel) or payments (list all); block / suspend **built** (§9E) | those pages can't be built | backend; the read-only lists and count cards are planned in §12 |
+| G4 | ~~15-minute access token, no refresh endpoint~~ | — | **fixed rev 15**: `POST /auth/refresh` (+ forgot / reset / change password, rev 17: mobile KT §5.2) |
 | G5 | `POST /agents/csp` as SUPER_ADMIN uses the admin's own id as the BC | creating a CSP from the console fails or links to a non-BC | add a `bcId` body field for admins |
 | G6 | No unlink endpoint for BC↔CSP | a wrong approval can't be undone from the console | `POST /bc-links/unlink` |
 | G7 | No push/realtime | poll the pending list (e.g. every 60 s) for new requests | future |
@@ -357,6 +393,8 @@ The data exists today: `Subscription` (`ownerType`, `ownerId`, `planId`, `status
 - **Machines dropped:** a renewal with fewer machines (5 → 3) isn't a lost subscription but does lose 2 machines. This shows on the home page as its own figure, `machinesDropped`, with a list of the owners who reduced.
 
 ## 13. Changelog
+
+- 2026-11-04 (rev 17) — New §9D billing settings (GST % on subscriptions, grace days), §9E block / suspend users at once, §9F receipt problem reports. §9B: `SLAB` commission rates. §9C: fixed default receipt fields (`rrn`, `location`) + multi-select extras (`stan`, `terminalId` now optional too) (`{ extra: [...] }`; new `slip` option). Password reset / change for every login (mobile KT §5.2).
 
 - 2026-11-04 (rev 16) — New §9B commission rates (services, rates per scope with precedence CSP > BC > default, history) and §9C receipt fields (which optional fields the desktop may send; no Aadhaar).
 

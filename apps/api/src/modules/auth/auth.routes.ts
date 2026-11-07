@@ -7,6 +7,12 @@ import { verifyOtpSchema } from "./validations/verify-otp.validation";
 import { loginSchema } from "./validations/login.validation";
 import { refreshSchema, resendOtpSchema } from "./validations/refresh.validation";
 import { authRateLimit } from "../../core/middlewares/rate-limit.middleware";
+import { authMiddleware } from "../../core/middlewares/auth.middleware";
+import {
+  changePasswordSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
+} from "./validations/password.validation";
 
 const router = Router();
 
@@ -31,5 +37,24 @@ router.post("/verify-otp", validate(verifyOtpSchema), AuthController.verifyOtp);
 router.post("/login", validate(loginSchema), AuthController.login);
 
 router.post("/resend-otp", validate(resendOtpSchema), AuthController.resendOtp);
+
+router.post(
+  "/forgot-password",
+  validate(forgotPasswordSchema),
+  AuthController.forgotPassword,
+);
+
+router.post(
+  "/reset-password",
+  validate(resetPasswordSchema),
+  AuthController.resetPassword,
+);
+
+router.post(
+  "/change-password",
+  authMiddleware,
+  validate(changePasswordSchema),
+  AuthController.changePassword,
+);
 
 export default router;
