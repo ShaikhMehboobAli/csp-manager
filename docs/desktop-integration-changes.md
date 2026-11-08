@@ -2,7 +2,11 @@
 
 **Audience:** the engineer/agent implementing changes in the C# desktop repo (`ReceiptWarcher/`).
 **Source of truth for the backend:** `csp-manager/apps/api` (Express + Prisma). This doc lists what the desktop must add, modify, or remove to match the backend.
-**Last updated:** 2026-11-07 (rev 26)
+**Last updated:** 2026-11-08 (rev 28)
+
+> **Rev 28 (2026-11-08): read #34** — one checklist of every API change in rev 26–27 (renewal blocking, free trial) for the desktop: request / response, success and failure handling, and where in the app to handle each. Sections C, D and Q2 now include the trial fields and refusals.
+
+> **Rev 27 (2026-11-07):** item #33 **free trial**: heartbeat `subscriptionType` / `isTrial` (show a trial banner), activation refusals `TRIAL_ALREADY_USED_ON_MACHINE` / `TRIAL_ALREADY_USED` (one trial per PC and per agent ID); keep the fingerprint stable.
 
 > **Rev 26 (2026-11-07):** a CSP plan is now **blocked from its end date until the renewal charge succeeds** (no working during the retries, no grace period for CSP plans) — 25.2 updated. Nothing new to call; the existing `SUBSCRIPTION_EXPIRED` handling covers it.
 
@@ -55,6 +59,8 @@
 | 30 | **Rev 25: automation fixes from testing** (AEPS proceed buttons, GPS device selection, red field errors, failed receipt page, print preferences, recent transactions filter, money transfer to a linked current account, Peri / Morpho service restart) | READY (30.8 PENDING details) |
 | 31 | **Rev 25: plans**: ₹450 `CSP_AUTOMATION_CASH_MANAGEMENT` removed; cash management only on ₹550 `CSP_COMPLETE` | READY |
 | 32 | **Rev 25: KO replaced / deleted**: the PC's agent can change under you | READY |
+| 33 | **Rev 27: free trial**: trial banner from heartbeat `isTrial`; activation refused for a PC / agent ID that already had another account's trial | READY |
+| 34 | **Rev 28: API change checklist** for rev 26–27 (what changed, success / failure handling, where) | READY |
 | 20 | Receipts older than the retention period (default 60 days, at least 15) are refused on upload; `totalCount` covers the last 12 months | READY (handle the new skip reason) |
 | — | **Part 3: Endpoint quick reference** (URL, request, response, how to use) | READY |
 | — | **Part 2: Desktop API reference** (all endpoints, validation, logic) | READY |
@@ -1262,6 +1268,68 @@ CSP plans are now only `CSP_AUTOMATION` (₹250: `DESKTOP_AUTOMATION`, `RECEIPT_
 - **Replaced** (CSP in the app): the PC's activation moves to the new KO without re-activation. The next heartbeat / entitlements show the new `machine.agentId` (entitlements) and the new `accessAgent` list; the new KO's cash (moved from the old one) is in `cash`. Update `machineConfig.AgentId` from the heartbeat/entitlements when it changes, end any open activity session of the old KO, and show the login screen (26.4).
 - **Deleted:** the KO disappears from `accessAgent`; a cash login of that KO falls back to the PC's agent; its cash management is removed on the server.
 
+## 33. Free trial (rev 27) — READY
+
+New CSP / BC accounts can take a free trial (full CSP Complete features for the trial days). For the desktop it's a normal subscription, with three differences:
+
+- **Heartbeat** adds `subscriptionType` (`"PAID"` / `"TRIAL"` / …) and `isTrial`. While `isTrial`, show a small banner "Free trial — ends <subscriptionEndDate>" (local time). When the trial ends, the usual `400 SUBSCRIPTION_EXPIRED` block (#25) applies; when the owner buys a plan, the PC carries over and the next heartbeat shows `isTrial: false` (no re-activation).
+- **Activation** of a trial code (`POST /machines/activate`) is refused when this PC (its fingerprint) or the activating agent ID already took part in **another account's** trial:
+  - **409** `TRIAL_ALREADY_USED_ON_MACHINE` "This PC has already been used for a free trial. Buy a plan to activate it."
+  - **409** `TRIAL_ALREADY_USED` "This SBI agent ID has already been used for a free trial. Buy a plan to activate it."
+  Show the message on the activation screen with a hint "Ask your CSP to buy a plan, then activate with the new code." Don't retry. Re-activating the **same** PC on the same account's trial works as before.
+- **The fingerprint must be stable** — it is the trial's PC check. Keep `fingerprint` derived from hardware (board / CPU / disk serials) as today; never include values that change on reinstall (Windows product ID, user name, MAC of virtual adapters), or a reinstall would look like a new PC.
+
+## 34. API change checklist for rev 26–27 (rev 28) — READY
+
+One list of everything the backend changed for the desktop in rev 26 (CSP renewal blocking) and rev 27 (free trial). **No URL was renamed or removed and no request body changed** — only new response fields, new refusal codes and new states. Errors are `{ success: false, code, message }`; branch on `code`, show `message`.
+
+### 34.1 Summary
+
+| # | API | Change | Where in the desktop |
+|---|---|---|---|
+| 1 | `POST /machines/runtime/heartbeat` (Q2) | new `subscriptionType`, `isTrial` | `HeartbeatService.ApplyResponse`, `MachineConfig`, main window banner |
+| 2 | `POST /machines/runtime/entitlements` (Q3) | `subscription.subscriptionType` can be `"TRIAL"` | Plan details screen |
+| 3 | `POST /machines/activate` (Q1) | new 409 `TRIAL_ALREADY_USED_ON_MACHINE`, 409 `TRIAL_ALREADY_USED` (trial codes only) | activation screen |
+| 4 | all machine runtime calls | a CSP PC gets **400 `SUBSCRIPTION_EXPIRED`** from the plan's end date **until the renewal charge succeeds** (no grace for CSP) | existing "subscription inactive" handling (#6, #25) |
+
+### 34.2 Heartbeat: `subscriptionType`, `isTrial` (new fields)
+
+**Request:** unchanged. **Response 200** adds `"subscriptionType": "PAID" | "TRIAL"` and `"isTrial": true | false`.
+
+| Case | Desktop |
+|---|---|
+| `isTrial: true` | save both to `MachineConfig`; show a small banner "Free trial — ends <subscriptionEndDate, local time>"; from 1 day left use a warning colour. Everything else works as a paid plan (automation and cash per `features`) |
+| `isTrial` turns `false` (owner bought a plan) | remove the banner; **no re-activation** — the PC moved to the paid plan; `planCode` / `features` / `subscriptionEndDate` change on the same heartbeat |
+| trial ended | the next runtime call answers **400 `SUBSCRIPTION_EXPIRED`** → "Subscription inactive" screen (#25: "Your free trial has ended. Ask your CSP to buy a plan."), keep heartbeating; when the owner buys a plan or the super admin extends the trial, the next heartbeat succeeds and the PC works again by itself |
+| older server without the fields | treat missing `isTrial` as `false` |
+
+### 34.3 Activation of a trial code: new refusals
+
+**Request:** unchanged (section C). The checks run after the password check (rows 12–13 of section C) and only when the code belongs to a **free trial**.
+
+| Response | Meaning | Desktop |
+|---|---|---|
+| 201 | activated; this PC and the agent ID are now recorded as having had a trial | as before (write `MachineConfig`, heartbeat at once) |
+| **409 `TRIAL_ALREADY_USED_ON_MACHINE`** | this PC (fingerprint) already ran **another account's** trial | show `message` on the activation screen + hint "Ask your CSP to buy a plan, then activate with the new code." Don't retry; keep the form |
+| **409 `TRIAL_ALREADY_USED`** | the agent ID typed already took part in another account's trial | same message / hint |
+| same PC, same account's trial again | allowed (re-activation, item #15) | as before |
+
+`POST /machines/activate/preview` (27.1) doesn't run these checks: the refusal only comes on activate.
+
+**Keep `fingerprint` stable** (hardware-based: board / CPU / disk serials). A fingerprint that changes after a reinstall would let a PC take a second trial and would break re-activation.
+
+### 34.4 CSP plan blocked during the renewal (rev 26)
+
+From the CSP plan's `subscriptionEndDate` until a mandate charge succeeds (≤ 3 attempts, 15 min apart, ~30 min), runtime calls answer **400 `SUBSCRIPTION_EXPIRED`** ("Subscription has expired.").
+
+| Case | Desktop |
+|---|---|
+| 400 `SUBSCRIPTION_EXPIRED` | "Subscription inactive" (#6 / #25): `SubscriptionStatus = "INACTIVE"`, `Features = []`, stop automation and cash, **keep the heartbeat loop at the normal interval**, keep queuing receipts locally. Message: "Your plan is being renewed. Services resume as soon as the payment goes through." |
+| next heartbeat 200 (charge succeeded) | restore from the response (`subscriptionStatus`, `features`, new `subscriptionEndDate`); upload the queued receipts. No re-activation |
+| renewal failed 3 times / cancelled | stays `SUBSCRIPTION_EXPIRED` (or 400 `Subscription is not active.`) until the CSP buys a plan; then the PC carries over to the new plan by itself |
+
+`graceEndsAt` is always `null` for CSP plans; don't add your own grace.
+
 ---
 
 ## A. Conventions (all endpoints)
@@ -1339,6 +1407,8 @@ Rules that tie these together:
 | 9 | agent belongs to the subscription owner | 400 | `Agent does not belong to this CSP subscription.` (or `BC`) |
 | 10 | password | 400 | `Activation has not been assigned yet.` / `Invalid activation password.` |
 | 11 | this PC has no other current active activation of the same owner type | 400 | `Machine already has an active CSP subscription.` (or `BC`) |
+| 12 | **trial code only** (rev 27): this PC's fingerprint wasn't part of another account's trial | 409 `TRIAL_ALREADY_USED_ON_MACHINE` | `This PC has already been used for a free trial. Buy a plan to activate it.` |
+| 13 | **trial code only** (rev 27): the activating agent ID wasn't part of another account's trial | 409 `TRIAL_ALREADY_USED` | `This SBI agent ID has already been used for a free trial. Buy a plan to activate it.` |
 
 **Response (201)**
 
@@ -1391,11 +1461,13 @@ Rules that tie these together:
   "ownerType": "CSP",
   "receiptWatcherAllowed": false,
   "receiptWatcherReason": "CSP_PLAN",
-  "desktopControls": { "services": { "CASH_WITHDRAWAL": true, "...": true }, "receiptCashDenominationConfirm": true }
+  "desktopControls": { "services": { "CASH_WITHDRAWAL": true, "...": true }, "receiptCashDenominationConfirm": true },
+  "subscriptionType": "PAID",
+  "isTrial": false
 }
 ```
 
-New fields: items #14 (`ownerType`, `receiptWatcher*`), #17 (`desktopControls`), #18 (versions).
+New fields: items #14 (`ownerType`, `receiptWatcher*`), #17 (`desktopControls`), #18 (versions), #33 (`subscriptionType` `"PAID"` / `"TRIAL"`, `isTrial`).
 
 **Desktop logic (`HeartbeatService.ApplyResponse`)**
 - Save every field into `MachineConfig` plus `LastHeartbeatOkAt = now`, `FeaturesUpdatedAt = now`.
@@ -1672,7 +1744,8 @@ Response 200:
       "ACCOUNT_OPENING": true, "AADHAAR_SEEDING": true, "AEPS_REGISTRATION": true },
     "receiptCashDenominationConfirm": true
   },
-  "latestWatcherVersion": "1.0.0", "minimumVersion": null, "downloadUrl": null
+  "latestWatcherVersion": "1.0.0", "minimumVersion": null, "downloadUrl": null,
+  "subscriptionType": "PAID", "isTrial": false
 }
 ```
 
@@ -1682,6 +1755,7 @@ How to use:
 - `desktopControls` → `ServiceSwitches`, `ReceiptCashDenominationConfirm` (item #17).
 - `minimumVersion` > current → block automation, offer `downloadUrl`; `latestWatcherVersion` > current → "update available" (item #18).
 - The heartbeat also keeps the machine session alive, which Q7/Q8 need.
+- `isTrial` → trial banner "Free trial — ends <subscriptionEndDate>" (item #33/#34).
 
 ### Q3. `POST /api/v1/machines/runtime/entitlements`
 
@@ -1824,6 +1898,8 @@ Response 200: `{ approved, next }` (next = step 2 or null) or `{ cancelled, next
 
 ## Changelog
 
+- 2026-11-08 (rev 28) — Item #34: one checklist of every API change in rev 26–27 (heartbeat `subscriptionType` / `isTrial`, trial activation refusals, CSP renewal blocking) with success / failure handling. Section C table rows 12–13, sections D and Q2 response updated.
+- 2026-11-07 (rev 27) — Item #33 free trial: heartbeat `subscriptionType` / `isTrial`; trial activation refused with 409 `TRIAL_ALREADY_USED_ON_MACHINE` / `TRIAL_ALREADY_USED`.
 - 2026-11-07 (rev 26) — Owner decisions: a CSP plan is blocked from its end date until the mandate renewal succeeds (25.2: `SUBSCRIPTION_EXPIRED` during the retries; it unblocks by itself); the grace period (#24) applies to BC plans only.
 - 2026-11-07 (rev 25) — Items #25–#32: plan blocking screens (automation + cash management replaced with "Please ask your CSP to renew…" + View plans; ₹250 has no cash management); shared PCs (any agent of the CSP family, `accessAgent` / `accessAgents` / `cashAgentId` in the heartbeat, cash follows `activity/start` agent, email OTP cash login / logout / session, KO email verification); activation preview + `differenceSource` + email OTP, cash not required without cash management, one activation per agent; mandatory Adjust requests (`/cash/adjustments`, 409 `ADJUSTMENT_PENDING`) and one-step `/cash/transfer`; failed receipts skipped (`status`, `FAILED_TRANSACTION`), `agentId` = SBI-logged-in agent; automation fixes 30.1–30.8 (30.8 Peri / Morpho restart pending details); ₹450 plan removed; KO replace / delete.
 

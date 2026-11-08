@@ -3,7 +3,11 @@
 **Audience:** the web team building the **Super Admin** console in React / Next.js.
 **Not covered here:** the BC/CSP mobile app → `docs/mobile-app-kt.md` (read its sections 3 and 18 for API conventions, errors and dates; they apply here too); the desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api`.
-**Last updated:** 2026-11-07 (rev 19)
+**Last updated:** 2026-11-08 (rev 21)
+
+> **Rev 21 (2026-11-08): read §9K** — one checklist of every API change in rev 19–20 (price change → new mandates, renewal blocking, free trial): request / response, success and failure handling, and which console screens they affect.
+
+> **Rev 20 (2026-11-07):** new §9J **free trial**: settings (days, machines, plans, on/off), trial list, extend days / machines, and the trial registry (one trial per agent ID / mobile / email / PC).
 
 > **Rev 19 (2026-11-07):** a price change in §5 now **replaces running CSP mandates at the new price** (response adds `mandatesReplaced`, `mandateFailures`); CSP plans are **blocked during renewal retries** and have **no grace period** (§9D, §9G).
 
@@ -135,7 +139,7 @@ Errors: 409 `This request has already been reviewed.` (another admin was faster,
 
 → `data: { planId, planCode, billingCycle, durationDays, price (string), isActive }`. Errors: 404 `Plan not found.`, 400 validation, 403 for non-admins.
 
-Rules: new prices apply to new purchases; running subscriptions keep what they paid. **Rev 18 (CSP):** a CSP subscription stores its **price per machine** (`pricePerMachine`) at purchase / upgrade, **Rev 19 (owner decision): changing a CSP plan's monthly price moves its running subscriptions to the new price from their next renewal.** For each running CSP subscription on the plan (ACTIVE, auto renew, not cancelled, not lapsed) the server sets `pricePerMachine` to the new price, **cancels the running mandate** (`status REPLACED`, `revokeReason` "Plan price changed.") and **creates a new mandate** for new price × machines + GST, first charge at `endDate`; the current period isn't charged again. The CSP is notified (`MANDATE_REPLACED`); with Razorpay the CSP must approve the new mandate in the UPI app before the end date, or the plan stops then. The `PATCH /subscriptions/plans/:planId/pricing` response adds `mandatesReplaced` (count) and `mandateFailures` (gateway errors; **save the same price again to retry them**, done ones are skipped). UI: before saving a new CSP monthly price, confirm "N running subscriptions will move to the new price and get a new UPI mandate". Same price saved again → nothing happens. Half-yearly / yearly and BC prices don't touch mandates. Upgrade differences use the stored price and the current new price. The ₹450 `CSP_AUTOMATION_CASH_MANAGEMENT` plan is **inactive** (removed 2026-11-07); it no longer appears in `GET /subscriptions/plans` — keep it out of the pricing UI (or show it greyed "retired"). The seed script never overwrites prices set here. ₹799 BC plan (`BC_CSP_LINK`) defaults: 799 / 4794 / 9588 (monthly / half-yearly / yearly = 799 × months).
+Rules: new prices apply to new purchases; running subscriptions keep what they paid. **Rev 18 (CSP):** a CSP subscription stores its **price per machine** (`pricePerMachine`) at purchase / upgrade, **Rev 19 (owner decision): changing a CSP plan's monthly price moves its running subscriptions to the new price from their next renewal.** For each running CSP subscription on the plan (ACTIVE, auto renew, not cancelled, not lapsed) the server sets `pricePerMachine` to the new price, **cancels the running mandate** (`status REPLACED`, `revokeReason` "Plan price changed.") and **creates a new mandate** for new price × machines + GST, first charge at `endDate`; the current period isn't charged again. The CSP is notified (`MANDATE_REPLACED`); with Razorpay the CSP must approve the new mandate in the UPI app before the end date, or the plan stops then. The `PATCH /subscriptions/plans/:planId/pricing` response adds `mandatesReplaced` (count) and `mandateFailures` (a **count** of subscriptions whose mandate couldn't be replaced because of a gateway error; **save the same price again to retry them**, done ones are skipped). UI: before saving a new CSP monthly price, confirm "N running subscriptions will move to the new price and get a new UPI mandate". Same price saved again → nothing happens. Half-yearly / yearly and BC prices don't touch mandates. Upgrade differences use the stored price and the current new price. The ₹450 `CSP_AUTOMATION_CASH_MANAGEMENT` plan is **inactive** (removed 2026-11-07); it no longer appears in `GET /subscriptions/plans` — keep it out of the pricing UI (or show it greyed "retired"). The seed script never overwrites prices set here. ₹799 BC plan (`BC_CSP_LINK`) defaults: 799 / 4794 / 9588 (monthly / half-yearly / yearly = 799 × months).
 
 **UI:** a page per owner type; one card per plan (code, name, machine limit, features) with an editable row per cycle (price, duration, active toggle, Save). "Add billing cycle" asks for cycle, price and duration. The plan list returns only active cycles, so an inactive cycle disappears after a refetch: keep it in local state for the session, and show "inactive cycles are hidden".
 
@@ -340,6 +344,94 @@ CSPs and BCs report a problem on a receipt from the app (reason + optional note)
 - UI: an inbox with an `openCount` badge (poll, no push yet), filter by status / CSP, detail with the receipt copy and a resolve / reject form. The CSP sees `status` and `resolution` in the app.
 - The receipt PDF and slip are also available to the super admin: `GET /receipts/:receiptId/pdf?agentId=` and `GET /receipts/:receiptId/slip?agentId=` (mobile KT §13).
 
+## 9J. Free trial (rev 20) — READY
+
+A new CSP / BC account (never subscribed) can start **one** free trial from the app with full access for the configured days. The super admin controls it.
+
+**Settings** — `GET /admin/trial-settings`, `PATCH /admin/trial-settings` (any of):
+```json
+{ "enabled": true, "days": 7, "machineCount": 1, "cspPlanCode": "CSP_COMPLETE", "bcPlanCode": "BC_CSP_LINK" }
+```
+- `days` 1–365, `machineCount` 1–100 (CSP trials; BC trials use the BC plan's own machine limit), plan codes must be **active** plans of that owner type (400 `TRIAL_PLAN_INVALID`). Defaults as above until saved.
+- Applies to trials **started afterwards**; running trials keep their dates — extend them one by one (below). `enabled: false` hides the trial in the app (`reason: TRIAL_DISABLED`).
+- UI: a "Free trial" card on the billing settings page: on/off switch, days, machines, two plan dropdowns.
+
+**Trials** — `GET /admin/trials?status=ACTIVE|EXPIRED&search=<agentId or SUB-…>&page=1&limit=20` →
+`{ total, page, limit, items: [{ subscriptionId, subscriptionNumber, status, ownerType, owner { agentId, name, mobile, email, type }, plan { code, name }, startDate, endsAt, daysLeft, active, machineLimit, machinesActivated, converted }] }` — `converted: true` = the owner bought a plan afterwards.
+
+**Extend** — `PATCH /admin/trials/:subscriptionId` `{ "extendDays"?: 1–365, "machineCount"?: 1–100 }` (at least one):
+- `extendDays` adds days from the current end (or from **now** if it already ended) — an **ended trial comes back** (status ACTIVE again, its PCs work again).
+- `machineCount` can only go **up** (400 `TRIAL_MACHINE_DECREASE`); new activation codes are generated for the owner to assign.
+- Refused once the owner bought a plan (409 `TRIAL_CONVERTED`); machines only on an ended trial → 400 `TRIAL_ENDED` (add days too).
+- Writes history `TRIAL_EXTENDED` and notifies the owner. UI: "Extend" button per row → dialog (days, machines).
+
+**Trial registry (abuse check)** — every trial writes `TrialUsage` rows: the owner's **SBI agent ID, mobile, email** at start, and each **PC fingerprint + activating agent ID** when a trial code is activated. A new account matching any row can't start a trial (`TRIAL_ALREADY_USED`); a PC in the registry can't be activated under another account's trial (`TRIAL_ALREADY_USED_ON_MACHINE`). Rows survive account / subscription / machine deletion and the cleanup script.
+- `GET /admin/trial-usages?ownerId=&value=&page=&limit=` → `{ total, items: [{ id, kind (AGENT_ID | PHONE | EMAIL | MACHINE_FINGERPRINT), value, subscriptionId, ownerType, ownerId, agentId, createdAt }] }` (search by phone / email / agent ID / fingerprint).
+- `DELETE /admin/trial-usages/:id` → lets that identity take part in a trial again (support cases, e.g. a PC sold to a new owner). Confirm before deleting.
+
+**Reports:** trial subscriptions have `subscriptionType: "TRIAL"`, `amountPaid: 0` — count them separately from paying subscribers in §12 (e.g. "On free trial" card, and "Trial → paid" conversions).
+
+## 9K. API changes in rev 19–20 — what to change in the console (rev 21)
+
+One list of everything the backend changed for the **billing fixes** (rev 19) and the **free trial** (rev 20). Details are in §5, §9D, §9G and §9J. All calls are SUPER_ADMIN only (another role → 403), all errors are `{ success: false, code, message }` — branch on `code`, show `message`. No URL was renamed or removed.
+
+### 9K.1 Summary
+
+| # | API | New / changed | What changed | Console screen |
+|---|---|---|---|---|
+| 1 | `PATCH /subscriptions/plans/:planId/pricing` | changed | response adds `mandatesReplaced`, `mandateFailures` (counts); a CSP **monthly** price change replaces running mandates | Plans and pricing (§5) |
+| 2 | `PATCH /admin/billing-settings` | changed | `graceDays` applies to **BC** only; CSP subscriptions always get `graceEndsAt: null` | Billing settings (§9D) |
+| 3 | subscription / payment / mandate data | changed | mandate `status: "REPLACED"`; "renewal in progress" state; `RENEWAL` payments marked "refund due."; `subscriptionType: "TRIAL"` | subscriber lists and detail (§12, when built) |
+| 4 | `GET /admin/trial-settings` | **new** | read trial settings | Billing settings → Free trial card |
+| 5 | `PATCH /admin/trial-settings` | **new** | change trial settings | same |
+| 6 | `GET /admin/trials` | **new** | list trials | Free trials page |
+| 7 | `PATCH /admin/trials/:subscriptionId` | **new** | extend days / add machines | Free trials page → Extend |
+| 8 | `GET /admin/trial-usages` | **new** | the trial registry | Free trials → Registry tab |
+| 9 | `DELETE /admin/trial-usages/:id` | **new** | free an identity for another trial | Registry tab |
+
+### 9K.2 `PATCH /subscriptions/plans/:planId/pricing` (changed)
+
+**Request:** unchanged `{ billingCycle, price, durationDays?, isActive? }`.
+
+**Response 200:** `data { planId, planCode, billingCycle, durationDays, price, isActive, mandatesReplaced, mandateFailures }`.
+
+| Case | Console |
+|---|---|
+| CSP plan, `MONTHLY`, price changed | **before saving**, confirm "Running subscriptions on this plan move to ₹{price} from their next renewal and get a new UPI mandate. CSPs may have to approve it in their UPI app." After saving show "{mandatesReplaced} mandates replaced" |
+| `mandateFailures > 0` | warning "{n} mandates couldn't be replaced (gateway error). Save the same price again to retry." — a retry skips the ones already done |
+| same price saved again, BC plan, or another cycle | `mandatesReplaced: 0`, nothing else happens |
+| 404 `Plan not found.` / 400 validation | show the message on the form |
+
+### 9K.3 `PATCH /admin/billing-settings` (changed)
+
+Request and response unchanged (`{ graceDays?, gstPercent? }` → `{ graceDays, gstPercent, updatedSubscriptions }`). **Change:** `graceDays` only gives grace to **BC** subscriptions; CSP ones are set to `graceEndsAt: null` (a CSP plan stops at its end date until the mandate renewal succeeds). Label the field "Grace period (BC plans)".
+
+### 9K.4 What the console shows for CSP subscriptions (changed data)
+
+| Data | Show as |
+|---|---|
+| `status: ACTIVE`, `endDate < now`, `autoRenew`, no `cancelledAt` / `lapsedAt` | **"Renewal in progress"** (the app and PCs are blocked until a charge succeeds; ≤ 3 attempts, 15 min apart; stopped after 6 h) |
+| mandate `status: "REPLACED"`, `revokeReason: "Plan price changed."` | "Replaced (price change)"; the subscription's current mandate is the newer one |
+| payment `purpose: "RENEWAL"`, `status: "SUCCESS"`, `failureReason` ending "refund due." | **"Refund due"** — the money came in late and extended nothing. Refunds are manual for now: list these for the team |
+| `subscriptionType: "TRIAL"`, `amountPaid: 0` | "Free trial"; count separately from paying subscribers |
+
+### 9K.5 Free trial endpoints (new)
+
+| Call | Request | Success | Failures |
+|---|---|---|---|
+| `GET /admin/trial-settings` | — | 200 `{ enabled, days, machineCount, cspPlanCode, bcPlanCode }` (defaults `true, 7, 1, CSP_COMPLETE, BC_CSP_LINK` until saved) | 401 / 403 |
+| `PATCH /admin/trial-settings` | any of `enabled` (boolean), `days` (1–365), `machineCount` (1–100), `cspPlanCode`, `bcPlanCode` | 200 "Trial settings updated. They apply to trials started from now on." + the saved settings | 400 "Send at least one setting." · 400 validation (out of range) · 400 `TRIAL_PLAN_INVALID` "`<code>` is not an active `<CSP\|BC>` plan." |
+| `GET /admin/trials` | query `status=ACTIVE\|EXPIRED`, `search` (agent ID or `SUB-…`), `page` (≥ 1), `limit` (1–100, default 20) | 200 `{ total, page, limit, items: [{ subscriptionId, subscriptionNumber, status, ownerType, owner, plan, startDate, endsAt, daysLeft, active, machineLimit, machinesActivated, converted }] }` | 400 validation |
+| `PATCH /admin/trials/:subscriptionId` | `{ extendDays?: 1–365, machineCount?: 1–100 }` (at least one) | 200 "Trial updated." `{ subscriptionId, subscriptionNumber, status, active, startDate, endsAt, daysLeft, machineLimit }` | 404 "Trial not found." · 409 `TRIAL_CONVERTED` (owner bought a plan) · 400 `TRIAL_MACHINE_DECREASE` · 400 `TRIAL_ENDED` (machines only on an ended trial — add days too) · 400 "A cancelled / suspended trial can't be extended." · 400 "Send extendDays and / or machineCount." |
+| `GET /admin/trial-usages` | query `ownerId`, `value` (phone / email / agent ID / fingerprint), `page`, `limit` | 200 `{ total, items: [{ id, kind, value, subscriptionId, ownerType, ownerId, agentId, createdAt }] }` | 400 validation |
+| `DELETE /admin/trial-usages/:id` | — | 200 "Trial usage removed. This identity can take part in a trial again." + the removed row | 404 "Trial usage not found." |
+
+**Console handling:**
+- Settings form: disable Save until something changed; after save show the message and "running trials keep their dates".
+- Trials list: badges **Active** (`active`), **Ended** (`!active && !converted`), **Converted** (`converted`). Hide **Extend** on converted rows. Extend dialog: days (optional) + machines (min = current `machineLimit`); on an ended trial require days. After success, refresh the row (`daysLeft`, `endsAt`, `machineLimit`); the owner gets a `TRIAL_EXTENDED` notification and new codes for added machines.
+- Registry: search box (by value) and filter by owner; **Delete** asks "Allow this {kind} to take part in a free trial again?". `value` is stored normalised (email lower-case without dots / `+tag` for Gmail, phone = last 10 digits, agent ID upper-case) — search with the same form.
+- 401 → login; 403 → "super admin only"; network / 5xx → keep the form, show "try again".
+
 ## 10. Other endpoints the console can use
 
 - `POST /csp-visits`, `GET /csp-visits/:id`, `GET /csp-visits/csp/:cspAgentId` — allowed for SUPER_ADMIN (mobile KT §16). Upload works the same from the browser (presigned POST via `FormData` / `fetch`).
@@ -435,6 +527,8 @@ The data exists today: `Subscription` (`ownerType`, `ownerId`, `planId`, `status
 
 ## 13. Changelog
 
+- 2026-11-08 (rev 21) — New §9K: one checklist of every API change in rev 19–20 (price change → new mandates, BC-only grace, renewal in progress, refund due, the six free trial endpoints) with request / response, success and failure handling and the screens affected. `mandateFailures` is a count.
+- 2026-11-07 (rev 20) — §9J free trial: `GET/PATCH /admin/trial-settings`, `GET /admin/trials`, `PATCH /admin/trials/:subscriptionId` (extend days / machines, revive an ended trial), `GET/DELETE /admin/trial-usages`.
 - 2026-11-07 (rev 19) — Owner decisions: a CSP monthly price change replaces running mandates at the new price (§5: `mandatesReplaced`, `mandateFailures`; mandate status `REPLACED`); blocked during renewal retries (§9G); grace days apply to BC plans only (§9D); a purchase after a cancel starts now (confirmed).
 - 2026-11-07 (rev 18) — New §9G CSP billing rules (₹450 retired, upgrade-only with the difference in the first 12 days, UPI mandate renewals with 2 retries then stop, cancel without refund, plan blocking that never applies to the super admin, one activation per agent, mandate webhook + dev switches), §9H cash changes (worked-out limit, KO cash moves, increase / decrease, Adjust requests and `GET /cash-management/adjustments`, activation differences, KO delete / replace, shared PCs, failed receipts skipped), §9I data cleanup script. §5: renewals keep the subscription's stored price.
 

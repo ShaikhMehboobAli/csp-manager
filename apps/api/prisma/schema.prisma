@@ -136,6 +136,9 @@ enum SubscriptionEventType {
   RENEWAL_FAILED
   // Renewal failed after every retry; the subscription stopped at once.
   LAPSED
+  // Free trial started by the owner / extended by the super admin.
+  TRIAL_STARTED
+  TRIAL_EXTENDED
 }
 
 /// What a payment pays for.
@@ -387,6 +390,49 @@ enum NotificationKind {
   MANDATE_REVOKED
   // The plan price changed; a new mandate at the new price replaced the old one.
   MANDATE_REPLACED
+  TRIAL_STARTED
+  // About a day before the free trial ends.
+  TRIAL_ENDING
+  // The super admin extended the trial (days and / or machines).
+  TRIAL_EXTENDED
+}
+
+/// What identifies a person / PC that already used a free trial.
+enum TrialIdentityKind {
+  // The SBI kiosk agent ID (the account's agentId, or a KO that activated a
+  // trial PC).
+  AGENT_ID
+  PHONE
+  EMAIL
+  // Machine.fingerprint of a PC activated under a trial.
+  MACHINE_FINGERPRINT
+}
+
+/// Free trial registry: one row per identity that took part in a trial. Kept
+/// when accounts, subscriptions or machines are deleted (no foreign keys), so
+/// a new account can't get a second trial with the same PC / agent ID /
+/// phone / email.
+model TrialUsage {
+  id String @id @default(cuid())
+
+  kind TrialIdentityKind
+
+  /// Normalized: agent ID upper case, email lower case, phone last 10 digits.
+  value String
+
+  /// The trial subscription and its owner when the row was written.
+  subscriptionId String
+  ownerType      SubscriptionOwnerType
+  ownerId        String
+
+  /// The agent that brought this identity in (owner, or the KO activating).
+  agentId String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([kind, value])
+  @@index([ownerId])
+  @@index([subscriptionId])
 }
 
 enum NotificationType {
@@ -761,6 +807,9 @@ model Subscription {
 
   /// Renews by mandate at endDate unless cancelled.
   autoRenew Boolean @default(true)
+
+  /// Free trial: when the "trial ends soon" notification was sent.
+  trialReminderSentAt DateTime?
 
   /// Cancelled by the CSP: no refund, works until endDate, never renews.
   cancelledAt  DateTime?

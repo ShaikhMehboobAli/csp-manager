@@ -51,6 +51,10 @@ export interface HeartbeatResponse {
 
   subscriptionEndDate: Date;
 
+  // PAID | TRIAL | PROMOTIONAL | LIFETIME; on TRIAL show "Free trial — ends <subscriptionEndDate>".
+  subscriptionType: string;
+  isTrial: boolean;
+
   graceEndsAt: Date | null;
 
   // Feature codes included in the current plan, e.g. "RECEIPT_SYNC".

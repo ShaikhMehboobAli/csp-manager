@@ -86,6 +86,8 @@ export default class MachineHeartbeatService {
       ...watcher,
       desktopControls: desktop.desktopControls,
       subscriptionEndDate: authenticated.subscription.endDate,
+      subscriptionType: authenticated.subscription.subscriptionType,
+      isTrial: authenticated.subscription.subscriptionType === "TRIAL",
       graceEndsAt: authenticated.subscription.graceEndsAt,
       features: features.map((feature) => feature.code),
       cash,

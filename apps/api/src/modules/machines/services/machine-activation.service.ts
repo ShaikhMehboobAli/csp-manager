@@ -1,4 +1,5 @@
 import { PrismaDb } from "../../../core/database/prisma.types";
+import TrialService from "../../subscriptions/trial/trial.service";
 import { withTransaction } from "../../../core/database/transaction";
 
 import MachineRepository from "../machine.repository";
@@ -229,6 +230,14 @@ export default class MachineActivationService {
        * Verify Password
        */
       await this.verifyPassword(activation, data.activationPassword);
+
+      // Free trial: a PC (or agent) that was part of another account's trial
+      // can't be activated under this trial.
+      await new TrialService(db).claimMachine({
+        subscription: activation.subscription,
+        fingerprint: data.machine.fingerprint,
+        agentId: agent.agentId,
+      });
 
       /**
        * STEP 5

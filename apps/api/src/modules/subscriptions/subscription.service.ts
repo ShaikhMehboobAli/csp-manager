@@ -27,6 +27,7 @@ import {
   SubscriptionEventType,
   SubscriptionOwnerType,
   SubscriptionStatus,
+  SubscriptionType,
 } from "../../generated/prisma/enums";
 import { Logger } from "../../core/utils/logger";
 import SubscriptionBillingService from "./billing/subscription-billing.service";
@@ -251,6 +252,8 @@ export default class SubscriptionService {
         latest &&
         isRunning &&
         !latest.cancelledAt &&
+        // A free trial is never extended by a purchase: the paid plan starts now.
+        latest.subscriptionType !== SubscriptionType.TRIAL &&
         latest.planId === plan.id &&
         latest.machineLimit === machineLimit
       ) {
@@ -323,7 +326,7 @@ export default class SubscriptionService {
 
       await repository.createHistory({
         subscriptionId: subscription.id,
-        eventType: !latest
+        eventType: !latest || latest.subscriptionType === SubscriptionType.TRIAL
           ? SubscriptionEventType.PURCHASE
           : latest.planId === plan.id
             ? SubscriptionEventType.RENEWAL

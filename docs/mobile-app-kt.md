@@ -3,10 +3,14 @@
 **Audience:** the React Native team building the CSP Manager mobile app for **BC** and **CSP** users.
 **Not covered here:** the Super Admin console (React / Next.js) → `docs/admin-web-kt.md`; the Windows desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api` (Express + Prisma + PostgreSQL).
-**Last updated:** 2026-11-07 (rev 27)
+**Last updated:** 2026-11-08 (rev 30)
 
 > Describes the backend once PRs #3–#8 are merged into `development`. Where an older build behaves differently it says so.
 >
+> **Rev 29 (2026-11-08): read §6C first** — one list of every API change in rev 27–28 (billing fixes + free trial): which call changed, the request / response, the success and failure cases and where to handle each in the app. New: cancelling a trial → 400 `TRIAL_CANCEL_NOT_ALLOWED`. §7.1 response updated (`RENEWAL_PENDING`, `subscriptionType`, `trial`).
+
+> **Rev 28 (2026-11-07): free trial** (§6B): a new CSP / BC taps **Start free trial** and gets full access for the days the super admin set (CSP: 1 activation code). One trial per SBI agent ID, mobile, email and PC; new APIs `GET /subscriptions/trial`, `POST /subscriptions/trial/start`; `/subscriptions/access` adds `trial`.
+
 > **Rev 27 (2026-11-07), owner decisions:** (1) the plan is **blocked while the renewal is being charged / retried** (`state: RENEWAL_PENDING`, new 403 `RENEWAL_PENDING`, §6A.4, §7.2); (2) when the super admin changes a plan's price, running mandates are **replaced by a new mandate at the new price** (notification `MANDATE_REPLACED`, §6A.3); (3) a purchase after a cancel **starts now** (confirmed, §6A.5). A purchase while the renewal is being charged → 409 `RENEWAL_IN_PROGRESS`. CSP plans have **no grace period** any more.
 
 > **Rev 26 (2026-11-07) changes a lot: read §0 first.** Plans are now ₹250 / ₹550 only; a lapsed or ₹250 plan blocks most tabs (§7); subscriptions renew by **UPI mandate** and can only be **upgraded** (difference only, first 12 days) or **cancelled** (§6A); the cash limit is **worked out, never entered** (§5.1, §9, §13A); KO creation moves cash in hand between agents (§9.1); the CSP can increase / decrease cash (§13A.10); every cash in hand change makes a mandatory **Adjust** request on the desktop (§13A.11).
@@ -25,6 +29,7 @@
 5. Auth: signup, OTP, login, session
 6. Plans, subscription and payment
 6A. **Subscription rules (rev 26): upgrade, cancel, UPI mandate, auto renewal**
+6B. **Free trial (rev 28)**
 7. **Paywall, plan blocking and feature gating (rev 26: which screens are blocked when)**
 8. Activations (machine codes for the desktop app)
 9. Agents: CSPs and KOs
@@ -829,6 +834,189 @@ Payments ›   Plan history ›
 ```
 Refresh on screen focus and after every payment / cancel.
 
+## 6B. Free trial (rev 28)
+
+A **new** CSP or BC account can take **one free trial** with **full access** for the days the super admin set (default 7). CSP trial = the **CSP Complete** plan (automation, cash management, every app tab) with **1 activation code** (the super admin can set more, and can extend a running trial). BC trial = the BC plan the super admin set (default `BC_CSP_LINK`, no machines).
+
+### 6B.1 Who can take it
+
+- Only an account that **never had any subscription** (paid or trial). Signed-up, OTP-verified CSP / BC owners only (not KOs).
+- **One trial per person and per PC.** It's refused when any of these was already part of another account's trial — even if that account was deleted:
+  - the **SBI agent ID** (the account's agent ID, or a KO's agent ID that activated a trial PC),
+  - the **mobile number** (last 10 digits; `+91` / `0` ignored),
+  - the **email** (case ignored; Gmail dots and `+tag` ignored),
+  - the **PC** (its hardware fingerprint) — checked when a trial code is **activated on the desktop**: a PC that already ran a trial can't run another account's trial (it can still be activated with a **paid** plan).
+
+### 6B.2 APIs
+
+`GET /subscriptions/trial` (CSP_ADMIN / BC_ADMIN) → 
+```json
+{ "enabled": true, "available": true, "reason": null,
+  "days": 7, "machineCount": 1, "plan": { "code": "CSP_COMPLETE", "name": "CSP Complete Solution" },
+  "trial": null }
+```
+- `reason` when `available: false`: `TRIAL_DISABLED` (super admin turned trials off) · `HAS_SUBSCRIPTION` (the account has / had a plan) · `TRIAL_ALREADY_USED` (agent ID / mobile / email already used a trial).
+- `trial` (after starting): `{ subscriptionId, active, startDate, endsAt, daysLeft, machineLimit }`.
+
+`POST /subscriptions/trial/start` (no body) → **201** `Free trial started.`
+```json
+{ "subscription": { "…": "same shape as GET /subscriptions/current", "subscriptionType": "TRIAL", "amountPaid": "0" },
+  "trial": { "subscriptionId": "…", "active": true, "endsAt": "…", "daysLeft": 7, "machineLimit": 1 },
+  "activations": [ { "activationCode": "…", "expiresAt": "…" } ] }
+```
+Errors: 403 `TRIAL_DISABLED` · 409 `TRIAL_NOT_AVAILABLE` ("The free trial is only for new accounts…") · 409 `TRIAL_ALREADY_USED` ("A free trial has already been used with this mobile number / email / SBI agent ID. Please buy a plan.") · 400 `TRIAL_PLAN_INVALID` (setup problem, show "contact support").
+
+### 6B.3 During and after the trial
+
+- `GET /subscriptions/access`: `subscription.subscriptionType: "TRIAL"` and a **`trial`** object `{ active, endsAt, daysLeft, machineLimit }` (`null` on a paid plan). `state: "ACTIVE"`, all `screens` true (CSP Complete). `upgrade.allowed: false` with `upgrade.reason: "TRIAL"`, `cancel.allowed: false` (calling cancel anyway → 400 `TRIAL_CANCEL_NOT_ALLOWED`, rev 29), no mandate / auto renewal.
+- The activation code works like a paid one (§8): assign it to the CSP or a KO and activate the PC. A desktop refusal `TRIAL_ALREADY_USED_ON_MACHINE` means that PC already ran someone's trial.
+- **Buy any time during the trial** (normal checkout, §6): the paid plan **starts now**, the trial ends at once, and PCs activated on the trial **move to the paid plan** (no re-activation, up to its machine count). Remaining trial days aren't added.
+- **When it ends** (`endsAt`): everything is blocked like an expired plan (§7: `SUBSCRIPTION_REQUIRED`, "Please renew or take a new plan."). `trial.active: false`. Buy a plan to continue; the PCs carry over.
+- Notifications (§13D): `TRIAL_STARTED`, `TRIAL_ENDING` (about 24 h before the end), `TRIAL_EXTENDED` (super admin added days / machines; `data.endDate`, `data.machineLimit`) → Subscription screen.
+
+### 6B.4 Screens
+
+- **After signup / login** (no subscription): a card **"Start your {days}-day free trial — full access, {machineCount} PC"** with **[Start free trial]** and **[See plans]**. Hide the card when `available: false`; for `TRIAL_ALREADY_USED` show "A free trial was already used with these details" under the plans button.
+- Tap → confirm dialog → `POST /subscriptions/trial/start` → show the activation code(s) (copy / share) and go to Home.
+- **Banner on every tab** while on trial: "Free trial — {daysLeft} days left. [Buy plan]". From 1 day left, make it a warning colour.
+- Subscription screen on trial: plan name + "Free trial until {endsAt}", **[Buy plan]** (no Upgrade / Cancel buttons).
+
+## 6C. API changes in rev 27–28 — what to change in the app (rev 29)
+
+One list of everything the backend changed for the **billing fixes** (rev 27) and the **free trial** (rev 28). The detailed rules are in §6A, §6B and §7; this section is the checklist. Every error body is `{ success: false, code, message }` — **branch on `code`**, show `message`.
+
+### 6C.1 Summary
+
+| # | API | New / changed | What changed | Screens affected |
+|---|---|---|---|---|
+| 1 | `GET /subscriptions/access` | changed | new `state` / `blockReason` `RENEWAL_PENDING`; `cancel.allowed` true while it's pending; `subscription.subscriptionType`; new `trial` object; `upgrade.reason: "TRIAL"`; `graceEndsAt` always null for CSP | every gated tab, Plans, Subscription |
+| 2 | CSP app routes (`/dashboard/*`, `/team/*`, `/machines/*`, `/receipts/*`, `/reports/*`, `/commission/*`, `/cash-management/*`) | changed | new **403 `RENEWAL_PENDING`** | global API interceptor |
+| 3 | `POST /subscriptions/quote`, `POST /payments/create-order` | changed | new **409 `RENEWAL_IN_PROGRESS`** while a renewal is being charged; during a trial they answer `purpose: "PURCHASE"` (never UPGRADE) | Plans / checkout |
+| 4 | `POST /subscriptions/current/cancel` | changed | allowed while `RENEWAL_PENDING` (plan ends **now**); new 409 `RENEWAL_IN_PROGRESS` while the bank hasn't answered; new 400 `TRIAL_CANCEL_NOT_ALLOWED` | Subscription screen, renewal popup |
+| 5 | mandate object (`renewal.mandate`) | changed | new `status: "REPLACED"`; a new mandate may be `PENDING` after a price change | Subscription screen |
+| 6 | `GET /payments/history` | changed | a `RENEWAL` payment can be `SUCCESS` with `failureReason` ending "refund due." | Payments |
+| 7 | `GET /notifications` | changed | new `kind`s `MANDATE_REPLACED`, `TRIAL_STARTED`, `TRIAL_ENDING`, `TRIAL_EXTENDED`; "Late renewal charge" uses `SUBSCRIPTION_RENEWAL_FAILED` | bell, notification tap routing |
+| 8 | `GET /subscriptions/trial` | **new** | is the trial offered to this account | Home (no plan), Plans |
+| 9 | `POST /subscriptions/trial/start` | **new** | starts the trial, returns the activation code(s) | trial card, confirm dialog |
+| 10 | `GET /subscriptions/current`, `GET /subscriptions/history` | changed | `subscriptionType: "TRIAL"` (`amountPaid: "0"`); history events `TRIAL_STARTED`, `TRIAL_EXTENDED` | Subscription, Plan history |
+| 11 | `GET /activations` | unchanged shape | trial codes appear like paid codes; `expiresAt` = the trial end | Activations |
+
+No URL was renamed or removed. No request body changed for existing calls.
+
+### 6C.2 `GET /subscriptions/access` (changed)
+
+**Request:** unchanged (no body, Bearer token).
+
+**Response changes** (full shape in §7.1):
+- `state` can be **`RENEWAL_PENDING`**: the end date passed and the UPI mandate is being charged (up to 3 attempts, 15 min apart). Then `usable: false`, `blocked: true`, `blockReason: "RENEWAL_PENDING"`, `message: "Your plan's renewal payment is being charged through your UPI mandate. Services resume as soon as it goes through."`, every `screens.*` false, `desktop.*` false, `cancel.allowed: true`. `renewal.attempts` (0–3), `renewal.nextChargeAt`, `renewal.lastFailure` say where it stands.
+- `subscription.subscriptionType`: `"PAID"` or `"TRIAL"`.
+- `trial`: `null`, or `{ active, endsAt, daysLeft, machineLimit }` on a trial.
+- `upgrade.reason` can be `"TRIAL"` (with `upgrade.allowed: false`).
+- `subscription.graceEndsAt` is always `null` for CSP (no grace period for CSP plans).
+
+**Handle:**
+| Case | What the app does |
+|---|---|
+| `state: RENEWAL_PENDING` | non-closable popup on dashboard / machines / cash / reports (§7.2) with `message`, "Attempt n of 3 — next try at <nextChargeAt>" when `attempts > 0`, **[Manage KOs]** and **[Cancel plan]**; **no Subscribe button**; poll this call every 60 s; close the popup when `usable` becomes true |
+| `trial` not null and `trial.active` | trial banner on every tab ("Free trial — {daysLeft} days left. [Buy plan]"; warning colour at ≤ 1 day); Subscription screen shows "Free trial until {endsAt}" and **[Buy plan]** only (no Upgrade / Cancel) |
+| `trial` not null and `trial.active: false` | same as an expired plan: popup "Please renew or take a new plan." → Plans |
+| `upgrade.reason: "TRIAL"` | hide the Upgrade button; Plans shows the normal purchase flow |
+| 401 | session expired → login |
+| network / 5xx | keep the last cached result, retry on the next poll / resume; don't unblock on an error |
+
+### 6C.3 403 `RENEWAL_PENDING` on gated CSP routes (changed)
+
+**Response:** `403 { code: "RENEWAL_PENDING", message: "Your plan's renewal payment is being charged…" }`.
+
+**Handle (global axios interceptor):** same as `SUBSCRIPTION_REQUIRED` / `PLAN_UPGRADE_REQUIRED` — refetch `/subscriptions/access`, show the renewal popup on the current tab, **don't retry the call**, don't show the data. KO management, payments, subscription, notifications and auth calls are never blocked.
+
+### 6C.4 `POST /subscriptions/quote` and `POST /payments/create-order` (changed)
+
+**Request:** unchanged (`{ planId, machineCount }` / `{ planId, billingCycle: "MONTHLY", machineCount }` + `Idempotency-Key`).
+
+| Case | Response | App |
+|---|---|---|
+| on a **trial** | 200, `purpose: "PURCHASE"`, `breakdown: null`, full price + GST | show "Your free trial ends now and the paid plan starts today; your PCs move to it." before Pay |
+| renewal being charged | **409 `RENEWAL_IN_PROGRESS`** "Your plan's renewal payment is being charged through your UPI mandate. Please wait until it completes or fails (within about 30 minutes)." | show the message, disable Pay, refetch `/subscriptions/access` (the renewal popup takes over) |
+| others | as before (§6A.2) | — |
+
+`POST /payments/verify` after a purchase during a trial → 200 as a normal purchase; then refetch `/subscriptions/access` (`trial: null`, `subscriptionType: "PAID"`) and `GET /activations` (the trial's PCs are now on the paid plan, no re-activation).
+
+### 6C.5 `POST /subscriptions/current/cancel` (changed)
+
+**Request:** unchanged `{ reason? }`.
+
+| Case | Response | App |
+|---|---|---|
+| running plan | 200 "Subscription cancelled. No refund is made; you can use it until <endDate>…" `data { subscriptionId, cancelledAt, usableUntil }` | as before: banner "Cancelled — works until <date>" |
+| **`RENEWAL_PENDING`** (new) | 200, the plan **ends now** (`usableUntil` ≈ now), retries stop, `state` becomes `EXPIRED` | confirm first: "Cancel your plan? The renewal won't be charged and the plan stops now. No refund."; then refetch access → Subscribe is allowed |
+| the bank is still answering a charge | **409 `RENEWAL_IN_PROGRESS`** "A renewal payment is waiting for the bank's answer. Try again in a few minutes." | show the message, keep the popup, let the CSP try again later |
+| on a **trial** (rev 29) | **400 `TRIAL_CANCEL_NOT_ALLOWED`** "A free trial can't be cancelled; it ends on its own. Buy a plan to keep using the app." | don't show Cancel on a trial; if it happens, show the message |
+| no plan / already cancelled | 400 "You have no running subscription to cancel." / 409 `SUBSCRIPTION_ALREADY_CANCELLED` | as before |
+
+### 6C.6 Mandate `REPLACED` after a price change (changed)
+
+`renewal.mandate` now points at the **new** mandate; the old one has `status: "REPLACED"`. Notification `kind: "MANDATE_REPLACED"`, `data { subscriptionId, mandateId, previousMandateId, previousAmount, amount, status, authUrl, nextChargeAt }`.
+
+| `data.status` / `renewal.mandate.status` | App |
+|---|---|
+| `ACTIVE` | info only: "Your autopay is now ₹{amount}/month (incl. GST) from {nextChargeAt}." |
+| `PENDING` (with Razorpay) | banner on Subscription: "Approve the new autopay amount in your UPI app before {nextChargeAt}, or your plan stops then." **[Approve autopay]** → `authUrl` |
+| `REPLACED` (old one in any list) | show as "Replaced (price change)" |
+
+### 6C.7 Late renewal charge — "refund due" (changed)
+
+If the bank confirms an old charge **after** the CSP bought a new plan, or confirms a second charge for a month already renewed, nothing is extended. The payment shows `status: "SUCCESS"`, `purpose: "RENEWAL"`, `failureReason` ending **"refund due."**, and the CSP gets a notification titled "Late renewal charge" (`kind: SUBSCRIPTION_RENEWAL_FAILED`). **App:** in Payments, show a "Refund due" tag when `failureReason` ends with "refund due."; on tap: "This charge came in late and didn't extend any plan. It will be refunded." (Refunds are manual for now.)
+
+### 6C.8 `GET /subscriptions/trial` (new)
+
+**Who:** CSP_ADMIN and BC_ADMIN (KOs and super admin → 403). **Request:** no body.
+
+**Response 200:** `{ enabled, available, reason, days, machineCount, plan { code, name }, trial }` (§6B.2).
+
+| Case | App |
+|---|---|
+| `available: true` | show the trial card "Start your {days}-day free trial — full access, {machineCount} PC" with **[Start free trial]** and **[See plans]** |
+| `reason: "TRIAL_DISABLED"` | hide the card |
+| `reason: "HAS_SUBSCRIPTION"` | hide the card (the account has / had a plan) |
+| `reason: "TRIAL_ALREADY_USED"` | hide the card; under the plans button show "A free trial was already used with these details" |
+| `trial` not null | the trial already started; use `/subscriptions/access` for the banner |
+| 401 / network | hide the card, retry on the next screen focus |
+
+**When to call:** after signup / login when `/subscriptions/access` says `state: "NONE"`, and on Plans screen focus.
+
+### 6C.9 `POST /subscriptions/trial/start` (new)
+
+**Request:** no body. Show a confirm dialog first ("Start your free {days}-day trial now? You can buy a plan any time."). Disable the button while the call runs (it's safe against double taps: a second call is refused).
+
+**Success 201** `Free trial started.` → `data { subscription, trial, activations: [{ activationCode, expiresAt }] }`. Show the code(s) with **Copy** / **Share**, explain "Assign this code to yourself or a KO and activate it on the PC", then go to Home and refetch `/subscriptions/access` and `/activations`.
+
+| Failure | `code` | Message | App |
+|---|---|---|---|
+| 403 | `TRIAL_DISABLED` | "Free trials aren't available right now." | show the message; go to Plans |
+| 403 | `TRIAL_NOT_AVAILABLE` | "Only a CSP or BC account can start a free trial." | shouldn't happen in the app; show the message |
+| 409 | `TRIAL_NOT_AVAILABLE` | "The free trial is only for new accounts. This account already has (or had) a plan." | show the message; go to Plans |
+| 409 | `TRIAL_ALREADY_USED` | "A free trial has already been used with this mobile number / email / SBI agent ID. Please buy a plan." | show the message; go to Plans |
+| 400 | `TRIAL_PLAN_INVALID` | "The free trial plan isn't available. Please contact support." | show "contact support" |
+| 401 / network / 5xx | — | — | show "Couldn't start the trial, try again"; on retry first call `GET /subscriptions/trial` (it may have started) |
+
+### 6C.10 Trial on the desktop (what the CSP may report)
+
+Activating a trial code on a PC can fail with **409 `TRIAL_ALREADY_USED_ON_MACHINE`** ("This PC has already been used for a free trial. Buy a plan to activate it.") or **409 `TRIAL_ALREADY_USED`** ("This SBI agent ID has already been used for a free trial…"). The fix is always **buy a plan**: the new paid codes activate on that PC. No app call is involved, but the Activations screen can show the hint "A PC that already ran a free trial needs a paid plan."
+
+### 6C.11 Notifications (changed)
+
+| `kind` | When | Tap |
+|---|---|---|
+| `MANDATE_REPLACED` | super admin changed the plan price | Subscription (6C.6) |
+| `TRIAL_STARTED` | trial started | Subscription |
+| `TRIAL_ENDING` | ~24 h before the trial ends | Plans (buy) |
+| `TRIAL_EXTENDED` | super admin added days / machines (`data.endDate`, `data.machineLimit`) | Subscription; refetch `/activations` (new codes when machines were added) |
+| `SUBSCRIPTION_RENEWAL_FAILED` titled "Late renewal charge" | late bank success (6C.7) | Payments |
+| `SUBSCRIPTION_CANCELLED` | also sent when the CSP cancels during `RENEWAL_PENDING` ("…has stopped; its renewal won't be charged.") | Subscription |
+
+On every subscription / trial / mandate kind: refetch `/subscriptions/access`.
+
 ## 7. Paywall, plan blocking and feature gating
 
 ### 7.1 `GET /subscriptions/access` — what the plan opens (rev 26, call this first)
@@ -841,15 +1029,18 @@ Call it **after login, on every app launch / resume, after any payment, upgrade 
   "state": "ACTIVE",                   // NONE | ACTIVE | CANCELLED | RENEWAL_PENDING | LAPSED | EXPIRED (§6A.1)
   "usable": true,                      // a running subscription
   "blocked": false,                    // true = show the non-closable popup (7.2)
-  "blockReason": null,                 // SUBSCRIPTION_REQUIRED | PLAN_UPGRADE_REQUIRED | null
-  "message": null,                     // "Please renew or take a new plan." | "Please upgrade the plan to use this."
+  "blockReason": null,                 // RENEWAL_PENDING | SUBSCRIPTION_REQUIRED | PLAN_UPGRADE_REQUIRED | null
+  "message": null,                     // the text to show in the popup for that blockReason (§7.2)
   "screens": { "dashboard": true, "machines": true, "cash": true, "reports": true },
   "alwaysOpen": ["koManagement", "payments", "planHistory", "subscribe", "renew", "cancel", "notifications", "profile"],
   "desktop": { "automation": true, "cashManagement": true },
-  "subscription": { "id", "subscriptionNumber", "status", "planId", "planCode", "planName", "planLevel", "machineLimit",
-                    "pricePerMachine", "startDate", "currentPeriodStart", "endDate", "graceEndsAt", "features": [] },
+  "subscription": { "id", "subscriptionNumber", "status", "subscriptionType", "planId", "planCode", "planName", "planLevel",
+                    "machineLimit", "pricePerMachine", "startDate", "currentPeriodStart", "endDate", "graceEndsAt", "features": [] },
+                                       // subscriptionType: "PAID" | "TRIAL" (rev 28); graceEndsAt is always null for CSP
+  "trial": null,                       // rev 28: { active, endsAt, daysLeft, machineLimit } while on a free trial (§6B)
   "renewal": { "autoRenew", "nextChargeAt", "attempts", "maxAttempts", "lastFailure", "lapsedAt", "mandate": { … } },
   "upgrade": { "allowed", "windowDays": 12, "windowEndsAt", "minPlanLevel", "minMachineCount", "reason" },
+                                       // reason: UPGRADE_WINDOW_CLOSED | CANCELLED | NO_RUNNING_SUBSCRIPTION | TRIAL | null
   "cancel":  { "allowed", "cancelledAt", "usableUntil" }
 }
 ```
@@ -1551,7 +1742,7 @@ In-app notifications for the CSP (and BC) login. Push isn't built yet (pre-produ
 | `GET /notifications?unreadOnly=&page=&limit=` | newest first → `{ items: [{ id, title, message, type: INFO\|SUCCESS\|WARNING\|ERROR, kind, data, isRead, readAt, createdAt }], unread, pagination }` |
 | `POST /notifications/:id/read` | mark one read; `:id` = `all` marks every unread one |
 
-`kind` → where to go on tap: `CASH_ACTIVATION_DIFFERENCE` → Cash tab, that agent (`data.agentId`); `SUBSCRIPTION_RENEWED` / `SUBSCRIPTION_RENEWAL_FAILED` / `SUBSCRIPTION_LAPSED` / `SUBSCRIPTION_CANCELLED` / `MANDATE_REVOKED` / `MANDATE_REPLACED` (rev 27) → Subscription screen (refetch `/subscriptions/access`); `GENERAL` → nothing.
+`kind` → where to go on tap: `CASH_ACTIVATION_DIFFERENCE` → Cash tab, that agent (`data.agentId`); `SUBSCRIPTION_RENEWED` / `SUBSCRIPTION_RENEWAL_FAILED` / `SUBSCRIPTION_LAPSED` / `SUBSCRIPTION_CANCELLED` / `MANDATE_REVOKED` / `MANDATE_REPLACED` (rev 27) / `TRIAL_STARTED` / `TRIAL_ENDING` / `TRIAL_EXTENDED` (rev 28) → Subscription screen (refetch `/subscriptions/access`); `GENERAL` → nothing.
 
 ## 14. Reports
 
@@ -1822,8 +2013,98 @@ The canvas shows "Own plan active" / "No own plan yet" per CSP. Add `ownSubscrip
 
 Built in rev 25 (were future scope): receipt slip / PDF / report a problem (§13), commission slabs (§13B), forgot / reset / change password (§5.2).
 
+### 19.4 New endpoints for screens not in the app yet (app team, rev 30)
+
+Found while comparing the app with this KT (canvas row "Not in the app yet"). Shapes follow §3 (`{ success, message, data }`, `code` on errors). Until an endpoint exists the app hides that screen or button (404 → hidden).
+
+| # | Endpoint(s) | Screen | Status |
+|---|---|---|---|
+| R20 | `GET /auth/me`, `PATCH /auth/me`, `POST /auth/me/email/verify` | Profile (More → Profile; `profile` is in §7.1 `alwaysOpen`) | **Requested** |
+| R21 | `POST /bc-links/csps/:cspAgentId/unlink` | BC · unlink a CSP (§19 gap "No unlink endpoint") | **Requested** |
+| R22 | `GET /app/config` | Help & support, blocked-account screen (contact support), forced update | **Requested** |
+| R23 | `POST /notifications/devices`, `DELETE /notifications/devices/:token`, `GET` / `PATCH /notifications/preferences` | Push + notification settings (§5.2 "still planned", checklist 2.14) | **Requested** |
+| R24 | `POST /activations/:activationId/send` | "Email to KO" on the code + password sheet (§5.2 "activation email", no endpoint) | **Requested** |
+
+#### R20 · Profile: your own details
+
+`GET /auth/me` (login) →
+
+```json
+"data": { "userId": "…", "agentId": "CSP-001", "role": "CSP_ADMIN", "name": "Ravi Kumar",
+          "email": "ravi@example.com", "emailVerifiedAt": "2026-11-01T10:00:00.000Z",
+          "phone": "9876543210", "address": "Main road, Rampur", "createdAt": "…" }
+```
+
+`PATCH /auth/me` (login) — any of `{ "name": "…", "phone": "…", "address": "…" }` (same rules as signup §5.1) → 200 `Profile updated.` `data`: the profile above. Errors: 400 `VALIDATION_FAILED`, 400 `Nothing to change.`
+
+Email change, two steps (the email receives OTPs, so it's verified first):
+
+- `PATCH /auth/me { "email": "new@example.com" }` → 202 `We sent a code to new@example.com.` `data: { pendingEmail, expiresAt, resendAvailableAt }`; the old email stays until verified. 409 `EMAIL_TAKEN` `This email is already used by another account.`
+- `POST /auth/me/email/verify { "otp": "123456" }` → 200 `Email changed.` `data`: the profile. Errors as §5.1 OTP (`OTP_INVALID`, `OTP_EXPIRED`, `OTP_ATTEMPTS_EXCEEDED`, `OTP_NOT_FOUND`).
+
+Never blocked by the plan (like `/auth/*`). The agent row (`/agents/:agentId`) should follow name / phone / address / email changes, or say which one is the source of truth.
+
+#### R21 · BC: unlink a CSP
+
+`POST /bc-links/csps/:cspAgentId/unlink` (BC, `CSP_LINKING`) body `{ "reason"?: "…" }` (≤ 500) → 200 `CSP unlinked.`
+
+```json
+"data": { "cspAgentId": "CSP-0042", "unlinkedAt": "…", "koCount": 2 }
+```
+
+- Only CSPs linked through a link request (`linkType: SUBSCRIBED_CSP`, §10). A BC-created CSP (`BC_MANAGED`) → 400 `UNLINK_NOT_ALLOWED` `You created this CSP; delete it instead.`
+- The CSP and its KOs leave every BC screen at once; the CSP keeps its own plan and data. The CSP gets a notification `kind: "BC_UNLINKED"` (`data: { bcId, bcName }`).
+- 404 `CSP not found.` (not linked to you). A new link request is possible afterwards (§10).
+- Audit: who unlinked, when, reason (super admin console).
+
+#### R22 · App config: support contacts and minimum version
+
+`GET /app/config?platform=android|ios&version=1.4.0` (public, cacheable 1 h) →
+
+```json
+"data": {
+  "support": { "phone": "+91…", "whatsapp": "+91…", "email": "support@…", "hours": "Mon–Sat, 9:00–19:00" },
+  "links": { "terms": "https://…", "privacy": "https://…" },
+  "minVersion": "1.3.0", "latestVersion": "1.4.0",
+  "updateRequired": false, "updateUrl": "https://play.google.com/store/apps/details?id=…",
+  "message": null
+}
+```
+
+- `updateRequired: true` when `version` < `minVersion` → the app shows a full-screen "Please update" with `updateUrl` and stops calling other endpoints.
+- `message`: optional banner text (maintenance etc.), `null` when none.
+- Set by the super admin (console); no secrets in it.
+
+#### R23 · Push notifications: devices and preferences
+
+`POST /notifications/devices` (login) `{ "token": "…", "platform": "android" | "ios", "appVersion": "1.4.0" }` → 201 `Device registered.` (same token again → 200, updates `lastSeenAt`). `DELETE /notifications/devices/:token` (login) → 200 (call on logout). The server sends a push for every §13D notification the user's preferences allow (FCM for Android; APNs via FCM for iOS).
+
+`GET /notifications/preferences` (login) →
+
+```json
+"data": { "plan": true, "cash": true, "settlements": true, "machines": false, "requests": true,
+          "locked": ["plan"] }
+```
+
+`PATCH /notifications/preferences` any of `{ cash, settlements, machines, requests }` (booleans) → 200 with the same shape. `plan` (renewal, failed charge, lapsed, trial, mandate) is always on: 400 `PREFERENCE_LOCKED` if sent as `false`. Groups → `kind`s: `plan` = `SUBSCRIPTION_*`, `MANDATE_*`, `TRIAL_*`; `cash` = `CASH_ACTIVATION_DIFFERENCE`, Adjust requests done, KO cash requests; `settlements` = KO settlements, balance dues; `machines` = a PC offline during the working day (§13C); `requests` = revoke / link requests answered, problem reports answered. The in-app list (§13D) keeps everything regardless.
+
+#### R24 · Email the activation code to the agent
+
+`POST /activations/:activationId/send` (owner) body `{ "to"?: "agent" | "me" }` (default `agent`) → 200 `Code sent to meena@example.com.`
+
+```json
+"data": { "sentTo": "meena@example.com", "sentAt": "…", "activationCode": "7KQ2-M9XA-31TC-P8LW" }
+```
+
+- Only for an assigned, `NOT_ACTIVATED` activation. The server makes a **fresh password** and emails code + password (the old password stops working), so the app never has to keep it.
+- 400 `AGENT_HAS_NO_EMAIL` `Add an email for this agent first.`; 400 `Activation has already been used.`; 429 after 5 sends per activation per hour.
+- Email is a console stub on the server today (§19): build it with the email provider.
+
 ## 20. Changelog
 
+- 2026-11-08 (rev 30) — New §19.4 (app team): endpoints for screens not in the app yet, with request and response: profile `GET` / `PATCH /auth/me` + email verify (R20), BC unlink a CSP (R21), `GET /app/config` support contacts and minimum version (R22), push devices + notification preferences (R23), email the activation code to the agent (R24).
+- 2026-11-08 (rev 29) — New §6C: one checklist of every API change in rev 27–28 (billing fixes + free trial) with request / response, success and failure handling and the screens affected. Cancelling a trial → 400 `TRIAL_CANCEL_NOT_ALLOWED`. §7.1 response now lists `RENEWAL_PENDING`, `subscriptionType`, `trial` and `upgrade.reason: "TRIAL"`.
+- 2026-11-07 (rev 28) — New §6B free trial: `GET /subscriptions/trial`, `POST /subscriptions/trial/start`, `trial` in `/subscriptions/access`, trial notifications; one trial per SBI agent ID / mobile / email / PC (`TRIAL_ALREADY_USED`, `TRIAL_ALREADY_USED_ON_MACHINE`).
 - 2026-11-07 (rev 27) — Owner decisions: blocked during renewal retries (`state` / 403 `RENEWAL_PENDING`, §6A.4, §7.2; purchase meanwhile → 409 `RENEWAL_IN_PROGRESS`); a plan price change replaces running mandates at the new price (`MANDATE_REPLACED` notification, mandate status `REPLACED`, §6A.3); a purchase after a cancel starts now (confirmed); CSP plans have no grace period (`graceEndsAt` always null).
 - 2026-11-07 (rev 26) — **Read §0.** Plans: ₹450 `CSP_AUTOMATION_CASH_MANAGEMENT` removed (₹250 automation / ₹550 complete). New `GET /subscriptions/access` and plan blocking (§7: non-closable "Please renew or take a new plan." / "Please upgrade the plan."; server 403 `SUBSCRIPTION_REQUIRED` / `PLAN_UPGRADE_REQUIRED` on dashboard, team, machines, receipts, reports, commission, cash for CSPs). §6A: CSP upgrade only (difference only, first 12 days, end date unchanged; `POST /subscriptions/quote`; payment `purpose`), no downgrade / fewer machines, UPI mandate with monthly auto renewal at the end date/time (2 retries 15 min apart, then stop at once: `LAPSED`), `POST /subscriptions/current/cancel` (no refund, works till end date, mandate cancelled). §8: one activation per agent (`AGENT_ALREADY_HAS_ACTIVATION`). §5.1 / §9: no CSP limit input (worked out); KO creation moves cash in hand from the CSP / edited agents (`cashAdjustments`), the rest raises the limit; `POST /agents/:id/replace`; delete removes the KO's cash; KO email (`emailVerifiedAt`) for shared PCs; KO management works without a running plan. §13A: derived limit, no limit check, `INCREASE` / `DECREASE`, Adjust requests (`GET /cash-management/adjustments`, `machineActive`, `pendingAdjustments`, `balanceDue`), activation difference (cash in account / other) with CSP notification; new ledger types. New §13D notifications.
 

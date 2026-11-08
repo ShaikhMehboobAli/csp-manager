@@ -4,6 +4,7 @@ import { Subscription } from "../../../generated/prisma/client";
 import {
   MandateStatus,
   SubscriptionOwnerType,
+  SubscriptionType,
   UserRole,
 } from "../../../generated/prisma/enums";
 import { DesktopFeature } from "../subscription-entitlement.service";
@@ -112,8 +113,10 @@ export default class SubscriptionAccessStateService {
     const plan = latest ? await this.db.plan.findUnique({ where: { id: latest.planId } }) : null;
     const now = new Date();
     const windowEndsAt = latest ? upgradeWindowEndsAt(latest) : null;
+    const isTrial = latest?.subscriptionType === SubscriptionType.TRIAL;
+    // On a trial the CSP buys a plan instead (a purchase replaces the trial).
     const upgradeOpen =
-      usable && !latest!.cancelledAt && !!windowEndsAt && windowEndsAt.getTime() >= now.getTime();
+      usable && !isTrial && !latest!.cancelledAt && !!windowEndsAt && windowEndsAt.getTime() >= now.getTime();
 
     return {
       gated: true as const,
@@ -141,6 +144,7 @@ export default class SubscriptionAccessStateService {
             id: latest.id,
             subscriptionNumber: latest.subscriptionNumber,
             status: latest.status,
+            subscriptionType: latest.subscriptionType,
             planId: latest.planId,
             planCode: plan?.code ?? null,
             planName: plan?.name ?? null,
@@ -154,6 +158,16 @@ export default class SubscriptionAccessStateService {
             features: [...features],
           }
         : null,
+      // Free trial (null when the latest subscription isn't one).
+      trial:
+        latest && isTrial
+          ? {
+              active: usable,
+              endsAt: latest.endDate,
+              daysLeft: usable ? Math.ceil((latest.endDate.getTime() - now.getTime()) / 86_400_000) : 0,
+              machineLimit: latest.machineLimit,
+            }
+          : null,
       renewal: latest
         ? {
             autoRenew: latest.autoRenew && !latest.cancelledAt && !latest.lapsedAt,
@@ -186,6 +200,8 @@ export default class SubscriptionAccessStateService {
         minMachineCount: usable ? latest!.machineLimit : null,
         reason: !usable
           ? "NO_RUNNING_SUBSCRIPTION"
+          : isTrial
+            ? "TRIAL"
           : latest!.cancelledAt
             ? "CANCELLED"
             : upgradeOpen
@@ -194,7 +210,7 @@ export default class SubscriptionAccessStateService {
       },
       cancel: {
         // Also while the renewal is being charged: stops the retries, ends now.
-        allowed: (usable || renewalPending) && !latest!.cancelledAt,
+        allowed: (usable || renewalPending) && !isTrial && !latest!.cancelledAt,
         cancelledAt: latest?.cancelledAt ?? null,
         // Works until this date after a cancel; no refund.
         usableUntil: latest?.cancelledAt ? latest.endDate : null,

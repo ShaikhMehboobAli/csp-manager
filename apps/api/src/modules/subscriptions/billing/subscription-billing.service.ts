@@ -15,6 +15,7 @@ import {
   SubscriptionEventType,
   SubscriptionOwnerType,
   SubscriptionStatus,
+  SubscriptionType,
 } from "../../../generated/prisma/enums";
 import ActivationService from "../../activations/activation.service";
 import ActivationRepository from "../../activations/activation.repository";
@@ -146,7 +147,8 @@ export default class SubscriptionBillingService {
       );
     }
 
-    if (!latest || !isRunning(latest) || latest.cancelledAt) {
+    // A free trial is replaced by a purchase (its PCs carry over).
+    if (!latest || !isRunning(latest) || latest.cancelledAt || latest.subscriptionType === SubscriptionType.TRIAL) {
       return purchase;
     }
 
@@ -336,6 +338,14 @@ export default class SubscriptionBillingService {
 
     if (latest.cancelledAt) {
       throw new ConflictError("This subscription is already cancelled.", "SUBSCRIPTION_ALREADY_CANCELLED");
+    }
+
+    // A trial ends on its own; there's no mandate to stop.
+    if (latest.subscriptionType === SubscriptionType.TRIAL) {
+      throw new BadRequestError(
+        "A free trial can't be cancelled; it ends on its own. Buy a plan to keep using the app.",
+        "TRIAL_CANCEL_NOT_ALLOWED",
+      );
     }
 
     if (renewalPending) {

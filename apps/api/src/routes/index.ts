@@ -21,10 +21,13 @@ import userStatusRoutes from "../modules/admin-users/user-status.routes";
 import receiptReportAdminRoutes from "../modules/receipts/receipt-report.routes";
 import notificationRoutes from "../modules/notifications/notification.routes";
 import { requireCspScreen } from "../core/middlewares/csp-plan-gate.middleware";
+import { trialAdminRoutes, trialRoutes } from "../modules/subscriptions/trial/trial.routes";
 
 const router = Router();
 
 router.use("/auth", authRoutes);
+// Free trial (before /subscriptions so its routes match first).
+router.use("/subscriptions/trial", trialRoutes);
 router.use("/subscriptions", subscriptionRoutes);
 router.use("/payments", paymentRoutes);
 router.use("/activations", activationRoutes);
@@ -47,6 +50,7 @@ router.use("/commission", requireCspScreen("reports"), commissionRoutes);
 router.use("/admin/commission", commissionAdminRoutes);
 router.use("/admin/users", userStatusRoutes);
 router.use("/admin/receipt-reports", receiptReportAdminRoutes);
+router.use("/admin", trialAdminRoutes);
 router.use("/admin", desktopSettingsRoutes);
 router.use("/notifications", notificationRoutes);
 
