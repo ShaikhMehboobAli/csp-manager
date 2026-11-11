@@ -70,9 +70,12 @@ export default class AgentEmailOtpService {
       },
     });
 
-    // Email delivery is a stub until an email provider is set up
-    // (pre-production checklist); it logs the code in development.
-    await new EmailService().sendOtp(input.email, code);
+    await new EmailService().sendOtp(
+      input.email,
+      code,
+      input.purpose === "CASH_LOGIN" ? "CASH_LOGIN" : "AGENT_EMAIL_VERIFICATION",
+      OTP_MINUTES,
+    );
 
     return { sentTo: maskEmail(input.email), expiresInSeconds: OTP_MINUTES * 60 };
   }

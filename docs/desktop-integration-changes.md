@@ -4,6 +4,8 @@
 **Source of truth for the backend:** `csp-manager/apps/api` (Express + Prisma). This doc lists what the desktop must add, modify, or remove to match the backend.
 **Last updated:** 2026-11-11 (rev 30)
 
+> **Rev 30 (2026-11-11): email OTPs are now really emailed (Resend).** `POST /machines/activate/email/otp` and `POST /machines/runtime/cash/email/otp` can answer **503 `EMAIL_SEND_FAILED`** when the email provider fails: show `message` and allow "Send again" after the 60 s wait. Subjects: "Verify your email for CSP Manager" / "Your CSP Manager cash login code".
+
 > **Rev 30 (2026-11-11): new #40 "close the day" reminder** — heartbeat `dayCloseReminder` (from 30 min before the CSP's closing time, or 18:00 when none is set, until the logged-in cash agent closes the day). Also: the owner's app is told when this PC sends **no heartbeat for 1 hour** (once per outage), so keep the heartbeat running whenever the service runs.
 
 > **Rev 29 (2026-11-08): your asks 7–11 (desktop README, 2026-11-08) are built — items #35–#39.** #35 cash receipts without notes ("Count needed": `denominationPending`, `GET` / `POST /machines/runtime/cash/receipt-counts`, heartbeat `cash.pendingCounts`), #36 close the day with cash in account (`countedCashInAccount`), #37 SBI kiosk user id (`sbiUserId` in `accessAgents`, `activity/start` accepts it), #38 receipt `source`, #39 diagnostics log upload (heartbeat `diagnostics`, `POST /machines/runtime/diagnostics`). Each item says what is exactly as you asked and what differs.
@@ -1500,7 +1502,7 @@ A retry of the same `part` replaces it (safe after a timeout). Parts are kept **
 - It follows the cash login: when another agent logs in to cash on this PC, the field is about that agent.
 - Changes reach the PC within one heartbeat (60 s). Nothing new to call; closing the day is the existing `POST /cash/day-close` (#36).
 
-**Offline alert (no desktop work):** when this PC sends no heartbeat for **1 hour**, the owner (CSP / BC) gets a "PC offline" notification in the app (once per outage; the next heartbeat re-arms it). Keep the service heartbeat running whenever the PC is on, also when no one is logged in; a PC that is switched off at night will alert once that night.
+**Offline alert (no desktop work):** when this PC sends no heartbeat for **1 hour of the working day** (the CSP's start–closing time, or 09:00–19:00 IST when not set), the owner (CSP / BC) gets a "PC offline" notification in the app (once per outage; the next heartbeat re-arms it). Nothing is sent outside those hours, so switching the PC off at night is fine; if it is still off 1 hour after the day starts, the owner is told. Keep the service heartbeat running whenever the PC is on, also when no one is logged in.
 
 ## A. Conventions (all endpoints)
 
@@ -2072,7 +2074,9 @@ Response 200: `{ approved, next }` (next = step 2 or null) or `{ cancelled, next
 
 ## Changelog
 
-- 2026-11-11 (rev 30) — #40: heartbeat `dayCloseReminder` (30 min before the CSP's closing time, or 18:00; until the cash agent closes the day); the owner's app gets "PC offline" after 1 hour without a heartbeat.
+- 2026-11-11 (rev 30) — Email OTPs sent through Resend; 503 `EMAIL_SEND_FAILED` on the two email OTP calls.
+
+- 2026-11-11 (rev 30) — #40: heartbeat `dayCloseReminder` (30 min before the CSP's closing time, or 18:00; until the cash agent closes the day); the owner's app gets "PC offline" after 1 hour without a heartbeat within the working day (else 09:00–19:00).
 
 - 2026-11-08 (rev 29, update) — #39: logs only for the last 3 days (`DIAGNOSTICS_RANGE_TOO_OLD`); #35: the Adjust-first rule confirmed by the owner.
 - 2026-11-08 (rev 29) — Your asks 7–11 built: #35 cash receipts without notes (`denominationPending`, `cash.denomination: "PENDING"` on upload, `GET` / `POST /machines/runtime/cash/receipt-counts`, ledger `RECEIPT_COUNT`, heartbeat `cash.pendingCounts`, cash screen `pendingCountAmount` and `today.transactions[].denominationPending`); #36 day close `countedCashInAccount` / `accountDifference`; #37 `sbiUserId` in `accessAgents` and on `activity/start` (response adds `agentId`); #38 receipt `source`; #39 diagnostics (heartbeat / entitlements `diagnostics`, `POST /machines/runtime/diagnostics`, 2 MB parts, 14 days).

@@ -7,6 +7,8 @@
 
 > Describes the backend once PRs #3–#8 are merged into `development`. Where an older build behaves differently it says so.
 >
+> **Rev 32 (2026-11-11): emails are sent for real (Resend)** — signup / resend OTP, forgot password, profile email change, activation code emails. Any of them (except forgot password, which always answers the same) can now fail with **503 `EMAIL_SEND_FAILED`** (or `EMAIL_NOT_CONFIGURED`): show `message`, keep the user on the screen, allow a retry after the usual 60 s resend wait.
+>
 > **Rev 32 (2026-11-11): `MACHINE_OFFLINE`** (a PC with no heartbeat for 1 hour) and **`CASH_DAY_NOT_CLOSED`** (30 min before the team's closing time, or 18:00): §13D.
 >
 > **Rev 32 (2026-11-11): 12 new notification kinds** for the app (revoke approved / rejected / revoked, link approved / rejected / linked, KO settlements, KO cash requests, KO day close differences, problem report answered): table in §13D, push groups in §19.4 R23.
@@ -1790,7 +1792,7 @@ In-app notifications for the CSP (and BC) login. Every notification is also sent
 | `CASH_SETTLEMENT_CANCELLED` | CSP | a KO cancelled an open step (money went back) | `agentId, settlementId, direction, amount` | settlements | same |
 | `CASH_REQUEST_RAISED` (`type: WARNING`) | CSP | a KO asked to change its cash in hand | `agentId, requestId, systemCashInHand, requestedCashInHand` | cash | Cash → requests → that request (approve / reject) |
 | `CASH_DAY_CLOSE_DIFFERENCE` (`type: WARNING`) | CSP | a KO closed the day short / over, or its cash in account reading differs | `agentId, dayCloseId, date (YYYY-MM-DD), difference, accountDifference` | cash | Cash → that KO → day closes |
-| `MACHINE_OFFLINE` (`type: WARNING`) | CSP / BC owner | a PC sent no heartbeat for **1 hour** (any time of day; once per outage, again after it comes back and drops again) | `machineId, machineCode, machineName, agentId, activationCode, lastHeartbeatAt` | machines | Machines → that PC |
+| `MACHINE_OFFLINE` (`type: WARNING`) | CSP / BC owner | a PC sent no heartbeat for **1 hour of the working day**: the CSP's `workdayStart`–`workdayEnd` (`/team/settings`), or **09:00–19:00 IST** when not set; nothing outside those hours (a PC off overnight alerts 1 hour after the day starts if still off). Once per outage; again after it comes back and drops again | `machineId, machineCode, machineName, agentId, activationCode, lastHeartbeatAt` | machines | Machines → that PC |
 | `CASH_DAY_NOT_CLOSED` (`type: WARNING`) | CSP | an agent (a KO or the CSP itself) that worked today hasn't closed the day by the reminder time: **30 min before the team's closing time** (`/team/settings` `workdayEnd`), or **18:00** when none is set; once per agent per day | `agentId, date, closeTime, remindedAt` | cash | Cash → that agent (the desktop shows its own reminder) |
 | `RECEIPT_REPORT_RESOLVED` / `RECEIPT_REPORT_REJECTED` | whoever reported | the super admin closed its problem report (message = "What was done") | `reportId, receiptId, status` | requests | My reports → that report |
 
@@ -1798,7 +1800,7 @@ In-app notifications for the CSP (and BC) login. Every notification is also sent
 - Only KO actions notify the CSP; the CSP's own desktop actions don't.
 - `ACTIVATION_REVOKE_REQUESTED`, `BC_LINK_REQUESTED`, `RECEIPT_REPORT_RAISED` go to the super admin only (admin console); the app never receives them.
 - Group `machines` has `ACTIVATION_REVOKED` and `MACHINE_OFFLINE`; `settlements` has the three settlement kinds; `cash` adds `CASH_DAY_NOT_CLOSED`.
-- Team settings screen: tell the CSP that "Closing time" also sets the day-close reminder (30 min before; 18:00 when empty).
+- Team settings screen: tell the CSP that the working day also sets the alerts: "PC offline" only between start and closing time (09:00–19:00 when empty), and the day-close reminder 30 min before closing (18:00 when empty).
 
 ## 14. Reports
 
@@ -2131,7 +2133,7 @@ Differences from your ask:
 - Groups (rev 32): `plan` = `GENERAL`, `SUBSCRIPTION_*`, `MANDATE_*`, `TRIAL_*` (always on); `cash` = `CASH_ACTIVATION_DIFFERENCE`, `CASH_REQUEST_RAISED`, `CASH_DAY_CLOSE_DIFFERENCE`, `CASH_DAY_NOT_CLOSED`; `settlements` = `CASH_SETTLEMENT_STARTED` / `_COMPLETED` / `_CANCELLED`; `machines` = `ACTIVATION_REVOKED`, `MACHINE_OFFLINE`; `requests` = `BC_UNLINKED`, `BC_LINKED`, `BC_LINK_APPROVED` / `_REJECTED`, `ACTIVATION_REVOKE_APPROVED` / `_REJECTED`, `RECEIPT_REPORT_RESOLVED` / `_REJECTED`. Full list with `data` and tap targets: §13D. A switched-off group still shows in the in-app list; only the push is skipped.
 
 **R24 · Email the activation code** — `POST /activations/:activationId/send` (CSP_ADMIN / BC_ADMIN; needs a running plan, like regenerate) `{ to?: "agent" | "me" }` → 200 `Code sent to <email>.` `data: { sentTo, sentAt, activationCode }` as asked. Differences:
-- **The email isn't delivered yet** (email provider pending, checklist): the server makes the fresh password and records the send; in development read the password from `GET /activations` (`activationPassword`, dev only).
+- **Emails are sent through Resend (rev 32).** The server makes a fresh password, records the send and emails it. If the email provider fails → **503 `EMAIL_SEND_FAILED`** ("We couldn't send the email right now…"): the password was already replaced, so show the message and let the user tap Send again (counts toward 5 per hour). In development `GET /activations` still shows `activationPassword` (dev only).
 - Errors: 404 `Activation not found.` · 400 `Activation has already been used.` (not `NOT_ACTIVATED`) · 400 `Activation has not been assigned.` · 400 `AGENT_HAS_NO_EMAIL` (`Add an email for this agent first.`; with `to: "me"`: `Your account has no email.`) · 429 **`RATE_LIMITED`** (5 sends per activation per hour) · 400 `` `to` must be "agent" or "me". `` · 403 subscription messages (§7.3).
 - `to: "me"` sends to the login email (the owner forwards it).
 - **App:** on the code + password sheet add **[Email to agent]** (disabled with "Add an email for <agent> first" when the agent has no `email`); after 200 show "Sent to <sentTo>. The old password no longer works." and hide the password shown before.
@@ -2273,7 +2275,8 @@ Errors: none new (as §11).
 ## 20. Changelog
 
 - 2026-11-08 (rev 32, app team ask) — New §19.6 R25: `services[].lastTransactionAt` in `/dashboard/summary` and a `CIF` receipt type for money transfer, for the new Home "Today's services" card and Service counts screen.
-- 2026-11-11 (rev 32) — `MACHINE_OFFLINE` (1 hour without a heartbeat, once per outage) and `CASH_DAY_NOT_CLOSED` (30 min before `workdayEnd`, else 18:00; once per agent per day).
+- 2026-11-11 (rev 32) — Emails through Resend; new 503 `EMAIL_SEND_FAILED` / `EMAIL_NOT_CONFIGURED` on `/auth/signup`, `/auth/resend-otp`, `PATCH /auth/me` (email change), `POST /activations/:id/send`. Forgot password is unchanged (always the same answer).
+- 2026-11-11 (rev 32) — `MACHINE_OFFLINE` (1 hour without a heartbeat within the working day, else 09:00–19:00; once per outage) and `CASH_DAY_NOT_CLOSED` (30 min before `workdayEnd`, else 18:00; once per agent per day).
 - 2026-11-11 (rev 32) — New notification kinds (§13D table): `ACTIVATION_REVOKE_APPROVED` / `_REJECTED`, `ACTIVATION_REVOKED`, `BC_LINK_APPROVED` / `_REJECTED`, `BC_LINKED`, `CASH_SETTLEMENT_STARTED` / `_COMPLETED` / `_CANCELLED`, `CASH_REQUEST_RAISED`, `CASH_DAY_CLOSE_DIFFERENCE`, `RECEIPT_REPORT_RESOLVED` / `_REJECTED`; push groups `settlements` and `machines` now used.
 - 2026-11-11 (rev 32) — Push delivery through FCM (§19.4 R23). **Push token moved onto auth:** optional `pushToken` / `platform` / `appVersion` on `/auth/login`, `/auth/refresh`, `/auth/change-password`; `/auth/logout` removes the session's token; `POST` / `DELETE /notifications/devices` removed; pushes only to live sessions. App Firebase setup (`@react-native-firebase/messaging`, config files, Android channel `default`), push `data` keys (`notificationId`, `kind`, notification data as strings), dead tokens removed by the server.
 - 2026-11-08 (rev 31) — §19.4 R20–R24 **built** (backend status block with every request, response and error, and the differences from the ask: `emailVerified` / `pendingEmail` on the profile, email change returns 202, unlink needs no plan and sets link request `UNLINKED`, `updateAvailable` in `/app/config`, push and activation emails stored but not delivered until FCM / the email provider). New §19.5: receipt `source` and `denominationPending`, pool `agents[].pendingCounts`, ledger `RECEIPT_COUNT`, day close cash in account, agent `sbiUserId`, "Send PC log to support" (`/machines/:machineId/diagnostics`), `BC_UNLINKED`.

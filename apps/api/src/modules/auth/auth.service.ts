@@ -1,4 +1,5 @@
 import prisma from "../../config/prisma";
+import { Logger } from "../../core/utils/logger";
 
 import AuthRepository from "./auth.repository";
 
@@ -571,7 +572,7 @@ export default class AuthService {
   }
 
   private async sendSignupOtp(email: string, otpCode: string) {
-    await this.emailService.sendOtp(email, otpCode);
+    await this.emailService.sendOtp(email, otpCode, "SIGNUP");
   }
 
   async verifyOtp(data: VerifyOtpDto) {
@@ -932,7 +933,11 @@ export default class AuthService {
       });
     });
 
-    await this.emailService.sendOtp(user.email, otpCode);
+    // Same answer even if the email fails: an error here would reveal that
+    // the account exists. The user can ask again after the resend wait.
+    await this.emailService.sendOtp(user.email, otpCode, "FORGOT_PASSWORD").catch((error: Error) => {
+      Logger.error(`[Auth] Forgot-password email failed for user ${user.id}: ${error.message}`);
+    });
 
     return answer;
   }

@@ -213,7 +213,7 @@ export default class ProfileService {
       });
     });
 
-    await this.emailService.sendOtp(email, otpCode);
+    await this.emailService.sendOtp(email, otpCode, "EMAIL_CHANGE");
 
     return { pendingEmail: email, expiresAt, resendAvailableAt: new Date(now + RESEND_WAIT_MS) };
   }
