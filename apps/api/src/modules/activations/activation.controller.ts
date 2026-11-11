@@ -145,3 +145,15 @@ export const assignActivation = async (req: Request, res: Response) => {
 
   return res.status(200).json(result);
 };
+
+export const sendActivationEmail = async (req: Request, res: Response) => {
+  const to = req.body?.to === "me" ? "me" : "agent";
+
+  if (req.body?.to !== undefined && req.body.to !== "agent" && req.body.to !== "me") {
+    throw new BadRequestError('`to` must be "agent" or "me".');
+  }
+
+  const result = await activationService.sendByEmail(req.params.activationId as string, req.user!, to);
+
+  return res.status(200).json(result);
+};

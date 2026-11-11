@@ -7,10 +7,15 @@ import { NotFoundError } from "../../core/errors/NotFoundError";
 import { createCodeGeneratorService } from "../../core/services/service.factory";
 import { CurrentUser } from "../../core/types/auth.types";
 import {
+  AgentType,
+  AuditAction,
+  AuditEntity,
   BcLinkRequestStatus,
+  NotificationKind,
   SubscriptionOwnerType,
   UserRole,
 } from "../../generated/prisma/enums";
+import NotificationService from "../notifications/notification.service";
 import { buildPagination } from "../receipts/receipt.helper";
 import SubscriptionEntitlementService, {
   DesktopFeature,
@@ -184,6 +189,76 @@ export default class BcLinkService {
     });
   }
 
+  /**
+   * The BC drops a CSP it linked through a link request (₹799). The CSP and
+   * its KOs leave the BC's scope at once; the CSP keeps its own plan and
+   * data. A CSP the BC created itself (BC_MANAGED) is deleted, not unlinked.
+   * No running plan is needed: a BC can always clean up its list.
+   */
+  async unlinkCsp(user: CurrentUser, cspAgentId: string, reason?: string) {
+    return withTransaction(async (tx) => {
+      const bcId = user.agentId;
+
+      const csp = await tx.agent.findFirst({
+        where: { agentId: cspAgentId, type: AgentType.CSP, isDeleted: false, bcId },
+      });
+
+      if (!csp) {
+        throw new NotFoundError("CSP not found.");
+      }
+
+      if (!csp.bcLinkedByRequest) {
+        throw new BadRequestError("You created this CSP; delete it instead.", "UNLINK_NOT_ALLOWED");
+      }
+
+      const now = new Date();
+
+      await tx.agent.update({
+        where: { agentId: cspAgentId },
+        data: { bcId: null, linkedAt: null, bcLinkedByRequest: false },
+      });
+
+      const kos = await tx.agent.updateMany({
+        where: { parentAgentId: cspAgentId, type: AgentType.KO, bcId },
+        data: { bcId: null, linkedAt: null },
+      });
+
+      // The approved request(s) that made the link now say UNLINKED.
+      await tx.bcLinkRequest.updateMany({
+        where: { bcId, cspAgentId, status: BcLinkRequestStatus.APPROVED },
+        data: {
+          status: BcLinkRequestStatus.UNLINKED,
+          unlinkedAt: now,
+          unlinkedByUserId: user.userId,
+          unlinkReason: reason ?? null,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          userId: user.userId,
+          action: AuditAction.UPDATE,
+          entityType: AuditEntity.AGENT,
+          entityId: csp.id,
+          description: `BC ${bcId} unlinked CSP ${cspAgentId}${reason ? ` (${reason})` : ""}`,
+          oldData: { bcId, bcLinkedByRequest: true },
+          newData: { bcId: null, bcLinkedByRequest: false },
+        },
+      });
+
+      const bc = await tx.businessCorrespondent.findUnique({ where: { bcId }, select: { name: true } });
+
+      await new NotificationService(tx).notifyAgent(cspAgentId, {
+        title: "BC unlinked",
+        message: `${bc?.name ?? bcId} no longer sees your data. Your plan and data are unchanged.`,
+        kind: NotificationKind.BC_UNLINKED,
+        data: { bcId, bcName: bc?.name ?? null },
+      });
+
+      return { cspAgentId, unlinkedAt: now, koCount: kos.count };
+    });
+  }
+
   async rejectRequest(user: CurrentUser, requestId: string, remarks?: string) {
     return withTransaction(async (tx) => {
       const request = await findAccessibleRequest(tx, user, requestId);
@@ -351,6 +426,10 @@ export function mapRequest(
     remarks: request.remarks,
     reviewRemarks: request.reviewRemarks,
     reviewedAt: request.reviewedAt,
+
+    // status UNLINKED: the BC unlinked the CSP after approval.
+    unlinkedAt: request.unlinkedAt,
+    unlinkReason: request.unlinkReason,
 
     createdAt: request.createdAt,
     updatedAt: request.updatedAt,

@@ -17,6 +17,7 @@ import { D, NOT_SET_UP_MESSAGE, money, rupees } from "./cash.helpers";
 const amountText = (value: Prisma.Decimal) =>
   value.isInteger() ? `₹${value.toFixed(0)}` : rupees(value);
 import CashRepository from "./cash.repository";
+import CashReceiptCountService from "./cash-receipt-count.service";
 
 type DayClose = Prisma.CashDayCloseGetPayload<object>;
 
@@ -28,9 +29,19 @@ export function mapDayClose(close: DayClose) {
     dayId: close.id,
     agentId: close.agentId,
     date: close.date.toISOString().slice(0, 10),
-    system: { cashInHand: money(D(close.systemCashInHand)), drawer: close.systemDrawer },
-    counted: { cashInHand: money(D(close.countedCashInHand)), drawer: close.countedDrawer },
+    system: {
+      cashInHand: money(D(close.systemCashInHand)),
+      drawer: close.systemDrawer,
+      cashInAccount: close.systemCashInAccount === null ? null : money(D(close.systemCashInAccount)),
+    },
+    counted: {
+      cashInHand: money(D(close.countedCashInHand)),
+      drawer: close.countedDrawer,
+      cashInAccount: close.countedCashInAccount === null ? null : money(D(close.countedCashInAccount)),
+    },
     difference: money(D(close.difference)),
+    // Cash in account: counted − system (null when the agent didn't enter it).
+    accountDifference: close.accountDifference === null ? null : money(D(close.accountDifference)),
     closedAt: close.closedAt,
   };
 }
@@ -57,6 +68,7 @@ export default class CashDayService {
     agentId: string;
     countedCashInHand: number;
     countedDrawer: Drawer;
+    countedCashInAccount?: number;
     machineCode: string;
   }) {
     const cspAgentId = await this.repository.findPoolCspId(input.agentId);
@@ -96,6 +108,8 @@ export default class CashDayService {
     const cash = await this.repository.lockAgentCash([input.agentId]);
     const current = cash.get(input.agentId)!;
     const difference = countedHand.minus(current.cashInHand);
+    const countedAccount = input.countedCashInAccount === undefined ? null : D(input.countedCashInAccount);
+    const accountDifference = countedAccount ? countedAccount.minus(pool.cashInAccount) : null;
 
     const close = await this.db.cashDayClose.create({
       data: {
@@ -107,6 +121,9 @@ export default class CashDayService {
         countedCashInHand: countedHand,
         countedDrawer: counted,
         difference,
+        systemCashInAccount: countedAccount ? pool.cashInAccount : null,
+        countedCashInAccount: countedAccount,
+        accountDifference,
         machineCode: input.machineCode,
         closedAt: now,
       },
@@ -121,11 +138,17 @@ export default class CashDayService {
         balanceCashInHand: current.cashInHand,
         actorType: CashActorType.MACHINE,
         actorId: input.machineCode,
-        remarks: this.differenceText(difference),
+        remarks: this.differenceText(difference) + this.accountText(accountDifference, " · account "),
       },
     ]);
 
-    return { close: mapDayClose(close), message: this.messageOf(difference) };
+    // Cash receipts still waiting for their notes: a warning, never a block.
+    const pendingCounts = await new CashReceiptCountService(this.db).pendingSummary(input.agentId);
+
+    return {
+      close: { ...mapDayClose(close), pendingCounts },
+      message: this.messageOf(difference) + this.accountText(accountDifference, " Cash in account is ", true),
+    };
   }
 
   async getDayClose(agentId: string, key: string) {
@@ -181,6 +204,7 @@ export default class CashDayService {
         status: close ? "CLOSED" : date === today ? "OPEN" : "NOT_CLOSED",
         closedAt: close?.closedAt ?? null,
         difference: close ? money(D(close.difference)) : null,
+        accountDifference: close?.accountDifference != null ? money(D(close.accountDifference)) : null,
       });
     }
 
@@ -233,6 +257,17 @@ export default class CashDayService {
     }
 
     return `${amountText(difference.abs())} ${difference.isNegative() ? "short" : "over"}`;
+  }
+
+  /** " · account ₹200 less" (ledger) / " Cash in account is ₹200 less than the system." (message); "" when it matches or wasn't entered. */
+  private accountText(difference: Prisma.Decimal | null, prefix: string, sentence = false) {
+    if (!difference || difference.isZero()) {
+      return "";
+    }
+
+    const words = `${amountText(difference.abs())} ${difference.isNegative() ? "less" : "more"}`;
+
+    return sentence ? `${prefix}${words} than the system.` : `${prefix}${words}`;
   }
 
   private messageOf(difference: Prisma.Decimal) {

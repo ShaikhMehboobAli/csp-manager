@@ -3,10 +3,12 @@
 **Audience:** the React Native team building the CSP Manager mobile app for **BC** and **CSP** users.
 **Not covered here:** the Super Admin console (React / Next.js) → `docs/admin-web-kt.md`; the Windows desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api` (Express + Prisma + PostgreSQL).
-**Last updated:** 2026-11-08 (rev 30)
+**Last updated:** 2026-11-08 (rev 31)
 
 > Describes the backend once PRs #3–#8 are merged into `development`. Where an older build behaves differently it says so.
 >
+> **Rev 31 (2026-11-08): your §19.4 asks R20–R24 are built** — profile (`/auth/me`), BC unlink, `/app/config`, push devices + preferences, email the activation code. See **§19.4 "Backend status (rev 31)"** for what is exactly as you asked and what differs. **New §19.5:** app-side effects of this release's desktop work (receipt `source`, "Count needed" receipts, KO "SBI kiosk user ID", day close cash in account, "Send PC log to support", BC unlinked).
+
 > **Rev 29 (2026-11-08): read §6C first** — one list of every API change in rev 27–28 (billing fixes + free trial): which call changed, the request / response, the success and failure cases and where to handle each in the app. New: cancelling a trial → 400 `TRIAL_CANCEL_NOT_ALLOWED`. §7.1 response updated (`RENEWAL_PENDING`, `subscriptionType`, `trial`).
 
 > **Rev 28 (2026-11-07): free trial** (§6B): a new CSP / BC taps **Start free trial** and gets full access for the days the super admin set (CSP: 1 activation code). One trial per SBI agent ID, mobile, email and PC; new APIs `GET /subscriptions/trial`, `POST /subscriptions/trial/start`; `/subscriptions/access` adds `trial`.
@@ -16,6 +18,29 @@
 > **Rev 26 (2026-11-07) changes a lot: read §0 first.** Plans are now ₹250 / ₹550 only; a lapsed or ₹250 plan blocks most tabs (§7); subscriptions renew by **UPI mandate** and can only be **upgraded** (difference only, first 12 days) or **cancelled** (§6A); the cash limit is **worked out, never entered** (§5.1, §9, §13A); KO creation moves cash in hand between agents (§9.1); the CSP can increase / decrease cash (§13A.10); every cash in hand change makes a mandatory **Adjust** request on the desktop (§13A.11).
 
 ---
+
+### UI wording (owner's terms, 2026-11-08)
+
+The app shows the owner's words, not the API's. This KT keeps the API words (CSP, KO, cash in account, in bank, left in bank) because they are the field and code names; translate them only on screen.
+
+| In the API, database and code (unchanged) | Say on screen |
+|---|---|
+| CSP (`type: "CSP"`, `CSP_ADMIN`, the owner of a cash pool) | **KO** |
+| KO (`type: "KO"`, an operator under a CSP) | **Sub KO** |
+| BC | **BC** (unchanged) |
+| a CSP's `agentId` | **KO ID** |
+| a KO's `agentId` | **Sub KO ID** |
+| the login ID (`agentId` on login, signup, forgot password, profile) | **KO/BC ID** (CSP and BC owners both use it) |
+| `cashInAccount` (cash in account, the shared holding) | **Cash holding** |
+| `cashInTransit` (money sent to the bank in a KO settlement) and `cashLeftInBank` (what the bank didn't deliver) | **Current A/c** — one amount (their sum) where they're shown together; "Current account" where there's room, e.g. the ledger title "Sent to current account" |
+
+Rules:
+- **Only the words change.** Endpoint paths, field names, enum values, error `code`s and ledger types stay exactly as documented (`cashInAccount`, `CASH_IN_ACCOUNT`, `KO_CREATION`, `type: "KO"`, …). Never rename an API field to match the label.
+- Lower case in the middle of a sentence ("Added to cash holding", "goes through cash holding"); capital only at the start of a label ("Cash holding", "Current A/c").
+- Plan names stay as the super admin set them (e.g. "BC CSP Link").
+- Server `message` texts the user sees should follow the same words when they're next edited (e.g. "Not enough cash in account" → "Not enough cash holding").
+
+The mobile app (development, commit 63822d5) already uses these labels.
 
 ## Contents
 
@@ -46,7 +71,7 @@
 16. CSP visits (photo upload)
 17. File downloads (Excel)
 18. Dates, money and formatting
-19. Known backend gaps (19.1 requirements from the mobile app, 19.2 endpoints for the v2 screens)
+19. Known backend gaps (19.1 requirements from the mobile app, 19.2 endpoints for the v2 screens, 19.4–19.6 later asks)
 20. Changelog
 
 ---
@@ -639,12 +664,12 @@ Errors: 404 `User not found.`; 403 `Please verify your account first.` (→ OTP 
 
 **Blocked while logged in (rev 25).** The super admin can block or suspend an account; access stops **at once**: the next API call with a still-valid access token gets **403 `ACCOUNT_BLOCKED` / `ACCOUNT_SUSPENDED`** (message includes ` Reason: …`), and refresh fails too. On either code: clear tokens and show a full-screen "Your account has been blocked / suspended" with the message (no retry loop, no refresh). **401 `SESSION_ENDED`** (`Session ended. Please log in again.`) means the password was changed or reset elsewhere: don't refresh, go to Login.
 
-Still planned (not built; proposals):
+Built in rev 31 (details §19.4 R23 / R24; delivery waits for FCM and the email provider):
 
 | Endpoint (proposed) | Body | Purpose |
 |---|---|---|
-| `POST /notifications/devices` / `DELETE /notifications/devices/:token` | `{ token, platform: "ios" \| "android" }` | register/unregister the push token (Expo or FCM, provider TBD) |
-| (no endpoint) activation email | — | assign/regenerate will email the code + password to the agent |
+| `POST /notifications/devices` / `DELETE /notifications/devices/:token` | `{ token, platform: "ios" \| "android" }` | register/unregister the push token (FCM); **built rev 31**, `platform` is `android` / `ios` |
+| `POST /activations/:activationId/send` | `{ to?: "agent" \| "me" }` | emails the code + a fresh password; **built rev 31** (§19.4 R24) |
 
 Email is still a console stub on the server: OTPs (signup and reset) are not delivered yet in any environment except through the server log.
 
@@ -1742,7 +1767,7 @@ In-app notifications for the CSP (and BC) login. Push isn't built yet (pre-produ
 | `GET /notifications?unreadOnly=&page=&limit=` | newest first → `{ items: [{ id, title, message, type: INFO\|SUCCESS\|WARNING\|ERROR, kind, data, isRead, readAt, createdAt }], unread, pagination }` |
 | `POST /notifications/:id/read` | mark one read; `:id` = `all` marks every unread one |
 
-`kind` → where to go on tap: `CASH_ACTIVATION_DIFFERENCE` → Cash tab, that agent (`data.agentId`); `SUBSCRIPTION_RENEWED` / `SUBSCRIPTION_RENEWAL_FAILED` / `SUBSCRIPTION_LAPSED` / `SUBSCRIPTION_CANCELLED` / `MANDATE_REVOKED` / `MANDATE_REPLACED` (rev 27) / `TRIAL_STARTED` / `TRIAL_ENDING` / `TRIAL_EXTENDED` (rev 28) → Subscription screen (refetch `/subscriptions/access`); `GENERAL` → nothing.
+`kind` → where to go on tap: `CASH_ACTIVATION_DIFFERENCE` → Cash tab, that agent (`data.agentId`); `SUBSCRIPTION_RENEWED` / `SUBSCRIPTION_RENEWAL_FAILED` / `SUBSCRIPTION_LAPSED` / `SUBSCRIPTION_CANCELLED` / `MANDATE_REVOKED` / `MANDATE_REPLACED` (rev 27) / `TRIAL_STARTED` / `TRIAL_ENDING` / `TRIAL_EXTENDED` (rev 28) → Subscription screen (refetch `/subscriptions/access`); `BC_UNLINKED` (rev 31, CSP: a BC unlinked it) → nothing; `GENERAL` → nothing. Push for these: §19.4 R23.
 
 ## 14. Reports
 
@@ -1829,7 +1854,7 @@ await Sharing.shareAsync(res.uri, { mimeType: "application/vnd.openxmlformats-of
 | Payments are manual (no Razorpay yet) | don't ship checkout to production | checklist 1.1–1.5 |
 | No push notifications / activation emails yet | poll lists for link approvals and machine status; show passwords from the assign response | planned (§5.2) |
 | `POST /auth/check-agent` returns the full agent record | only use `success` | backend to trim |
-| No unlink endpoint for BC↔CSP | can't undo a link from the app | Super Admin/backend |
+| ~~No unlink endpoint for BC↔CSP~~ | built rev 31: `POST /bc-links/csps/:cspAgentId/unlink` (§19.4 R21) | done |
 | `cashLimit`/`openingCash` are ignored when an existing CSP is requested via `POST /agents/csp` | the CSP keeps its own values | by design for now |
 | UPI autopay (Razorpay) not integrated (rev 26) | dev mandates are ACTIVE at once and charges succeed; no real UPI approval screen | checklist 1.10 |
 | A purchase after a cancel starts now (the cancelled plan's remaining days are lost) (rev 26) | warn before payment (§6A.5) | confirmed by the owner (rev 27) |
@@ -2019,11 +2044,57 @@ Found while comparing the app with this KT (canvas row "Not in the app yet"). Sh
 
 | # | Endpoint(s) | Screen | Status |
 |---|---|---|---|
-| R20 | `GET /auth/me`, `PATCH /auth/me`, `POST /auth/me/email/verify` | Profile (More → Profile; `profile` is in §7.1 `alwaysOpen`) | **Requested** |
-| R21 | `POST /bc-links/csps/:cspAgentId/unlink` | BC · unlink a CSP (§19 gap "No unlink endpoint") | **Requested** |
-| R22 | `GET /app/config` | Help & support, blocked-account screen (contact support), forced update | **Requested** |
-| R23 | `POST /notifications/devices`, `DELETE /notifications/devices/:token`, `GET` / `PATCH /notifications/preferences` | Push + notification settings (§5.2 "still planned", checklist 2.14) | **Requested** |
-| R24 | `POST /activations/:activationId/send` | "Email to KO" on the code + password sheet (§5.2 "activation email", no endpoint) | **Requested** |
+| R20 | `GET /auth/me`, `PATCH /auth/me`, `POST /auth/me/email/verify` | Profile (More → Profile; `profile` is in §7.1 `alwaysOpen`) | **Done (rev 31)** |
+| R21 | `POST /bc-links/csps/:cspAgentId/unlink` | BC · unlink a CSP (§19 gap "No unlink endpoint") | **Done (rev 31)** |
+| R22 | `GET /app/config` | Help & support, blocked-account screen (contact support), forced update | **Done (rev 31)** |
+| R23 | `POST /notifications/devices`, `DELETE /notifications/devices/:token`, `GET` / `PATCH /notifications/preferences` | Push + notification settings (§5.2 "still planned", checklist 2.14) | **Done (rev 31)**; push delivery waits for FCM |
+| R24 | `POST /activations/:activationId/send` | "Email to KO" on the code + password sheet (§5.2 "activation email", no endpoint) | **Done (rev 31)**; email delivery waits for the email provider |
+
+#### Backend status (rev 31, 2026-11-08)
+
+All five are built as you described below; **the differences are listed here** (the request / response blocks under each R are your ask, still valid unless a line here says otherwise). Errors are `{ success: false, code, message }` as always.
+
+**R20 · Profile**
+
+| Call | Request | Success | Failures |
+|---|---|---|---|
+| `GET /auth/me` (any login, also super admin; not rate limited like the other `/auth` calls; never blocked by the plan) | — | 200 `data: { userId, agentId, role, name, email, emailVerified, emailVerifiedAt, pendingEmail, phone, address, createdAt }` | 401 (token) |
+| `PATCH /auth/me` | any of `{ name (2–100), phone (10–15 chars), address, email }` | name / phone / address only → **200** `Profile updated.` `data`: the profile · with a **new** email → **202** `We sent a code to <email>.` `data: { pendingEmail, expiresAt, resendAvailableAt, profile }` | 400 `Nothing to change.` (nothing differs) · 400 `VALIDATION_FAILED` · 409 `EMAIL_TAKEN` · 409 `OTP_RESEND_TOO_SOON` (1 code per minute; `resendAvailableAt`) · 409 `OTP_RESEND_LIMIT` (5 per hour) · 429 (auth limit 20 / 15 min) |
+| `POST /auth/me/email/verify` | `{ otp: "123456" }` (6 digits) | 200 `Email changed.` `data`: the profile (new `email`, `emailVerifiedAt` set, `pendingEmail: null`) | 409 `OTP_INVALID` (attempt counted; 5th deletes it) · 409 `OTP_EXPIRED` (10 min) · 409 `OTP_ATTEMPTS_EXCEEDED` · 404 `OTP_NOT_FOUND` · 409 `EMAIL_TAKEN` (someone took it meanwhile) |
+
+Differences from your ask:
+- Extra fields on the profile: **`emailVerified`** (true once the signup OTP was done) and **`pendingEmail`** (the new email waiting for its code, else null). `emailVerifiedAt` is `null` until an email is changed and verified here (signup didn't store a time).
+- One `PATCH` may change name / phone / address **and** the email: the other fields are saved at once, the email waits for the code (202 with `profile` inside `data`).
+- Emails are compared case-insensitively and stored lower-case. The old email keeps working (login OTPs, reset) until the new one is verified.
+- **Source of truth:** the agent row (`name`, `mobile`, `address`, `email`); a BC's own record is updated too. `GET /agents/:agentId` shows the same values (`mobile` = `phone`). The login email (`user.email`) and the agent email change together.
+- **App:** Profile screen reads `GET /auth/me`; Edit → `PATCH`; on 202 open the OTP screen for `pendingEmail` with a resend countdown to `resendAvailableAt` ("Send again" = the same `PATCH` with the email); on verify success replace the profile. Show "Email change pending: <pendingEmail> [Enter code]" while `pendingEmail` is set.
+
+**R21 · BC unlink** — `POST /bc-links/csps/:cspAgentId/unlink` (BC_ADMIN) `{ reason? ≤ 500 }` → 200 `CSP unlinked.` `data: { cspAgentId, unlinkedAt, koCount }` exactly as asked. Differences:
+- **No running plan needed** (you wrote "CSP_LINKING"): a BC whose plan lapsed can still clean up its list.
+- The approved link request now has **`status: "UNLINKED"`** (new value; add it to the Link requests status chips / filter `?status=UNLINKED`), with `unlinkedAt` and `unlinkReason` on the request object.
+- Errors: 404 `CSP not found.` (not linked to you, or already unlinked) · 400 `UNLINK_NOT_ALLOWED` `You created this CSP; delete it instead.` (a CSP you created, `BC_MANAGED`) · 403 for other roles.
+- The CSP gets notification **`kind: "BC_UNLINKED"`** `data: { bcId, bcName }` ("<BC> no longer sees your data. Your plan and data are unchanged."). Audit row written (super admin console).
+- **App (BC):** CSP detail (linked ones only, `linkType: SUBSCRIBED_CSP`) → **[Unlink]** → confirm "Unlink <CSP>? It and its <koCount> KOs leave your lists. You can send a new link request later." → on 200 remove it from every BC list and refetch.
+
+**R22 · App config** — `GET /app/config?platform=android|ios&version=1.4.0` (public) exactly as asked, plus:
+- **`updateAvailable`** (`version` < `latestVersion`) next to `updateRequired` → a dismissible "Update available" banner.
+- `platform` other than android / ios → 400 `VALIDATION_FAILED`; without `platform` the versions are `null` and `updateRequired: false`. `version` must look like `1.4.0`.
+- Every field can be `null` until the super admin fills it (hide the row / button). Response header `Cache-Control: public, max-age=3600`.
+- Set by the super admin: `GET` / `PATCH /admin/app-config` (admin KT §9L).
+- **App:** call on launch (before login too) and on resume after 1 h; `updateRequired` → full-screen "Please update" with `updateUrl` and stop other calls; `message` → banner; Help & support and the blocked-account screen use `support.*` (tel: / WhatsApp / mailto links).
+
+**R23 · Push devices and preferences** — the four calls are built as asked. Differences:
+- **Push isn't delivered yet:** the FCM provider isn't set up (pre-production checklist 2.14). Devices and preferences are stored now and every new in-app notification checks them, so register the token today; pushes start without an app change once FCM is configured.
+- `POST /notifications/devices` `{ token (≥ 10 chars), platform: "android" | "ios", appVersion? }` → **201** new / **200** already known (`lastSeenAt` updated). A token registered by another login **moves** to this login (one phone, the last user). 400 `VALIDATION_FAILED` ("Platform must be android or ios.").
+- `DELETE /notifications/devices/:token` → 200 `{ removed: true | false }` (only this login's tokens; always 200). Call on logout before deleting the tokens.
+- `GET /notifications/preferences` → `{ plan: true, cash, settlements, machines, requests, locked: ["plan"] }` (all `true` until changed). `PATCH` any of `cash`, `settlements`, `machines`, `requests` → same shape; `plan: false` → 400 **`PREFERENCE_LOCKED`**; empty body → 400 `Nothing to change.`
+- Groups today: `plan` = `GENERAL`, `SUBSCRIPTION_*`, `MANDATE_*`, `TRIAL_*` (always on); `cash` = `CASH_ACTIVATION_DIFFERENCE`; `requests` = `BC_UNLINKED`. **`settlements` and `machines` have no notification kinds yet** (KO settlement and "PC offline" notifications aren't built); keep the switches, they apply when those come.
+
+**R24 · Email the activation code** — `POST /activations/:activationId/send` (CSP_ADMIN / BC_ADMIN; needs a running plan, like regenerate) `{ to?: "agent" | "me" }` → 200 `Code sent to <email>.` `data: { sentTo, sentAt, activationCode }` as asked. Differences:
+- **The email isn't delivered yet** (email provider pending, checklist): the server makes the fresh password and records the send; in development read the password from `GET /activations` (`activationPassword`, dev only).
+- Errors: 404 `Activation not found.` · 400 `Activation has already been used.` (not `NOT_ACTIVATED`) · 400 `Activation has not been assigned.` · 400 `AGENT_HAS_NO_EMAIL` (`Add an email for this agent first.`; with `to: "me"`: `Your account has no email.`) · 429 **`RATE_LIMITED`** (5 sends per activation per hour) · 400 `` `to` must be "agent" or "me". `` · 403 subscription messages (§7.3).
+- `to: "me"` sends to the login email (the owner forwards it).
+- **App:** on the code + password sheet add **[Email to agent]** (disabled with "Add an email for <agent> first" when the agent has no `email`); after 200 show "Sent to <sentTo>. The old password no longer works." and hide the password shown before.
 
 #### R20 · Profile: your own details
 
@@ -2100,8 +2171,69 @@ Never blocked by the plan (like `/auth/*`). The agent row (`/agents/:agentId`) s
 - 400 `AGENT_HAS_NO_EMAIL` `Add an email for this agent first.`; 400 `Activation has already been used.`; 429 after 5 sends per activation per hour.
 - Email is a console stub on the server today (§19): build it with the email provider.
 
+### 19.5 App-side effects of the desktop work in rev 31
+
+The desktop team's asks (desktop KT #35–#39) changed a few things the app shows or sends. None of them is required for the app to keep working; each field is new and optional.
+
+| # | Where | What changed | App |
+|---|---|---|---|
+| 1 | `GET /receipts`, `GET /receipts/:receiptId` | new **`source`**: `"AUTOMATION"` (Transaction Controller) / `"MANUAL"` (done by hand on the SBI kiosk) / `null` (older desktops); new **`denominationPending`** (boolean) | optional chip "Automation" / "Manual"; when `denominationPending` show **"Count needed"** on the receipt (the agent still has to enter the notes on its desktop; no action for the CSP) |
+| 2 | `GET /cash-management` (pool view) | each `agents[]` item adds **`pendingCounts: { count, amount }`** | on the agent row: "₹6,500 still to count (2 receipts)" when `count > 0`; it explains why `drawerMatchesCashInHand` is false |
+| 3 | `GET /cash-management/ledger` | new type **`RECEIPT_COUNT`**: the agent entered the notes of a receipt uploaded without them (`drawerChange` only, `remarks` "Notes for cash withdrawal ₹4500.00") | label "Notes counted" in the ledger filter and rows |
+| 4 | `GET /cash-management/day-closes` | items add `system.cashInAccount`, `counted.cashInAccount` (both `null` when the KO didn't enter it) and **`accountDifference`** (counted − system; negative = SBI shows less) | show both differences per close: "Cash in hand: matched · Cash in account: ₹200 less", each with its `closedAt` time (cash in account is shared, so several KOs may report it the same day) |
+| 5 | Agent object (`GET /agents`, `/agents/:agentId`), `POST /agents/ko`, `PATCH /agents/:agentId` | new optional **`sbiUserId`**: the User ID the agent types on the SBI kiosk login page, **only when it differs from its agent ID**. 1–50 of `A–Z a–z 0–9 . _ -`, stored upper-case; `PATCH { sbiUserId: null }` clears it | KO form and KO / CSP edit: optional field "SBI kiosk user ID (if different from the agent ID)". 409 **`SBI_USER_ID_TAKEN`** ("This SBI user ID belongs to another agent.") → field error. Without it a shared PC can't tell who logged in when the SBI id differs |
+| 6 | **New** `POST /machines/:machineId/diagnostics` (CSP_ADMIN / BC_ADMIN, in scope) `{ fromDate?, toDate?, note? ≤ 300 }` (IST `YYYY-MM-DD`, default today, **only the last 3 days** (today and the 2 before), not in the future) | asks the PC to upload its desktop log to support → 201 `Log requested. The PC sends it with its next heartbeat (about a minute) while it's on.` `data: { id, requestId: "DIAG-2026-000012", machineCode, fromDate, toDate, status: "OPEN", note, partsReceived: [], createdAt, … }`. A new request replaces an open one (that one → `CANCELLED`). | Machine detail → "Send PC log to support" → optional note → toast with `requestId` (tell support this number). Errors: 404 `Machine not found.`, 400 `DIAGNOSTICS_RANGE_TOO_OLD` (older than 3 days; limit the date picker), 400 date messages. **`GET /machines/:machineId/diagnostics`** lists the requests with `status` `OPEN` / `RECEIVED` / `CANCELLED` (show "Sent" when `RECEIVED`) |
+| 7 | Notifications | new `kind: "BC_UNLINKED"` (to the CSP, R21) | tap: nothing (info only) |
+| 8 | Link requests | new `status: "UNLINKED"` (R21) | status chip "Unlinked" |
+
+Both 6 and the ledger type 3 are behind the plan gate like the other machine / cash calls (§7.2).
+
+### 19.6 Service counts on Home (app team, rev 32 ask)
+
+The owner approved a new CSP Home (canvas "Home · services card option B" and "Service counts"): the first card shows **today's successful receipts in five groups**, each with **when its last receipt came in** ("2 min ago"); a new screen lists every type with its count and last time, for any day. The app builds the groups from `GET /dashboard/summary` → `services[]` (category + receipt type, §11). Two things are missing.
+
+| # | Endpoint | Screen | Status |
+|---|---|---|---|
+| R25 | `GET /dashboard/summary` (changed: `services[].lastTransactionAt`) + a `CIF` receipt type | Home "Today's services", Service counts | **Requested** |
+
+Groups (successful receipts only; failed are never counted):
+
+| Group | Rows (`transactionCategory` + `receiptType`) |
+|---|---|
+| Transaction | `CASH_DEPOSIT` + `AEPS`, `CASH_DEPOSIT` + `ACCOUNT`, `CASH_WITHDRAWAL` + `AEPS`, `CASH_WITHDRAWAL` + `ACCOUNT`, `MONEY_TRANSFER` + `ACCOUNT`, `MONEY_TRANSFER` + **`CIF` (new)** |
+| ATM | `CASH_DEPOSIT` + `CARD`, `CASH_WITHDRAWAL` + `CARD`, `MONEY_TRANSFER` + `CARD` |
+| Social security | `SOCIAL_SECURITY` + `PMJJBY` / `PMSBY` / `APY` |
+| Account opening | `ACCOUNT_OPENING` |
+| Passbook printing | `PASSBOOK_PRINTING` |
+| Other (counts screen only) | `BALANCE_ENQUIRY`, `MINI_STATEMENT`, and anything not above |
+
+#### R25 · Last receipt time per service row, and money transfer by CIF
+
+**1. `GET /dashboard/summary`** — request unchanged (`from`, `to`, `agentId`, `includeKos`, …; the app sends one IST day as `from` = `to`). Each `services[]` row adds **`lastTransactionAt`**: the `transactionAt` of the newest **successful** receipt of that category + receipt type in the range (and the agents in view), `null` when it has none.
+
+```json
+"services": [
+  { "transactionCategory": "CASH_DEPOSIT", "receiptType": "AEPS", "successCount": 12, "failedCount": 1,
+    "successAmount": 84000, "failedAmount": 5000, "lastTransactionAt": "2026-11-08T13:12:00.000Z" },
+  { "transactionCategory": "MONEY_TRANSFER", "receiptType": "CIF", "successCount": 2, "failedCount": 0,
+    "successAmount": 9000, "failedAmount": 0, "lastTransactionAt": "2026-11-08T09:50:00.000Z" },
+  { "transactionCategory": "PASSBOOK_PRINTING", "receiptType": "PASSBOOK", "successCount": 0, "failedCount": 1,
+    "successAmount": 0, "failedAmount": 0, "lastTransactionAt": null }
+]
+```
+
+- Needed for ranges inside the retention period (the app asks for one day in the last 30). For days whose receipts were already deleted, `null` is fine (counts still come from the daily counts).
+- Same for a BC with `agentId` = a CSP (the CSP and its KOs).
+- Until it's sent, the app takes the time from `recentTransactions` (only right for groups that appear there) and otherwise shows the count without a time.
+
+**2. Money transfer by CIF** — today a money transfer is `ACCOUNT`, `AEPS` or `CARD`; the owner counts "money transfer (CIF)" separately. Please add **`receiptType: "CIF"`** (the desktop sends it for a CIF-based money transfer), accept it in `/receipts` `receiptTypes=` filters and the exports, and return it in `services[]` and `/receipts/stats`. If CIF is better carried another way (e.g. a field on `ACCOUNT` receipts), say how and the app will follow. Until then the app shows "Money transfer (CIF) 0".
+
+Errors: none new (as §11).
+
 ## 20. Changelog
 
+- 2026-11-08 (rev 32, app team ask) — New §19.6 R25: `services[].lastTransactionAt` in `/dashboard/summary` and a `CIF` receipt type for money transfer, for the new Home "Today's services" card and Service counts screen.
+- 2026-11-08 (rev 31) — §19.4 R20–R24 **built** (backend status block with every request, response and error, and the differences from the ask: `emailVerified` / `pendingEmail` on the profile, email change returns 202, unlink needs no plan and sets link request `UNLINKED`, `updateAvailable` in `/app/config`, push and activation emails stored but not delivered until FCM / the email provider). New §19.5: receipt `source` and `denominationPending`, pool `agents[].pendingCounts`, ledger `RECEIPT_COUNT`, day close cash in account, agent `sbiUserId`, "Send PC log to support" (`/machines/:machineId/diagnostics`), `BC_UNLINKED`.
 - 2026-11-08 (rev 30) — New §19.4 (app team): endpoints for screens not in the app yet, with request and response: profile `GET` / `PATCH /auth/me` + email verify (R20), BC unlink a CSP (R21), `GET /app/config` support contacts and minimum version (R22), push devices + notification preferences (R23), email the activation code to the agent (R24).
 - 2026-11-08 (rev 29) — New §6C: one checklist of every API change in rev 27–28 (billing fixes + free trial) with request / response, success and failure handling and the screens affected. Cancelling a trial → 400 `TRIAL_CANCEL_NOT_ALLOWED`. §7.1 response now lists `RENEWAL_PENDING`, `subscriptionType`, `trial` and `upgrade.reason: "TRIAL"`.
 - 2026-11-07 (rev 28) — New §6B free trial: `GET /subscriptions/trial`, `POST /subscriptions/trial/start`, `trial` in `/subscriptions/access`, trial notifications; one trial per SBI agent ID / mobile / email / PC (`TRIAL_ALREADY_USED`, `TRIAL_ALREADY_USED_ON_MACHINE`).

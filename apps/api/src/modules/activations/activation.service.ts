@@ -16,6 +16,8 @@ import {
 } from "../../generated/prisma/enums";
 import { NotFoundError } from "../../core/errors/NotFoundError";
 import { BadRequestError } from "../../core/errors/BadRequestError";
+import { AppError } from "../../core/errors/AppError";
+import EmailService from "../../core/services/email.service";
 import { ForbiddenError } from "../../core/errors/ForbiddenError";
 
 import bcrypt from "bcrypt";
@@ -38,6 +40,7 @@ function withPendingRevoke<
 
 export default class ActivationService {
   private readonly passwordService = new ActivationPasswordService();
+  private readonly emailService = new EmailService();
 
   async generateActivations(data: GenerateActivationsInput, tx?: PrismaDb) {
     const execute = async (db: PrismaDb) => {
@@ -177,6 +180,84 @@ export default class ActivationService {
         },
       };
     });
+  }
+
+  /**
+   * Emails an assigned, unused activation code with a fresh password to the
+   * agent (or to the owner, `to: "me"`). The old password stops working, so
+   * the app never keeps one. At most 5 sends per activation per hour.
+   */
+  async sendByEmail(activationId: string, user: JwtPayload, to: "agent" | "me" = "agent") {
+    const ownerId = user.agentId;
+
+    const result = await withTransaction(async (tx) => {
+      const subscription = await new SubscriptionResolver(tx).getEffectiveSubscription(ownerId);
+
+      SubscriptionAccessValidator.validate(subscription);
+
+      const repository = new ActivationRepository(tx);
+      const activation = await repository.findActivationForOwner(activationId, ownerId);
+
+      if (!activation) {
+        throw new NotFoundError("Activation not found.");
+      }
+
+      if (activation.status !== ActivationStatus.NOT_ACTIVATED) {
+        throw new BadRequestError("Activation has already been used.");
+      }
+
+      if (!activation.assignedAgentId) {
+        throw new BadRequestError("Activation has not been assigned.");
+      }
+
+      const recentSends = await tx.activationEmail.count({
+        where: { activationId, createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) } },
+      });
+
+      if (recentSends >= 5) {
+        throw new AppError("This code was emailed 5 times in the last hour. Try again later.", 429, "RATE_LIMITED");
+      }
+
+      const recipient =
+        to === "me"
+          ? (await tx.user.findUnique({ where: { id: user.userId }, select: { email: true } }))?.email
+          : (await tx.agent.findUnique({ where: { agentId: activation.assignedAgentId }, select: { email: true } }))?.email;
+
+      if (!recipient) {
+        throw new BadRequestError(
+          to === "me" ? "Your account has no email." : "Add an email for this agent first.",
+          "AGENT_HAS_NO_EMAIL",
+        );
+      }
+
+      const credentials = await this.passwordService.generateCredentials();
+
+      await repository.updateActivationPassword(activation.id, credentials.hash, credentials.password);
+
+      const sent = await tx.activationEmail.create({
+        data: { activationId, sentTo: recipient, sentByUserId: user.userId },
+      });
+
+      return {
+        recipient,
+        sentAt: sent.createdAt,
+        activationCode: activation.activationCode,
+        password: credentials.password,
+        agentId: activation.assignedAgentId,
+      };
+    });
+
+    await this.emailService.sendActivation(result.recipient, {
+      activationCode: result.activationCode,
+      password: result.password,
+      agentId: result.agentId,
+    });
+
+    return {
+      success: true,
+      message: `Code sent to ${result.recipient}.`,
+      data: { sentTo: result.recipient, sentAt: result.sentAt, activationCode: result.activationCode },
+    };
   }
 
   /**

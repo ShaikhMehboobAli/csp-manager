@@ -50,7 +50,11 @@ export default class CspActivityService {
       // log in to SBI on this PC; agents of another CSP may not.
       const family = new MachineFamilyService(tx);
 
-      await family.requireMember(authenticated, request.agentId);
+      const member = await family.resolveMember(authenticated, {
+        agentId: request.agentId,
+        sbiUserId: request.sbiUserId,
+      });
+      const agentId = member.agentId;
 
       const repository = new CspActivityRepository(tx);
 
@@ -68,19 +72,16 @@ export default class CspActivityService {
         );
       }
 
-      const session = await this.createSession(
-        tx,
-        authenticated.machine.id,
-        request.agentId,
-      );
+      const session = await this.createSession(tx, authenticated.machine.id, agentId);
 
       await this.markMachineAlive(tx, authenticated.machine);
 
       // The SBI kiosk login (fingerprint done) logs the agent in to cash
       // management on this PC automatically.
-      await family.setCashAgent(authenticated.machine.id, request.agentId, CashLoginMethod.KIOSK);
+      await family.setCashAgent(authenticated.machine.id, agentId, CashLoginMethod.KIOSK);
 
-      return { ...this.toResponse(session, false), cashAgentId: request.agentId };
+      // agentId: the agent the server matched (use it for receipts).
+      return { ...this.toResponse(session, false), agentId, cashAgentId: agentId };
     });
   }
 

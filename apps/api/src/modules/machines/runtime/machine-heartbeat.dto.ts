@@ -54,6 +54,8 @@ export interface HeartbeatResponse {
   // PAID | TRIAL | PROMOTIONAL | LIFETIME; on TRIAL show "Free trial — ends <subscriptionEndDate>".
   subscriptionType: string;
   isTrial: boolean;
+  /** Log upload asked by support; null = nothing asked. */
+  diagnostics: { uploadRequested: boolean; requestId: string; fromDate: string; toDate: string } | null;
 
   graceEndsAt: Date | null;
 

@@ -6,6 +6,7 @@ import MachineSessionTimeoutJob from "./jobs/machine-session-timeout.job";
 import MachineSessionCleanupJob from "./jobs/machine-session-cleanup.job";
 import SubscriptionExpiryJob from "./jobs/subscription-expiry.job";
 import SubscriptionRenewalJob from "./jobs/subscription-renewal.job";
+import DiagnosticsCleanupJob from "./jobs/diagnostics-cleanup.job";
 import TrialReminderJob from "./jobs/trial-reminder.job";
 import CspActivityTimeoutJob from "./jobs/csp-activity-timeout.job";
 import ReceiptRetentionJob from "./jobs/receipt-retention.job";
@@ -25,6 +26,7 @@ async function bootstrap() {
     SubscriptionRenewalJob.start();
 
     TrialReminderJob.start();
+    DiagnosticsCleanupJob.start();
 
     CspActivityTimeoutJob.start();
 

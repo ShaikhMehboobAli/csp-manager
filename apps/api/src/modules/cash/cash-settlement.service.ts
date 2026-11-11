@@ -25,6 +25,7 @@ import {
   moveDrawer,
   rupees,
 } from "./cash.helpers";
+import CashReceiptCountService from "./cash-receipt-count.service";
 import CashRepository, { LockedPool } from "./cash.repository";
 
 type Settlement = Prisma.CashSettlementGetPayload<object>;
@@ -481,14 +482,14 @@ export default class CashSettlementService {
     const isToday = istDateKey(date) === istDateKey(now);
     const today = { gte: startOfIstDay(date), lte: endOfIstDay(date) };
 
-    const [pool, row, ledger, open, settledToday, lastRequest, dayClose, dues] = await Promise.all([
+    const [pool, row, ledger, open, settledToday, lastRequest, dayClose, dues, pendingCounts] = await Promise.all([
       this.repository.findPool(cspAgentId),
       this.db.agentCash.findUnique({ where: { agentId } }),
       this.db.cashLedger.findMany({
         where: { agentId, createdAt: today },
         orderBy: { createdAt: "desc" },
         take: 500,
-        include: { receipt: { select: { receiptId: true } } },
+        include: { receipt: { select: { receiptId: true, denominationPending: true, source: true } } },
       }),
       isToday
         ? this.db.cashSettlement.findMany({
@@ -505,6 +506,7 @@ export default class CashSettlementService {
         where: { agentId_date: { agentId, date: istCalendarDate(date) } },
       }),
       new CashDeskService(this.db).dueTotals(agentId),
+      new CashReceiptCountService(this.db).pendingSummary(agentId),
     ]);
 
     const [settledSteps, openSteps] = await Promise.all([this.mapAll(settledToday), this.mapAll(open)]);
@@ -588,6 +590,9 @@ export default class CashSettlementService {
       drawer,
       drawerTotal: drawerTotal(drawer),
       drawerMatchesCashInHand: drawerTotal(drawer) === money(hand),
+      // Cash receipts waiting for their notes: why the drawer differs.
+      pendingCountAmount: pendingCounts.amount,
+      pendingCounts,
       today: {
         totals: Object.fromEntries(
           Object.entries(totals).map(([key, value]) => [key, money(value)]),
@@ -606,6 +611,10 @@ export default class CashSettlementService {
           balanceCashInAccount: num(entry.balanceCashInAccount),
           drawerChange: entry.drawerChange,
           receiptId: entry.receipt?.receiptId ?? null,
+          // RECEIPT rows: the notes still need counting ("Fill count").
+          denominationPending: entry.type === CashLedgerType.RECEIPT ? entry.receipt?.denominationPending ?? false : false,
+          // AUTOMATION | MANUAL | null (not sent / not a receipt).
+          source: entry.receipt?.source ?? null,
           settlementId: entry.settlementId,
           remarks: entry.remarks,
           createdAt: entry.createdAt,

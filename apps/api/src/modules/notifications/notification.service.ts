@@ -3,6 +3,8 @@ import { NotFoundError } from "../../core/errors/NotFoundError";
 import { Prisma } from "../../generated/prisma/client";
 import { NotificationKind, NotificationType } from "../../generated/prisma/enums";
 
+import PushService, { LOCKED_GROUPS } from "./push.service";
+
 /**
  * In-app notifications for a CSP / BC user (the app lists them; push is
  * pending, pre-production checklist 2.14). An agent without a login (KO)
@@ -27,7 +29,7 @@ export default class NotificationService {
       return null;
     }
 
-    return this.db.notification.create({
+    const notification = await this.db.notification.create({
       data: {
         userId: user.id,
         title: input.title,
@@ -37,6 +39,64 @@ export default class NotificationService {
         data: input.data,
       },
     });
+
+    await new PushService(this.db).deliver(user.id, {
+      title: input.title,
+      body: input.message,
+      kind: input.kind,
+      data: input.data,
+      notificationId: notification.id,
+    });
+
+    return notification;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Push devices and preferences
+  // ---------------------------------------------------------------------------
+
+  /** Registers (or moves to this login) a phone's push token. */
+  async registerDevice(userId: string, input: { token: string; platform: "android" | "ios"; appVersion?: string }) {
+    const existing = await this.db.notificationDevice.findUnique({ where: { token: input.token } });
+    const data = { userId, platform: input.platform, appVersion: input.appVersion ?? null, lastSeenAt: new Date() };
+
+    const device = existing
+      ? await this.db.notificationDevice.update({ where: { token: input.token }, data })
+      : await this.db.notificationDevice.create({ data: { token: input.token, ...data } });
+
+    return { created: !existing, device: { token: device.token, platform: device.platform, appVersion: device.appVersion, lastSeenAt: device.lastSeenAt } };
+  }
+
+  async removeDevice(userId: string, token: string) {
+    const { count } = await this.db.notificationDevice.deleteMany({ where: { userId, token } });
+
+    return { removed: count > 0 };
+  }
+
+  async getPreferences(userId: string) {
+    const row = await this.db.notificationPreference.findUnique({ where: { userId } });
+
+    return {
+      plan: true,
+      cash: row?.cash ?? true,
+      settlements: row?.settlements ?? true,
+      machines: row?.machines ?? true,
+      requests: row?.requests ?? true,
+      locked: LOCKED_GROUPS,
+    };
+  }
+
+  async updatePreferences(
+    userId: string,
+    change: Partial<Record<"cash" | "settlements" | "machines" | "requests", boolean>>,
+  ) {
+    await this.db.notificationPreference.upsert({
+      where: { userId },
+      create: { userId, ...change },
+      update: change,
+    });
+
+    return this.getPreferences(userId);
   }
 
   async list(userId: string, filter: { unreadOnly: boolean; page: number; limit: number }) {

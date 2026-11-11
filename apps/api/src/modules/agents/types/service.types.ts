@@ -13,6 +13,9 @@ export interface CreateKOInput {
   email?: string;
   address?: string;
 
+  /** SBI kiosk User ID when it differs from agentId (upper-case). */
+  sbiUserId?: string;
+
   cashLimit?: number;
   openingCash?: number;
   openingCashInAccount?: number;

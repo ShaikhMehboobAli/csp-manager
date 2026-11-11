@@ -5,6 +5,14 @@ import {
   requiredMoneyValidator,
 } from "../../../core/validators/common.validator";
 
+export const sbiUserIdValidator = z
+  .string()
+  .trim()
+  .min(1, "SBI user ID is required.")
+  .max(50, "SBI user ID is too long.")
+  .regex(/^[A-Za-z0-9._-]+$/, "SBI user ID can have only letters, digits, . _ -")
+  .transform((value) => value.toUpperCase());
+
 // Without these, a missing agentId reached Prisma as `where: { agentId:
 // undefined }`, which matches the first agent in the table.
 const agentFields = {
@@ -13,6 +21,9 @@ const agentFields = {
   mobile: z.string().trim().min(10).max(15).optional(),
   email: z.string().trim().email("Invalid email address.").optional(),
   address: z.string().trim().max(500).optional(),
+  // The User ID typed on the SBI kiosk login page, when it differs from
+  // agentId (shared PCs match it to know who logged in). Stored upper-case.
+  sbiUserId: sbiUserIdValidator.optional(),
   // Kept for older clients; machines come from the owner's activations.
   machineCount: z.number().int().min(0).max(100).default(0),
 };

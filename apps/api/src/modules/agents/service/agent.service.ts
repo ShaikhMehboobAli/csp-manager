@@ -1,3 +1,5 @@
+import { PrismaDb } from "../../../core/database/prisma.types";
+import { ConflictError } from "../../../core/errors/ConflictError";
 import { TRANSACTION_OPTIONS } from "../../../core/database/transaction";
 import { BadRequestError } from "../../../core/errors/BadRequestError";
 import { ForbiddenError } from "../../../core/errors/ForbiddenError";
@@ -443,6 +445,11 @@ export class AgentService {
       });
     }
 
+    if (input.sbiUserId) {
+      await requireSbiUserIdFree(tx, input.sbiUserId, ko.agentId);
+      ko = await tx.agent.update({ where: { agentId: ko.agentId }, data: { sbiUserId: input.sbiUserId } });
+    }
+
     // Cash only on a plan with cash management. The KO's cash in hand comes
     // out of the CSP's own (or the agents the CSP adjusted in the form);
     // what isn't covered raises the cash limit. Agents whose cash in hand
@@ -627,6 +634,10 @@ export class AgentService {
     }
 
     await this.ensureNotViewOnlyLink(repository, currentUser, agent);
+
+    if (data.sbiUserId) {
+      await requireSbiUserIdFree(this.prisma, data.sbiUserId, agentId);
+    }
 
     const emailChanged =
       data.email !== undefined &&
@@ -816,5 +827,21 @@ export class AgentService {
         machines: machineIds.length,
       };
     }, TRANSACTION_OPTIONS);
+  }
+}
+
+/** One agent per SBI kiosk User ID (it decides whose cash a shared PC uses). */
+async function requireSbiUserIdFree(db: PrismaDb, sbiUserId: string, exceptAgentId: string) {
+  const taken = await db.agent.findFirst({
+    where: {
+      agentId: { not: exceptAgentId },
+      isDeleted: false,
+      OR: [{ sbiUserId }, { agentId: { equals: sbiUserId, mode: "insensitive" } }],
+    },
+    select: { agentId: true },
+  });
+
+  if (taken) {
+    throw new ConflictError("This SBI user ID belongs to another agent.", "SBI_USER_ID_TAKEN");
   }
 }

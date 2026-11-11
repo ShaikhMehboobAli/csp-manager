@@ -25,6 +25,7 @@ import {
   machineTaskSchema,
   machineAdjustmentCompleteSchema,
   machineTransferSchema,
+  machineReceiptCountSchema,
 } from "../../cash/cash.validation";
 import {
   machineCashLoginOtpSchema,
@@ -34,10 +35,14 @@ import {
 } from "./machine-runtime.validation";
 import { validate } from "../../../core/middlewares/validate";
 import { machineIdempotency } from "../../../core/middlewares/machine-idempotency.middleware";
+import { diagnosticsRuntimeRoutes } from "../diagnostics/diagnostics.routes";
 
 const router = Router();
 
 const controller = new MachineRuntimeController();
+
+// Desktop log upload, only while a diagnostics request is open (heartbeat `diagnostics`).
+router.use(diagnosticsRuntimeRoutes);
 
 router.post(
   "/entitlements",
@@ -77,7 +82,7 @@ router.post(
  * Writes accept an `Idempotency-Key` header (a retry gets the first answer);
  * the POST forms of the reads don't need one.
  */
-const CASH_READS = new Set(["/", "/labels", "/days", "/session", "/adjustments"]);
+const CASH_READS = new Set(["/", "/labels", "/days", "/session", "/adjustments", "/receipt-counts"]);
 
 router.use("/cash", (req, res, next) =>
   req.method === "GET" || (req.method === "POST" && CASH_READS.has(req.path))
@@ -172,6 +177,25 @@ router.post(
   "/cash/exchanges",
   validate(machineExchangeSchema),
   asyncHandler(controller.createExchange.bind(controller)),
+);
+
+// "Count needed": cash receipts uploaded without their notes, and filling them.
+router.get(
+  "/cash/receipt-counts",
+  validate(machineCashSchema),
+  asyncHandler(controller.getReceiptCounts.bind(controller)),
+);
+
+router.post(
+  "/cash/receipt-counts",
+  validate(machineCashSchema),
+  asyncHandler(controller.getReceiptCounts.bind(controller)),
+);
+
+router.post(
+  "/cash/receipt-counts/:receiptId",
+  validate(machineReceiptCountSchema),
+  asyncHandler(controller.fillReceiptCount.bind(controller)),
 );
 
 router.get(
