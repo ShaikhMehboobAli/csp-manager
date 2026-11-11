@@ -26,4 +26,8 @@ export const env = {
   // true: every desktop call must be signed with a device key; machines
   // without one must re-activate. Keep false until the desktop release ships.
   machineSignatureRequired: process.env.MACHINE_SIGNATURE_REQUIRED === "true",
+
+  // Firebase push (FCM). JSON wins over the file path; neither = push off.
+  firebaseServiceAccountJson: process.env.FIREBASE_SERVICE_ACCOUNT_JSON || "",
+  firebaseServiceAccountPath: process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "",
 };

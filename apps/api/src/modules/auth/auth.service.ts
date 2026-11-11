@@ -27,6 +27,7 @@ import JwtService, { REFRESH_TOKEN_DAYS } from "../../core/services/jwt.service"
 import { UnauthorizedError } from "../../core/errors/UnauthorizedError";
 import { createHash } from "node:crypto";
 import { LoginDto } from "./validations/login.validation";
+import type { PushDeviceInput } from "./validations/push-device.validation";
 import type {
   ChangePasswordDto,
   ForgotPasswordDto,
@@ -674,7 +675,7 @@ export default class AuthService {
         message: "Login successful.",
         data: {
           accessToken,
-          refreshToken: await this.startSession(repository, user, client),
+          refreshToken: await this.startSession(repository, user, client, data),
           user: {
             id: user.id,
             agentId: user.agentId,
@@ -691,6 +692,7 @@ export default class AuthService {
     repository: AuthRepository,
     user: { id: string; agentId: string; role: UserRole },
     client: SessionClient,
+    device: PushDeviceInput = {},
   ) {
     const session = await repository.createSession({
       userId: user.id,
@@ -708,6 +710,10 @@ export default class AuthService {
 
     await repository.rotateSession(session.id, hashToken(refreshToken), refreshExpiry());
 
+    if (device.pushToken && device.platform) {
+      await repository.savePushDevice(user.id, session.id, { pushToken: device.pushToken, platform: device.platform, appVersion: device.appVersion });
+    }
+
     return refreshToken;
   }
 
@@ -716,7 +722,7 @@ export default class AuthService {
    * stops working; using it again means it was copied, so the whole session
    * is revoked (the user logs in again).
    */
-  async refresh(refreshToken: string, client: SessionClient) {
+  async refresh(refreshToken: string, client: SessionClient, device: PushDeviceInput = {}) {
     let payload;
 
     try {
@@ -732,7 +738,7 @@ export default class AuthService {
     let revoke: string | null = null;
 
     try {
-      return await this.rotate(refreshToken, payload, client, (sessionId) => {
+      return await this.rotate(refreshToken, payload, client, device, (sessionId) => {
         revoke = sessionId;
       });
     } finally {
@@ -746,6 +752,7 @@ export default class AuthService {
     refreshToken: string,
     payload: { userId: string; sid: string },
     client: SessionClient,
+    device: PushDeviceInput,
     revokeLater: (sessionId: string) => void,
   ) {
     return withTransaction(async (tx) => {
@@ -790,6 +797,10 @@ export default class AuthService {
         await tx.userSession.update({ where: { id: session.id }, data: client });
       }
 
+      if (device.pushToken && device.platform) {
+        await repository.savePushDevice(user.id, session.id, { pushToken: device.pushToken, platform: device.platform, appVersion: device.appVersion });
+      }
+
       return {
         success: true,
         message: "Session refreshed.",
@@ -814,6 +825,7 @@ export default class AuthService {
 
     if (sid) {
       await this.repository.revokeSession(sid);
+      await this.repository.deletePushDevicesOfSession(sid);
     }
 
     return { success: true, message: "Logged out." };
@@ -988,7 +1000,7 @@ export default class AuthService {
       message: "Password changed. Other devices have been signed out.",
       data: {
         accessToken: this.jwtService.generateAccessToken(claims),
-        refreshToken: await this.startSession(this.repository, user, client),
+        refreshToken: await this.startSession(this.repository, user, client, data),
       },
     };
   }

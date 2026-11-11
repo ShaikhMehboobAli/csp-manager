@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { pushDeviceFields, requirePlatformWithToken } from "./push-device.validation";
+
 import {
   agentIdValidator,
   otpValidator,
@@ -29,8 +31,11 @@ export const changePasswordSchema = z
     currentPassword: z.string({ error: "Current password is required." }).min(1, "Current password is required."),
     password: passwordValidator,
     confirmPassword: passwordValidator,
+    // The new session replaces every old one: send the push token to keep pushes.
+    ...pushDeviceFields,
   })
-  .refine(passwordsMatch, mismatch);
+  .refine(passwordsMatch, mismatch)
+  .superRefine(requirePlatformWithToken);
 
 export type ForgotPasswordDto = z.infer<typeof forgotPasswordSchema>;
 export type ResetPasswordDto = z.infer<typeof resetPasswordSchema>;

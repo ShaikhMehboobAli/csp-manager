@@ -52,26 +52,8 @@ export default class NotificationService {
   }
 
   // ---------------------------------------------------------------------------
-  // Push devices and preferences
+  // Push preferences (push tokens come with login / refresh: auth.service)
   // ---------------------------------------------------------------------------
-
-  /** Registers (or moves to this login) a phone's push token. */
-  async registerDevice(userId: string, input: { token: string; platform: "android" | "ios"; appVersion?: string }) {
-    const existing = await this.db.notificationDevice.findUnique({ where: { token: input.token } });
-    const data = { userId, platform: input.platform, appVersion: input.appVersion ?? null, lastSeenAt: new Date() };
-
-    const device = existing
-      ? await this.db.notificationDevice.update({ where: { token: input.token }, data })
-      : await this.db.notificationDevice.create({ data: { token: input.token, ...data } });
-
-    return { created: !existing, device: { token: device.token, platform: device.platform, appVersion: device.appVersion, lastSeenAt: device.lastSeenAt } };
-  }
-
-  async removeDevice(userId: string, token: string) {
-    const { count } = await this.db.notificationDevice.deleteMany({ where: { userId, token } });
-
-    return { removed: count > 0 };
-  }
 
   async getPreferences(userId: string) {
     const row = await this.db.notificationPreference.findUnique({ where: { userId } });

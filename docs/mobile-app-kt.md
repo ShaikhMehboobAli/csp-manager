@@ -3,9 +3,11 @@
 **Audience:** the React Native team building the CSP Manager mobile app for **BC** and **CSP** users.
 **Not covered here:** the Super Admin console (React / Next.js) → `docs/admin-web-kt.md`; the Windows desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api` (Express + Prisma + PostgreSQL).
-**Last updated:** 2026-11-08 (rev 31)
+**Last updated:** 2026-11-11 (rev 32)
 
 > Describes the backend once PRs #3–#8 are merged into `development`. Where an older build behaves differently it says so.
+>
+> **Rev 32 (2026-11-11): push is now sent through FCM, and the push token goes with login / refresh** (`pushToken`, `platform`, `appVersion` on `/auth/login`, `/auth/refresh`, `/auth/change-password`; `/auth/logout` removes it). `POST` / `DELETE /notifications/devices` are **removed**. App-side Firebase setup and the push message shape: §19.4 R23.
 >
 > **Rev 31 (2026-11-08): your §19.4 asks R20–R24 are built** — profile (`/auth/me`), BC unlink, `/app/config`, push devices + preferences, email the activation code. See **§19.4 "Backend status (rev 31)"** for what is exactly as you asked and what differs. **New §19.5:** app-side effects of this release's desktop work (receipt `source`, "Count needed" receipts, KO "SBI kiosk user ID", day close cash in account, "Send PC log to support", BC unlinked).
 
@@ -421,8 +423,8 @@ The last column points to the section with every field and error. Super-admin-on
 | POST | `/auth/verify-otp` | ✓ | ✓ | public | `{ agentId, otp }` → 200 | 5.1 |
 | POST | `/auth/login` | ✓ | ✓ | public | `{ agentId, password }` → `{ accessToken, refreshToken, user: { id, agentId, email, role } }` | 5.1 |
 | POST | `/auth/resend-otp` | ✓ | ✓ | public | `{ agentId }` → `{ expiresAt, resendAvailableAt }` (1 per minute, 5 per hour) | 5.2 |
-| POST | `/auth/refresh` | ✓ | ✓ | public | `{ refreshToken }` → `{ accessToken, refreshToken (new), user }` | 5.2 |
-| POST | `/auth/logout` | ✓ | ✓ | public | `{ refreshToken }` → 200 (ends that session) | 5.2 |
+| POST | `/auth/refresh` | ✓ | ✓ | public | `{ refreshToken, pushToken?, platform?, appVersion? }` → `{ accessToken, refreshToken (new), user }` | 5.2 |
+| POST | `/auth/logout` | ✓ | ✓ | public | `{ refreshToken }` → 200 (ends that session and its push token) | 5.2 |
 | POST | `/auth/forgot-password` | ✓ | ✓ | public | `{ agentId }` → always 200 `{ resendAvailableAt }` (emails a reset OTP if the account exists) | 5.2 |
 | POST | `/auth/reset-password` | ✓ | ✓ | public | `{ agentId, otp, password, confirmPassword }` → 200; every session ends | 5.2 |
 | POST | `/auth/change-password` | ✓ | ✓ | login | `{ currentPassword, password, confirmPassword }` → `{ accessToken, refreshToken }` (replace both); other devices signed out | 5.2 |
@@ -628,7 +630,7 @@ Errors: 409 `Account already exists. Please login.`; 403 `KO cannot create login
 → 200 `OTP verified successfully.` Then go to Login (no token is returned here).
 Errors (409 unless noted): `Invalid OTP.`, `OTP has expired. Please request a new OTP.`, `Maximum OTP attempts exceeded. Please request a new OTP.`, 404 `OTP not found. Please request a new OTP.`, 404 `User not found.` For "request a new OTP", call signup again with the same data.
 
-**`POST /auth/login`** (public) `{ agentId, password }`
+**`POST /auth/login`** (public) `{ agentId, password, pushToken?, platform?, appVersion? }` (rev 32: push token fields optional, see §19.4 R23; `pushToken` without `platform` → 400 `Send the platform (android or ios) with the push token.`)
 
 ```json
 "data": {
@@ -643,14 +645,14 @@ Errors: 404 `User not found.`; 403 `Please verify your account first.` (→ OTP 
 
 ### 5.2 Refresh, logout, resend OTP (rev 23), forgot / reset / change password (rev 25)
 
-**`POST /auth/refresh`** (public) `{ refreshToken }` → 200 `Session refreshed.` `data: { accessToken, refreshToken, user }`.
+**`POST /auth/refresh`** (public) `{ refreshToken, pushToken?, platform?, appVersion? }` (rev 32: send the phone's current push token on every refresh, §19.4 R23) → 200 `Session refreshed.` `data: { accessToken, refreshToken, user }`.
 - Every refresh returns a **new** refresh token: store it and drop the old one. The old one stops working.
 - Sending an old (already used) refresh token again is treated as a stolen token: that session is ended and every token of it fails (401 `REFRESH_TOKEN_INVALID`) → Login.
 - 401 `REFRESH_TOKEN_INVALID` (`Invalid refresh token.` / `Refresh token has expired.`) → Login. A blocked or suspended account → 403 `ACCOUNT_BLOCKED` / `ACCOUNT_SUSPENDED` and the session ends.
 - A refresh token lasts **7 days** from its last use (each refresh restarts the 7 days). One session per login, so each phone has its own.
 - Not under the strict `/auth` rate limit (20 / 15 min); the general limit applies.
 
-**`POST /auth/logout`** (public) `{ refreshToken }` → 200 `Logged out.` Ends that session (any token, even an old or invalid one, answers 200). Call it on Logout, then delete the tokens.
+**`POST /auth/logout`** (public) `{ refreshToken }` → 200 `Logged out.` Ends that session (any token, even an old or invalid one, answers 200) **and removes the push token saved for that session** (rev 32; no push token needed in the body). Call it on Logout, then delete the tokens.
 
 **`POST /auth/resend-otp`** (public) `{ agentId }` → 200 `OTP sent again.` `data: { expiresAt, resendAvailableAt }`: a new code to the same email (the old one stops working). Errors: 409 `OTP_RESEND_TOO_SOON` `Please wait N seconds before asking for a new OTP.` (one per minute: use `resendAvailableAt` for the countdown), 409 `OTP_RESEND_LIMIT` `Too many OTPs sent. Please try again in an hour.` (5 per hour), 409 `ACCOUNT_EXISTS` (already verified → Login), 404 `User not found.` Use it for "Send a new code"; signup again is no longer needed.
 
@@ -660,7 +662,7 @@ Errors: 404 `User not found.`; 403 `Please verify your account first.` (→ OTP 
 
 **`POST /auth/reset-password`** (public) `{ agentId, otp, password, confirmPassword }` (password 8–100 chars, must match) → 200 `Password reset. Please log in with your new password.` **Every session of the user ends** (all phones: their refresh tokens fail; their access tokens get 401 `SESSION_ENDED` at once). Go to Login with the agent ID prefilled. Errors: 409 `OTP_INVALID` (`Invalid OTP.`), 409 `OTP_EXPIRED`, 409 `OTP_ATTEMPTS_EXCEEDED`, 404 `OTP_NOT_FOUND` (also for an unknown ID — ask for a new OTP), 400 validation (`Passwords do not match.`).
 
-**`POST /auth/change-password`** (logged in; Profile → Change password) `{ currentPassword, password, confirmPassword }` → 200 `Password changed. Other devices have been signed out.` `data: { accessToken, refreshToken }`: **replace both tokens** with these (the old ones stop working at once). Errors: 400 `CURRENT_PASSWORD_INCORRECT`, 400 `PASSWORD_UNCHANGED` (`New password must be different from the current one.`), 400 validation. Under the `/auth` rate limit (20 / 15 min).
+**`POST /auth/change-password`** (logged in; Profile → Change password) `{ currentPassword, password, confirmPassword, pushToken?, platform?, appVersion? }` (rev 32: every old session ends, so send the push token to keep pushes on this phone) → 200 `Password changed. Other devices have been signed out.` `data: { accessToken, refreshToken }`: **replace both tokens** with these (the old ones stop working at once). Errors: 400 `CURRENT_PASSWORD_INCORRECT`, 400 `PASSWORD_UNCHANGED` (`New password must be different from the current one.`), 400 validation. Under the `/auth` rate limit (20 / 15 min).
 
 **Blocked while logged in (rev 25).** The super admin can block or suspend an account; access stops **at once**: the next API call with a still-valid access token gets **403 `ACCOUNT_BLOCKED` / `ACCOUNT_SUSPENDED`** (message includes ` Reason: …`), and refresh fails too. On either code: clear tokens and show a full-screen "Your account has been blocked / suspended" with the message (no retry loop, no refresh). **401 `SESSION_ENDED`** (`Session ended. Please log in again.`) means the password was changed or reset elsewhere: don't refresh, go to Login.
 
@@ -668,7 +670,7 @@ Built in rev 31 (details §19.4 R23 / R24; delivery waits for FCM and the email 
 
 | Endpoint (proposed) | Body | Purpose |
 |---|---|---|
-| `POST /notifications/devices` / `DELETE /notifications/devices/:token` | `{ token, platform: "ios" \| "android" }` | register/unregister the push token (FCM); **built rev 31**, `platform` is `android` / `ios` |
+| ~~`POST /notifications/devices` / `DELETE /notifications/devices/:token`~~ | — | **removed in rev 32**: the push token now goes with `/auth/login`, `/auth/refresh`, `/auth/change-password`, and `/auth/logout` removes it (§19.4 R23) |
 | `POST /activations/:activationId/send` | `{ to?: "agent" \| "me" }` | emails the code + a fresh password; **built rev 31** (§19.4 R24) |
 
 Email is still a console stub on the server: OTPs (signup and reset) are not delivered yet in any environment except through the server log.
@@ -2047,7 +2049,7 @@ Found while comparing the app with this KT (canvas row "Not in the app yet"). Sh
 | R20 | `GET /auth/me`, `PATCH /auth/me`, `POST /auth/me/email/verify` | Profile (More → Profile; `profile` is in §7.1 `alwaysOpen`) | **Done (rev 31)** |
 | R21 | `POST /bc-links/csps/:cspAgentId/unlink` | BC · unlink a CSP (§19 gap "No unlink endpoint") | **Done (rev 31)** |
 | R22 | `GET /app/config` | Help & support, blocked-account screen (contact support), forced update | **Done (rev 31)** |
-| R23 | `POST /notifications/devices`, `DELETE /notifications/devices/:token`, `GET` / `PATCH /notifications/preferences` | Push + notification settings (§5.2 "still planned", checklist 2.14) | **Done (rev 31)**; push delivery waits for FCM |
+| R23 | push token on `/auth/login` / `/auth/refresh` (rev 32, replaces `/notifications/devices`), `GET` / `PATCH /notifications/preferences` | Push + notification settings (§5.2 "still planned", checklist 2.14) | **Done (rev 31, changed rev 32)**; push sent through FCM |
 | R24 | `POST /activations/:activationId/send` | "Email to KO" on the code + password sheet (§5.2 "activation email", no endpoint) | **Done (rev 31)**; email delivery waits for the email provider |
 
 #### Backend status (rev 31, 2026-11-08)
@@ -2083,10 +2085,19 @@ Differences from your ask:
 - Set by the super admin: `GET` / `PATCH /admin/app-config` (admin KT §9L).
 - **App:** call on launch (before login too) and on resume after 1 h; `updateRequired` → full-screen "Please update" with `updateUrl` and stop other calls; `message` → banner; Help & support and the blocked-account screen use `support.*` (tel: / WhatsApp / mailto links).
 
-**R23 · Push devices and preferences** — the four calls are built as asked. Differences:
-- **Push isn't delivered yet:** the FCM provider isn't set up (pre-production checklist 2.14). Devices and preferences are stored now and every new in-app notification checks them, so register the token today; pushes start without an app change once FCM is configured.
-- `POST /notifications/devices` `{ token (≥ 10 chars), platform: "android" | "ios", appVersion? }` → **201** new / **200** already known (`lastSeenAt` updated). A token registered by another login **moves** to this login (one phone, the last user). 400 `VALIDATION_FAILED` ("Platform must be android or ios.").
-- `DELETE /notifications/devices/:token` → 200 `{ removed: true | false }` (only this login's tokens; always 200). Call on logout before deleting the tokens.
+**R23 · Push devices and preferences** — preferences are built as asked; **the push token goes with login and refresh instead of separate device calls (rev 32)**. Details:
+- **Push is sent through FCM (rev 32).** The server sends once a Firebase service account is set; until then it only logs. Register the token today; nothing changes on the app when the key goes live.
+- **App setup (rev 32):** use `@react-native-firebase/app` + `@react-native-firebase/messaging` (FCM tokens, **not** Expo push tokens, on both platforms). Put `google-services.json` (Android) and `GoogleService-Info.plist` (iOS) from the CSP Manager Firebase project into the app; Android package / iOS bundle ID must match what is registered there (ask the backend owner). Android 13+: ask `POST_NOTIFICATIONS`; iOS: `requestPermission()` (APNs key is uploaded in Firebase by the backend owner). Create an Android channel with id **`default`** (the server sends `channelId: "default"`, high priority, sound default).
+- **Rev 32: no separate device calls.** `POST /notifications/devices` and `DELETE /notifications/devices/:token` are **removed** (404 now). The token is tied to the login session:
+  - **Login** `POST /auth/login { agentId, password, pushToken, platform, appVersion }`: get the token with `messaging().getToken()` before calling login (if permission was denied or Firebase fails, log in without the three fields).
+  - **Refresh** `POST /auth/refresh { refreshToken, pushToken, platform, appVersion }`: send the current token on every refresh (the app refreshes at least every 15 min). This also covers Firebase rotating the token (`onTokenRefresh`: you can trigger a refresh at once, or let the next one carry it) and the user granting permission later. Without `pushToken` the saved one stays.
+  - **Change password** `POST /auth/change-password { …, pushToken, platform, appVersion }`: every old session ends, so send the token to keep pushes (otherwise the next refresh brings them back).
+  - **Logout** `POST /auth/logout { refreshToken }`: the session's token is removed by the server; then call `messaging().deleteToken()`.
+  - `pushToken` (10–4096 chars) needs `platform` (`android` / `ios`), else 400 `Send the platform (android or ios) with the push token.` `appVersion` ≤ 30 chars.
+  - **Pushes go only to live sessions:** after logout, a session revoked (password change elsewhere, block / suspend, stolen refresh token) or expired (7 days unused), that phone gets nothing more. One phone, the last login: the same token on another login moves there.
+  - The server deletes tokens Firebase reports as dead.
+- **Message shape:** `notification: { title, body }` (same as the in-app item) and `data` (all values are **strings**): `notificationId`, `kind`, and each key of the notification's `data` (objects JSON-encoded). On tap (`onNotificationOpenedApp` / `getInitialNotification`) route by `kind` exactly like the in-app list (§13D) and mark it read with `notificationId`. In the foreground (`onMessage`) Android shows nothing by itself: refresh the badge / list or show your own banner.
+- A push can arrive a second or more after the action (the server sends only once the change is saved).
 - `GET /notifications/preferences` → `{ plan: true, cash, settlements, machines, requests, locked: ["plan"] }` (all `true` until changed). `PATCH` any of `cash`, `settlements`, `machines`, `requests` → same shape; `plan: false` → 400 **`PREFERENCE_LOCKED`**; empty body → 400 `Nothing to change.`
 - Groups today: `plan` = `GENERAL`, `SUBSCRIPTION_*`, `MANDATE_*`, `TRIAL_*` (always on); `cash` = `CASH_ACTIVATION_DIFFERENCE`; `requests` = `BC_UNLINKED`. **`settlements` and `machines` have no notification kinds yet** (KO settlement and "PC offline" notifications aren't built); keep the switches, they apply when those come.
 
@@ -2148,7 +2159,7 @@ Never blocked by the plan (like `/auth/*`). The agent row (`/agents/:agentId`) s
 
 #### R23 · Push notifications: devices and preferences
 
-`POST /notifications/devices` (login) `{ "token": "…", "platform": "android" | "ios", "appVersion": "1.4.0" }` → 201 `Device registered.` (same token again → 200, updates `lastSeenAt`). `DELETE /notifications/devices/:token` (login) → 200 (call on logout). The server sends a push for every §13D notification the user's preferences allow (FCM for Android; APNs via FCM for iOS).
+_(Your rev 30 ask; rev 32 backend: the token goes with `/auth/login` / `/auth/refresh` and `/auth/logout` removes it, see the backend status above. `/notifications/devices` was removed.)_ The server sends a push for every §13D notification the user's preferences allow (FCM for Android; APNs via FCM for iOS).
 
 `GET /notifications/preferences` (login) →
 
@@ -2233,6 +2244,7 @@ Errors: none new (as §11).
 ## 20. Changelog
 
 - 2026-11-08 (rev 32, app team ask) — New §19.6 R25: `services[].lastTransactionAt` in `/dashboard/summary` and a `CIF` receipt type for money transfer, for the new Home "Today's services" card and Service counts screen.
+- 2026-11-11 (rev 32) — Push delivery through FCM (§19.4 R23). **Push token moved onto auth:** optional `pushToken` / `platform` / `appVersion` on `/auth/login`, `/auth/refresh`, `/auth/change-password`; `/auth/logout` removes the session's token; `POST` / `DELETE /notifications/devices` removed; pushes only to live sessions. App Firebase setup (`@react-native-firebase/messaging`, config files, Android channel `default`), push `data` keys (`notificationId`, `kind`, notification data as strings), dead tokens removed by the server.
 - 2026-11-08 (rev 31) — §19.4 R20–R24 **built** (backend status block with every request, response and error, and the differences from the ask: `emailVerified` / `pendingEmail` on the profile, email change returns 202, unlink needs no plan and sets link request `UNLINKED`, `updateAvailable` in `/app/config`, push and activation emails stored but not delivered until FCM / the email provider). New §19.5: receipt `source` and `denominationPending`, pool `agents[].pendingCounts`, ledger `RECEIPT_COUNT`, day close cash in account, agent `sbiUserId`, "Send PC log to support" (`/machines/:machineId/diagnostics`), `BC_UNLINKED`.
 - 2026-11-08 (rev 30) — New §19.4 (app team): endpoints for screens not in the app yet, with request and response: profile `GET` / `PATCH /auth/me` + email verify (R20), BC unlink a CSP (R21), `GET /app/config` support contacts and minimum version (R22), push devices + notification preferences (R23), email the activation code to the agent (R24).
 - 2026-11-08 (rev 29) — New §6C: one checklist of every API change in rev 27–28 (billing fixes + free trial) with request / response, success and failure handling and the screens affected. Cancelling a trial → 400 `TRIAL_CANCEL_NOT_ALLOWED`. §7.1 response now lists `RENEWAL_PENDING`, `subscriptionType`, `trial` and `upgrade.reason: "TRIAL"`.

@@ -36,7 +36,7 @@ export const login = async (req: Request, res: Response) => {
 };
 
 export const refresh = async (req: Request, res: Response) => {
-  const result = await authService.refresh(req.body.refreshToken, clientOf(req));
+  const result = await authService.refresh(req.body.refreshToken, clientOf(req), req.body);
 
   return res.status(200).json(result);
 };

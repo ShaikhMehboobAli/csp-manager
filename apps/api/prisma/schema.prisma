@@ -534,6 +534,9 @@ model UserSession {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  // Push token of the phone this session is on (sent with login / refresh).
+  pushDevices NotificationDevice[]
+
   @@index([userId])
   @@index([expiresAt])
 }
@@ -2849,6 +2852,13 @@ model NotificationDevice {
 
   createdAt DateTime @default(now())
 
+  // The login session this phone's token belongs to. Logout, a revoked or
+  // expired session stops pushes; a deleted session deletes the token.
+  sessionId String?
+
+  session UserSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
   @@index([userId])
 }
 

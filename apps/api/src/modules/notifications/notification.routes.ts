@@ -20,12 +20,6 @@ const listSchema = z.object({
 
 router.use(authMiddleware);
 
-const deviceSchema = z.object({
-  token: z.string().trim().min(10, "Send the push token.").max(4096),
-  platform: z.enum(["android", "ios"], { message: "Platform must be android or ios." }),
-  appVersion: z.string().trim().max(30).optional(),
-});
-
 const preferencesSchema = z
   .object({
     plan: z.boolean().optional(),
@@ -35,21 +29,6 @@ const preferencesSchema = z
     requests: z.boolean().optional(),
   })
   .refine((data) => Object.values(data).some((value) => value !== undefined), "Nothing to change.");
-
-// Push token of this phone (call after login and when FCM rotates it).
-router.post("/devices", async (req: Request, res: Response) => {
-  const body = deviceSchema.parse(req.body);
-  const { created, device } = await new NotificationService(prisma).registerDevice(req.user!.userId, body);
-
-  res.status(created ? 201 : 200).json({ success: true, message: "Device registered.", data: device });
-});
-
-// On logout.
-router.delete("/devices/:token", async (req: Request, res: Response) => {
-  const data = await new NotificationService(prisma).removeDevice(req.user!.userId, req.params.token as string);
-
-  res.status(200).json({ success: true, message: "Device removed.", data });
-});
 
 router.get("/preferences", async (req: Request, res: Response) => {
   const data = await new NotificationService(prisma).getPreferences(req.user!.userId);

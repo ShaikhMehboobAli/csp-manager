@@ -221,12 +221,14 @@ Everything below is built or specified but **not finished for production**. Each
 | 7.12 | **Dev data**: agent `abcd123ac` holds two activations from before the one-activation fix. The dev DB was **reset on 2026-11-08** (migrations + seed only), so this is gone. | DONE | dev DB |
 | 7.13 | **Automated tests** (3.4): the billing / renewal / cash scenarios were checked with rollback scripts only; add them to a real test suite. | OPEN | — |
 | 7.14 | **Free trial clients**: app trial card / banner / start flow (mobile §6B), admin trial settings / list / extend / registry (admin §9J), desktop trial banner and refusals (desktop #33). Backend ready. | OPEN | KT docs |
-| 7.15 | **Push delivery (FCM)**: devices and preferences are stored (`/notifications/devices`, `/notifications/preferences`) and every notification checks them, but `PushService.send` is a stub. Needs the FCM service account (Android; iOS through APNs in FCM) and the send call. | OPEN | 2.14, `push.service.ts` |
+| 7.15 | **Push delivery (FCM)**: built 2026-11-11 with `firebase-admin` (`core/services/fcm.service.ts`; sent after the notification commits; dead tokens deleted; the token comes with `/auth/login` / `/auth/refresh` and is tied to the session, so logout and revoked sessions stop pushes). **Still to do:** (a) dev: service-account JSON in `apps/api/secrets/` + `FIREBASE_SERVICE_ACCOUNT_PATH`; (b) production: a **separate Firebase project** (or at least a separate key), the JSON in the secret store as `FIREBASE_SERVICE_ACCOUNT_JSON`; (c) APNs auth key (.p8) uploaded in Firebase for iOS (needs the Apple Developer account, 6.15); (d) rotate the key if it ever leaves the secret store. | OPEN | 2.14, 6.9, `push.service.ts`, `fcm.service.ts` |
 | 7.16 | **Activation code emails** (`POST /activations/:id/send`) and **profile email-change OTPs** go through the email stub (console). Same provider as 6.x. | OPEN | `email.service.ts` |
 | 7.17 | **Diagnostics storage**: desktop log parts are stored in Postgres (≤ 2 MB each, ≤ 50 per request, deleted after 14 days by `DiagnosticsCleanupJob`). **Decided 2026-11-08: at most the last 3 days of logs per request** (keeps uploads small); move to S3 only if uploads become frequent. | DONE | `diagnostics.service.ts` |
 | 7.18 | **Client work for rev 31 / desktop rev 29**: mobile §19.4 (profile, unlink, app config, push registration, email code) + §19.5; admin §9L (app config, diagnostics); desktop #35–#39 (count needed, day close account, SBI user id, `source`, diagnostics). Backend ready. | OPEN | KT docs |
 
 ## Changelog
+
+- 2026-11-11 — 7.15: FCM push sending built (`firebase-admin`); push token moved onto `/auth/login` / `/auth/refresh` (tied to the session; logout removes it; `/notifications/devices` removed). Dev key is in `apps/api/secrets/`; remaining: production JSON secret and the iOS APNs key. 1.6 marked DONE (GST and invoice number were built with c99df8f).
 
 - 2026-11-07 — Free trial built (4.34; defaults 4.35 and abuse limits 4.36 to decide; clients 7.14).
 - 2026-11-08 — 4.35 and 4.36 decided: launch with the trial defaults; no SMS verification before a trial for now.
