@@ -3,7 +3,9 @@
 **Audience:** the web team building the **Super Admin** console in React / Next.js.
 **Not covered here:** the BC/CSP mobile app → `docs/mobile-app-kt.md` (read its sections 3 and 18 for API conventions, errors and dates; they apply here too); the desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api`.
-**Last updated:** 2026-11-11 (rev 23)
+**Last updated:** 2026-11-12 (rev 24)
+
+> **Rev 24 (2026-11-12): metric values are super-admin only** — `POST` / `PATCH /metrics/values` now refuse BC admins (403). Build the value entry screen in the console (§6).
 
 > **Rev 23 (2026-11-11): new §9M** — a super admin notification inbox: new revoke requests, new link requests and new problem reports now create notifications for every active super admin (`GET /notifications`, `POST /notifications/:id/read`). The super admin's own login also takes the optional push token fields (mobile KT §5.2); the console sends none.
 
@@ -179,10 +181,15 @@ Rules: new prices apply to new purchases; running subscriptions keep what they p
 | `POST /metrics` | `{ code, name, category, source, inputType?, description? }` | SUPER_ADMIN |
 | `PATCH /metrics/:metricId` | `{ name?, category?, source?, inputType?, description? }` | SUPER_ADMIN (code can't change) |
 | `PATCH /metrics/:metricId/status` | `{ isActive: boolean }` | SUPER_ADMIN |
+| `GET /metrics/values?agentId=&metricId=&from=&to=` | | entered values (any CSP) |
+| `POST /metrics/values` | `{ metricId, agentId (a CSP), date (YYYY-MM-DD), value ≥ 0 }` | **SUPER_ADMIN only (rev 24)** → 201 |
+| `PATCH /metrics/values/:valueId` | `{ value }` | **SUPER_ADMIN only (rev 24)** |
 
-Rules: `code` 2–50 chars, `^[A-Z0-9_]+$` (`Code must contain only uppercase letters, numbers, and underscores.`); `name` 2–100; `category` `SOCIAL_SECURITY|TRANSACTION|VISIT|MANUAL|OTHER`; `source` `RECEIPT` (counted from uploaded transactions, matched by `code` to a receipt type/category) or `MANUAL` (BCs enter daily values in the mobile app); `inputType` `COUNT|NUMBER|BOOLEAN`; `description` ≤ 500.
+Rules: `code` 2–50 chars, `^[A-Z0-9_]+$` (`Code must contain only uppercase letters, numbers, and underscores.`); `name` 2–100; `category` `SOCIAL_SECURITY|TRANSACTION|VISIT|MANUAL|OTHER`; `source` `RECEIPT` (counted from uploaded transactions, matched by `code` to a receipt type/category) or `MANUAL` (**the super admin enters daily values here**, rev 24; BCs no longer can); `inputType` `COUNT|NUMBER|BOOLEAN`; `description` ≤ 500.
 
-UI: table with an active toggle; a create/edit form. Warn before deactivating ("BCs can no longer enter values; dashboards stop showing it").
+UI: table with an active toggle; a create/edit form. Warn before deactivating ("values can no longer be entered; dashboards stop showing it").
+
+**Metric values screen (rev 24, new):** pick a CSP (search) and a date → list the active `MANUAL` metrics with number inputs → `POST /metrics/values` per metric (no bulk endpoint). An existing value for that CSP and date → 400 `Metric value already exists for this CSP and date.` → edit it with `PATCH /metrics/values/:valueId` (find the id with `GET /metrics/values?agentId=&from=&to=`). Other errors: `Metric not found.`, `Metric is inactive.`, `Values can only be entered manually for manual metrics.`, `Manual metric values can only be assigned to a CSP.`
 
 ## 7. Agents directory
 
@@ -619,6 +626,8 @@ The data exists today: `Subscription` (`ownerType`, `ownerId`, `planId`, `status
 - **Machines dropped:** a renewal with fewer machines (5 → 3) isn't a lost subscription but does lose 2 machines. This shows on the home page as its own figure, `machinesDropped`, with a list of the owners who reduced.
 
 ## 13. Changelog
+
+- 2026-11-12 (rev 24) — Metric values: super admin only (`POST` / `PATCH /metrics/values`); new value entry screen in §6.
 
 - 2026-11-11 (rev 23) — §9M super admin notifications (`ACTIVATION_REVOKE_REQUESTED`, `BC_LINK_REQUESTED`, `RECEIPT_REPORT_RAISED`) with the bell / polling guidance; push row in §9L.3 updated.
 

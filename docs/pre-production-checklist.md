@@ -213,7 +213,7 @@ Everything below is built or specified but **not finished for production**. Each
 | 7.4 | **Refunds for late charges**: a bank success that arrives after the plan was replaced by a new purchase, or for a period another attempt already renewed, is stored as `SUCCESS` with `failureReason` "…refund due." — no automatic refund yet; the super admin must refund by hand (Razorpay refund API later). | OPEN | `completeRenewal` |
 | 7.5 | **Gateway calls inside DB transactions**: charge / cancel / create mandate run inside the 15 s transaction holding the subscription row lock. With Razorpay, use short timeouts and idempotency keys (payment id), or move the call outside the transaction. | OPEN | `subscription-billing.service.ts` |
 | 7.6 | **Single renewal worker**: the every-minute renewal job runs in every API process (1.11); the row lock prevents double charges but run it in one worker in production. | OPEN | `jobs/subscription-renewal.job.ts` |
-| 7.7 | **Email provider** for agent OTPs: **Resend, built 2026-11-11**. Still to do: verify the sending domain in Resend (SPF / DKIM DNS records) and set `EMAIL_FROM` on it; production `RESEND_API_KEY` in the secret store (a separate key from dev). Without a verified domain Resend only delivers to the account owner's own address. | OPEN | `core/services/email.service.ts` |
+| 7.7 | **Email provider: Resend, live 2026-11-12** (domain `cspmanager.in` verified, DKIM / SPF / DMARC `p=none`). Still to do: a separate production `RESEND_API_KEY` (send-only) in the secret store; `EMAIL_DAILY_LIMIT` = the plan's cap; after a few weeks of clean sending, DMARC `p=quarantine`. | OPEN | `core/services/email.service.ts` |
 | 7.8 | **Data cleanup** (`npm run cleanup:keep-cash -- --confirm [--with-billing]`) not run yet; run on dev when the owner says so (4.32). | OPEN | `prisma/scripts/cleanup-keep-cash.ts` |
 | 7.9 | **Peri service / Morpho RD restart** on SBI kiosk errors (desktop item 30.8): waiting for the owner's details (error texts, service names, when to restart). | OPEN (owner) | desktop doc #30.8 |
 | 7.10 | **Client work for this release**: desktop items #25–#32 (block screens, shared-PC login, activation pre-fill, Adjust requests, automation fixes), mobile rev 26–27 (§0, §6A, §7, §9.1, §13A.10–13, §13D), admin rev 18–19 (§5 price-change confirm, §9G–§9I). Backend is ready; the apps aren't built yet. | OPEN | KT docs |
@@ -230,6 +230,8 @@ Everything below is built or specified but **not finished for production**. Each
 | 7.21 | **Hosting choice** (6.1 / 6.4): proposed DigitalOcean BLR1 (App Platform 1 GB ≈ $10–12 + Managed PostgreSQL 1 GB ≈ $15; ≈ ₹2,900/month with GST, domain and free tiers). Keep Neon for dev. Waiting on the owner and the load test (7.19). | DECIDE | deployment |
 
 ## Changelog
+
+- 2026-11-12 — Domain `cspmanager.in` verified in Resend; first real email delivered (inbox, from `no-reply@cspmanager.in`). Onboarding email on code assignment; resend timers on every code; central email limits (30 s same kind, 10 per address per hour, optional `EMAIL_DAILY_LIMIT`) with an `EmailLog` table kept 30 days. Production: set `EMAIL_DAILY_LIMIT` to the Resend plan's daily cap (free plan: 100).
 
 - 2026-11-11 — Added 7.19 load test (TODO, owner will pick it up later), 7.20 lighter heartbeat, 7.21 hosting proposal (DigitalOcean Bangalore, ≈ ₹2,900/month).
 
