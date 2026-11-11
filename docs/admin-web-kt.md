@@ -3,7 +3,9 @@
 **Audience:** the web team building the **Super Admin** console in React / Next.js.
 **Not covered here:** the BC/CSP mobile app → `docs/mobile-app-kt.md` (read its sections 3 and 18 for API conventions, errors and dates; they apply here too); the desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api`.
-**Last updated:** 2026-11-08 (rev 22)
+**Last updated:** 2026-11-11 (rev 23)
+
+> **Rev 23 (2026-11-11): new §9M** — a super admin notification inbox: new revoke requests, new link requests and new problem reports now create notifications for every active super admin (`GET /notifications`, `POST /notifications/:id/read`). The super admin's own login also takes the optional push token fields (mobile KT §5.2); the console sends none.
 
 > **Rev 22 (2026-11-08): new §9L** — app config (support contacts, minimum app version: `GET` / `PATCH /admin/app-config`), desktop log uploads (`/admin/diagnostics`, `POST /admin/machines/:machineId/diagnostics`), and what the app / desktop requirements changed in data the console shows (BC unlink → link request `UNLINKED`, agent `sbiUserId`, receipt `source` / "Count needed", day close cash in account, ledger `RECEIPT_COUNT`, own profile `/auth/me`).
 
@@ -503,7 +505,25 @@ The PC uploads its desktop log (no personal data: page structure, steps, masked 
 | Cash ledger viewer (§9H) | new type `RECEIPT_COUNT` (the agent entered a receipt's notes later; drawer only) | label "Notes counted" |
 | Day closes | `system.cashInAccount`, `counted.cashInAccount`, `accountDifference` (optional; the KO's SBI reading) | second difference column |
 | Own profile | `GET` / `PATCH /auth/me` and `POST /auth/me/email/verify` work for the super admin too (mobile KT §19.4 R20) | optional "My profile" page |
-| Push | phones register push tokens (`NotificationDevice`) and preferences; nothing is sent until FCM is configured (pre-production checklist) | nothing to build |
+| Push | sent through FCM since rev 23 / mobile rev 32; the phone's token comes with `/auth/login` and `/auth/refresh` (the console sends none) | nothing to build |
+
+## 9M. Super admin notifications (rev 23) — READY
+
+Every **active** super admin gets an in-app notification when:
+
+| `kind` | When | `data` | Open on click |
+|---|---|---|---|
+| `ACTIVATION_REVOKE_REQUESTED` | a CSP / BC asked to revoke an activation | `requestId, requestNumber, activationId, activationCode, ownerId, machineCode` | Revoke requests → that request (§3) |
+| `BC_LINK_REQUESTED` | a BC asked to link a CSP (message says when the CSP is linked to another BC) | `requestId, bcId, cspAgentId, isConflict` | Link requests → that request (§4) |
+| `RECEIPT_REPORT_RAISED` | an owner reported a problem on a receipt | `reportId, receiptId, ownerAgentId, reason` | Problem reports → that report (§9F) |
+
+Calls (same as the app, any login):
+- `GET /notifications?unreadOnly=true|false&page=&limit=` → `{ items: [{ id, title, message, type, kind, data, isRead, readAt, createdAt }], unread, pagination }`.
+- `POST /notifications/:id/read` (`:id` = `all` marks every unread one) → 200.
+
+**UI:** a bell in the header with the `unread` count; poll `GET /notifications?unreadOnly=true&limit=1` every 60 s (the console has no push). Clicking an item marks it read and opens the screen above. The pending-queue polling in §3 / §4 can use this count instead.
+
+What owners now get (for support questions; mobile KT §13D): revoke approved / rejected, direct revoke, link approved / rejected (BC) and "linked to a BC" (CSP), problem report resolved / rejected. Approve / reject / revoke / resolve responses are unchanged.
 
 ## 10. Other endpoints the console can use
 
@@ -599,6 +619,8 @@ The data exists today: `Subscription` (`ownerType`, `ownerId`, `planId`, `status
 - **Machines dropped:** a renewal with fewer machines (5 → 3) isn't a lost subscription but does lose 2 machines. This shows on the home page as its own figure, `machinesDropped`, with a list of the owners who reduced.
 
 ## 13. Changelog
+
+- 2026-11-11 (rev 23) — §9M super admin notifications (`ACTIVATION_REVOKE_REQUESTED`, `BC_LINK_REQUESTED`, `RECEIPT_REPORT_RAISED`) with the bell / polling guidance; push row in §9L.3 updated.
 
 - 2026-11-08 (rev 22) — New §9L: `GET` / `PATCH /admin/app-config` (support contacts, links, min / latest app version per platform, banner); desktop log requests and downloads (`POST /admin/machines/:machineId/diagnostics`, `GET` / `DELETE /admin/diagnostics/:requestId`, `GET …/parts/:part`); data changes: link request `UNLINKED`, agent `sbiUserId`, receipt `source` / `denominationPending`, ledger `RECEIPT_COUNT`, day close cash in account, own profile.
 - 2026-11-08 (rev 21) — New §9K: one checklist of every API change in rev 19–20 (price change → new mandates, BC-only grace, renewal in progress, refund due, the six free trial endpoints) with request / response, success and failure handling and the screens affected. `mandateFailures` is a count.

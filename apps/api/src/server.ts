@@ -10,6 +10,8 @@ import DiagnosticsCleanupJob from "./jobs/diagnostics-cleanup.job";
 import TrialReminderJob from "./jobs/trial-reminder.job";
 import CspActivityTimeoutJob from "./jobs/csp-activity-timeout.job";
 import ReceiptRetentionJob from "./jobs/receipt-retention.job";
+import MachineOfflineAlertJob from "./jobs/machine-offline-alert.job";
+import DayCloseReminderJob from "./jobs/day-close-reminder.job";
 import "./core/utils/event-loop-monitor";
 
 async function bootstrap() {
@@ -31,6 +33,8 @@ async function bootstrap() {
     CspActivityTimeoutJob.start();
 
     ReceiptRetentionJob.start();
+    MachineOfflineAlertJob.start();
+    DayCloseReminderJob.start();
 
     app.listen(env.port, "0.0.0.0", () => {
       Logger.success(`🚀 CSP Manager API running on port ${env.port}`);

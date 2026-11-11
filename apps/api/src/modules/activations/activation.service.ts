@@ -1,4 +1,6 @@
 import { withTransaction, withReadOnly } from "../../core/database/transaction";
+import NotificationService from "../notifications/notification.service";
+import { NotificationKind } from "../../generated/prisma/enums";
 import { withVisiblePassword } from "./activation-password-exposure";
 import { PrismaDb } from "../../core/database/prisma.types";
 import ActivationRepository from "./activation.repository";
@@ -281,6 +283,15 @@ export default class ActivationService {
         activation.id,
         user.userId,
       );
+
+      const machineCode = activation.machine?.machineCode ?? null;
+
+      await new NotificationService(tx).notifyAgent(activation.subscription.ownerId, {
+        title: "Activation revoked",
+        message: `Support revoked ${activation.activationCode}${machineCode ? `; the PC ${machineCode} has stopped working` : ""}. Assign the code again to use it on another PC.`,
+        kind: NotificationKind.ACTIVATION_REVOKED,
+        data: { activationId: activation.id, activationCode: activation.activationCode, machineCode },
+      });
 
       return {
         success: true,

@@ -2,7 +2,9 @@
 
 **Audience:** the engineer/agent implementing changes in the C# desktop repo (`ReceiptWarcher/`).
 **Source of truth for the backend:** `csp-manager/apps/api` (Express + Prisma). This doc lists what the desktop must add, modify, or remove to match the backend.
-**Last updated:** 2026-11-08 (rev 29)
+**Last updated:** 2026-11-11 (rev 30)
+
+> **Rev 30 (2026-11-11): new #40 "close the day" reminder** — heartbeat `dayCloseReminder` (from 30 min before the CSP's closing time, or 18:00 when none is set, until the logged-in cash agent closes the day). Also: the owner's app is told when this PC sends **no heartbeat for 1 hour** (once per outage), so keep the heartbeat running whenever the service runs.
 
 > **Rev 29 (2026-11-08): your asks 7–11 (desktop README, 2026-11-08) are built — items #35–#39.** #35 cash receipts without notes ("Count needed": `denominationPending`, `GET` / `POST /machines/runtime/cash/receipt-counts`, heartbeat `cash.pendingCounts`), #36 close the day with cash in account (`countedCashInAccount`), #37 SBI kiosk user id (`sbiUserId` in `accessAgents`, `activity/start` accepts it), #38 receipt `source`, #39 diagnostics log upload (heartbeat `diagnostics`, `POST /machines/runtime/diagnostics`). Each item says what is exactly as you asked and what differs.
 
@@ -1478,6 +1480,28 @@ A retry of the same `part` replaces it (safe after a timeout). Parts are kept **
 
 ---
 
+## 40. "Close the day" reminder and offline alerts (rev 30) — READY
+
+**Owner rule (2026-11-11):** remind every agent to close the day **30 minutes before the CSP's closing time** (team settings `workdayEnd`, set by the CSP in the app), or **at 18:00 IST** when the CSP set none. The CSP's app also gets one "Day not closed" notification per agent that worked today and hasn't closed.
+
+**Heartbeat** (`POST /machines/runtime/heartbeat`, Q2) adds:
+
+```json
+"dayCloseReminder": {
+  "closeTime": "18:00",
+  "remindAt": "2026-11-11T12:30:00.000Z",
+  "overdue": true,
+  "message": "It's past 18:00. Please close the day: count your cash and close it in Cash."
+}
+```
+
+- `null` = nothing to show: before the reminder time, the day is already closed (`POST /cash/day-close` done) by the **cash agent** (`cashAgentId`, the SBI kiosk / email OTP login), no cash pool, or the plan has no cash management.
+- Non-null: show a **Windows toast** once (per agent per day, remember it locally) with `message`, and a **banner** on the Cash screen with a "Close day" button until it turns `null`. `overdue: false` = before `closeTime` ("Please close the day by 18:00"); `overdue: true` = after it ("It's past 18:00…"); you may show the toast again when it flips to `overdue: true`.
+- It follows the cash login: when another agent logs in to cash on this PC, the field is about that agent.
+- Changes reach the PC within one heartbeat (60 s). Nothing new to call; closing the day is the existing `POST /cash/day-close` (#36).
+
+**Offline alert (no desktop work):** when this PC sends no heartbeat for **1 hour**, the owner (CSP / BC) gets a "PC offline" notification in the app (once per outage; the next heartbeat re-arms it). Keep the service heartbeat running whenever the PC is on, also when no one is logged in; a PC that is switched off at night will alert once that night.
+
 ## A. Conventions (all endpoints)
 
 - **Base URL:** `ConfigService.ApiBaseUrl` + `/api/v1`. HTTPS in production. Never hard-code hosts.
@@ -1905,7 +1929,7 @@ How to use:
 - `minimumVersion` > current → block automation, offer `downloadUrl`; `latestWatcherVersion` > current → "update available" (item #18).
 - The heartbeat also keeps the machine session alive, which Q7/Q8 need.
 - `isTrial` → trial banner "Free trial — ends <subscriptionEndDate>" (item #33/#34).
-- `cash.pendingCounts` → "Count needed" badge (#35); `accessAgents[].sbiUserId` → SBI login matching (#37); `diagnostics` → log upload (#39).
+- `cash.pendingCounts` → "Count needed" badge (#35); `accessAgents[].sbiUserId` → SBI login matching (#37); `diagnostics` → log upload (#39); `dayCloseReminder` → "close the day" toast + banner (#40).
 
 ### Q3. `POST /api/v1/machines/runtime/entitlements`
 
@@ -2047,6 +2071,8 @@ Response 200: `{ approved, next }` (next = step 2 or null) or `{ cancelled, next
 ---
 
 ## Changelog
+
+- 2026-11-11 (rev 30) — #40: heartbeat `dayCloseReminder` (30 min before the CSP's closing time, or 18:00; until the cash agent closes the day); the owner's app gets "PC offline" after 1 hour without a heartbeat.
 
 - 2026-11-08 (rev 29, update) — #39: logs only for the last 3 days (`DIAGNOSTICS_RANGE_TOO_OLD`); #35: the Adjust-first rule confirmed by the owner.
 - 2026-11-08 (rev 29) — Your asks 7–11 built: #35 cash receipts without notes (`denominationPending`, `cash.denomination: "PENDING"` on upload, `GET` / `POST /machines/runtime/cash/receipt-counts`, ledger `RECEIPT_COUNT`, heartbeat `cash.pendingCounts`, cash screen `pendingCountAmount` and `today.transactions[].denominationPending`); #36 day close `countedCashInAccount` / `accountDifference`; #37 `sbiUserId` in `accessAgents` and on `activity/start` (response adds `agentId`); #38 receipt `source`; #39 diagnostics (heartbeat / entitlements `diagnostics`, `POST /machines/runtime/diagnostics`, 2 MB parts, 14 days).

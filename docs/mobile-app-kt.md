@@ -7,6 +7,10 @@
 
 > Describes the backend once PRs #3–#8 are merged into `development`. Where an older build behaves differently it says so.
 >
+> **Rev 32 (2026-11-11): `MACHINE_OFFLINE`** (a PC with no heartbeat for 1 hour) and **`CASH_DAY_NOT_CLOSED`** (30 min before the team's closing time, or 18:00): §13D.
+>
+> **Rev 32 (2026-11-11): 12 new notification kinds** for the app (revoke approved / rejected / revoked, link approved / rejected / linked, KO settlements, KO cash requests, KO day close differences, problem report answered): table in §13D, push groups in §19.4 R23.
+>
 > **Rev 32 (2026-11-11): push is now sent through FCM, and the push token goes with login / refresh** (`pushToken`, `platform`, `appVersion` on `/auth/login`, `/auth/refresh`, `/auth/change-password`; `/auth/logout` removes it). `POST` / `DELETE /notifications/devices` are **removed**. App-side Firebase setup and the push message shape: §19.4 R23.
 >
 > **Rev 31 (2026-11-08): your §19.4 asks R20–R24 are built** — profile (`/auth/me`), BC unlink, `/app/config`, push devices + preferences, email the activation code. See **§19.4 "Backend status (rev 31)"** for what is exactly as you asked and what differs. **New §19.5:** app-side effects of this release's desktop work (receipt `source`, "Count needed" receipts, KO "SBI kiosk user ID", day close cash in account, "Send PC log to support", BC unlinked).
@@ -1762,7 +1766,7 @@ Per agent of the CSP (the CSP and its KOs), from their PCs:
 
 ## 13D. Notifications (rev 26)
 
-In-app notifications for the CSP (and BC) login. Push isn't built yet (pre-production checklist 2.14): poll `GET /notifications?unreadOnly=true&limit=1` every 60 s while the app is open (and on resume) for the badge.
+In-app notifications for the CSP (and BC) login. Every notification is also sent as a push (rev 32, §19.4 R23) when the user's settings allow it; still refresh the badge with `GET /notifications?unreadOnly=true&limit=1` on resume and when a push arrives in the foreground.
 
 | Call | Notes |
 |---|---|
@@ -1770,6 +1774,31 @@ In-app notifications for the CSP (and BC) login. Push isn't built yet (pre-produ
 | `POST /notifications/:id/read` | mark one read; `:id` = `all` marks every unread one |
 
 `kind` → where to go on tap: `CASH_ACTIVATION_DIFFERENCE` → Cash tab, that agent (`data.agentId`); `SUBSCRIPTION_RENEWED` / `SUBSCRIPTION_RENEWAL_FAILED` / `SUBSCRIPTION_LAPSED` / `SUBSCRIPTION_CANCELLED` / `MANDATE_REVOKED` / `MANDATE_REPLACED` (rev 27) / `TRIAL_STARTED` / `TRIAL_ENDING` / `TRIAL_EXTENDED` (rev 28) → Subscription screen (refetch `/subscriptions/access`); `BC_UNLINKED` (rev 31, CSP: a BC unlinked it) → nothing; `GENERAL` → nothing. Push for these: §19.4 R23.
+
+**New kinds (rev 32)** — who gets them, `data` keys, the push setting (group) that controls them, and where to go on tap:
+
+| `kind` | To | When | `data` | Group | On tap |
+|---|---|---|---|---|---|
+| `ACTIVATION_REVOKE_APPROVED` | CSP / BC owner | the super admin approved its revoke request | `requestId, requestNumber, activationId, activationCode, machineCode` | requests | Activations → that code (refetch; it's unassigned now) |
+| `ACTIVATION_REVOKE_REJECTED` | CSP / BC owner | its revoke request was rejected (message has the reason) | `requestId, requestNumber, activationId, activationCode` | requests | Revoke requests list |
+| `ACTIVATION_REVOKED` | CSP / BC owner | the super admin revoked a code directly (the PC stops working) | `activationId, activationCode, machineCode` | machines | Activations → that code |
+| `BC_LINK_APPROVED` | BC | its link request was approved | `requestId, cspAgentId` | requests | BC → that CSP |
+| `BC_LINK_REJECTED` | BC | its link request was rejected (message has the reason) | `requestId, cspAgentId` | requests | Link requests list |
+| `BC_LINKED` | CSP | it is now linked to a BC | `bcId, bcName` | requests | nothing |
+| `CASH_SETTLEMENT_STARTED` | CSP | a KO started a settlement (step 1, or the single "left in bank → hand" step) | `agentId, settlementId, direction, amount` | settlements | Cash → that KO → settlements |
+| `CASH_SETTLEMENT_COMPLETED` | CSP | a KO finished the last step (message says what was left in bank) | `agentId, settlementId (first step's id), direction, amount, settledAmount` | settlements | same |
+| `CASH_SETTLEMENT_CANCELLED` | CSP | a KO cancelled an open step (money went back) | `agentId, settlementId, direction, amount` | settlements | same |
+| `CASH_REQUEST_RAISED` (`type: WARNING`) | CSP | a KO asked to change its cash in hand | `agentId, requestId, systemCashInHand, requestedCashInHand` | cash | Cash → requests → that request (approve / reject) |
+| `CASH_DAY_CLOSE_DIFFERENCE` (`type: WARNING`) | CSP | a KO closed the day short / over, or its cash in account reading differs | `agentId, dayCloseId, date (YYYY-MM-DD), difference, accountDifference` | cash | Cash → that KO → day closes |
+| `MACHINE_OFFLINE` (`type: WARNING`) | CSP / BC owner | a PC sent no heartbeat for **1 hour** (any time of day; once per outage, again after it comes back and drops again) | `machineId, machineCode, machineName, agentId, activationCode, lastHeartbeatAt` | machines | Machines → that PC |
+| `CASH_DAY_NOT_CLOSED` (`type: WARNING`) | CSP | an agent (a KO or the CSP itself) that worked today hasn't closed the day by the reminder time: **30 min before the team's closing time** (`/team/settings` `workdayEnd`), or **18:00** when none is set; once per agent per day | `agentId, date, closeTime, remindedAt` | cash | Cash → that agent (the desktop shows its own reminder) |
+| `RECEIPT_REPORT_RESOLVED` / `RECEIPT_REPORT_REJECTED` | whoever reported | the super admin closed its problem report (message = "What was done") | `reportId, receiptId, status` | requests | My reports → that report |
+
+- Money values in `data` are strings with 2 decimals (`"1000.00"`), like everywhere else. In a push every `data` value is a string (§19.4 R23).
+- Only KO actions notify the CSP; the CSP's own desktop actions don't.
+- `ACTIVATION_REVOKE_REQUESTED`, `BC_LINK_REQUESTED`, `RECEIPT_REPORT_RAISED` go to the super admin only (admin console); the app never receives them.
+- Group `machines` has `ACTIVATION_REVOKED` and `MACHINE_OFFLINE`; `settlements` has the three settlement kinds; `cash` adds `CASH_DAY_NOT_CLOSED`.
+- Team settings screen: tell the CSP that "Closing time" also sets the day-close reminder (30 min before; 18:00 when empty).
 
 ## 14. Reports
 
@@ -2099,7 +2128,7 @@ Differences from your ask:
 - **Message shape:** `notification: { title, body }` (same as the in-app item) and `data` (all values are **strings**): `notificationId`, `kind`, and each key of the notification's `data` (objects JSON-encoded). On tap (`onNotificationOpenedApp` / `getInitialNotification`) route by `kind` exactly like the in-app list (§13D) and mark it read with `notificationId`. In the foreground (`onMessage`) Android shows nothing by itself: refresh the badge / list or show your own banner.
 - A push can arrive a second or more after the action (the server sends only once the change is saved).
 - `GET /notifications/preferences` → `{ plan: true, cash, settlements, machines, requests, locked: ["plan"] }` (all `true` until changed). `PATCH` any of `cash`, `settlements`, `machines`, `requests` → same shape; `plan: false` → 400 **`PREFERENCE_LOCKED`**; empty body → 400 `Nothing to change.`
-- Groups today: `plan` = `GENERAL`, `SUBSCRIPTION_*`, `MANDATE_*`, `TRIAL_*` (always on); `cash` = `CASH_ACTIVATION_DIFFERENCE`; `requests` = `BC_UNLINKED`. **`settlements` and `machines` have no notification kinds yet** (KO settlement and "PC offline" notifications aren't built); keep the switches, they apply when those come.
+- Groups (rev 32): `plan` = `GENERAL`, `SUBSCRIPTION_*`, `MANDATE_*`, `TRIAL_*` (always on); `cash` = `CASH_ACTIVATION_DIFFERENCE`, `CASH_REQUEST_RAISED`, `CASH_DAY_CLOSE_DIFFERENCE`, `CASH_DAY_NOT_CLOSED`; `settlements` = `CASH_SETTLEMENT_STARTED` / `_COMPLETED` / `_CANCELLED`; `machines` = `ACTIVATION_REVOKED`, `MACHINE_OFFLINE`; `requests` = `BC_UNLINKED`, `BC_LINKED`, `BC_LINK_APPROVED` / `_REJECTED`, `ACTIVATION_REVOKE_APPROVED` / `_REJECTED`, `RECEIPT_REPORT_RESOLVED` / `_REJECTED`. Full list with `data` and tap targets: §13D. A switched-off group still shows in the in-app list; only the push is skipped.
 
 **R24 · Email the activation code** — `POST /activations/:activationId/send` (CSP_ADMIN / BC_ADMIN; needs a running plan, like regenerate) `{ to?: "agent" | "me" }` → 200 `Code sent to <email>.` `data: { sentTo, sentAt, activationCode }` as asked. Differences:
 - **The email isn't delivered yet** (email provider pending, checklist): the server makes the fresh password and records the send; in development read the password from `GET /activations` (`activationPassword`, dev only).
@@ -2244,6 +2273,8 @@ Errors: none new (as §11).
 ## 20. Changelog
 
 - 2026-11-08 (rev 32, app team ask) — New §19.6 R25: `services[].lastTransactionAt` in `/dashboard/summary` and a `CIF` receipt type for money transfer, for the new Home "Today's services" card and Service counts screen.
+- 2026-11-11 (rev 32) — `MACHINE_OFFLINE` (1 hour without a heartbeat, once per outage) and `CASH_DAY_NOT_CLOSED` (30 min before `workdayEnd`, else 18:00; once per agent per day).
+- 2026-11-11 (rev 32) — New notification kinds (§13D table): `ACTIVATION_REVOKE_APPROVED` / `_REJECTED`, `ACTIVATION_REVOKED`, `BC_LINK_APPROVED` / `_REJECTED`, `BC_LINKED`, `CASH_SETTLEMENT_STARTED` / `_COMPLETED` / `_CANCELLED`, `CASH_REQUEST_RAISED`, `CASH_DAY_CLOSE_DIFFERENCE`, `RECEIPT_REPORT_RESOLVED` / `_REJECTED`; push groups `settlements` and `machines` now used.
 - 2026-11-11 (rev 32) — Push delivery through FCM (§19.4 R23). **Push token moved onto auth:** optional `pushToken` / `platform` / `appVersion` on `/auth/login`, `/auth/refresh`, `/auth/change-password`; `/auth/logout` removes the session's token; `POST` / `DELETE /notifications/devices` removed; pushes only to live sessions. App Firebase setup (`@react-native-firebase/messaging`, config files, Android channel `default`), push `data` keys (`notificationId`, `kind`, notification data as strings), dead tokens removed by the server.
 - 2026-11-08 (rev 31) — §19.4 R20–R24 **built** (backend status block with every request, response and error, and the differences from the ask: `emailVerified` / `pendingEmail` on the profile, email change returns 202, unlink needs no plan and sets link request `UNLINKED`, `updateAvailable` in `/app/config`, push and activation emails stored but not delivered until FCM / the email provider). New §19.5: receipt `source` and `denominationPending`, pool `agents[].pendingCounts`, ledger `RECEIPT_COUNT`, day close cash in account, agent `sbiUserId`, "Send PC log to support" (`/machines/:machineId/diagnostics`), `BC_UNLINKED`.
 - 2026-11-08 (rev 30) — New §19.4 (app team): endpoints for screens not in the app yet, with request and response: profile `GET` / `PATCH /auth/me` + email verify (R20), BC unlink a CSP (R21), `GET /app/config` support contacts and minimum version (R22), push devices + notification preferences (R23), email the activation code to the agent (R24).
