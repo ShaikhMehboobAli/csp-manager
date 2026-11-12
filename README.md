@@ -414,13 +414,15 @@ cd /home/cspmanager/apps/csp-manager
 
 ### What `deploy.sh` does automatically:
 
-1. Performs `git pull` to fetch the latest code.
-2. Installs packages in `apps/api` (`npm install --include=dev`).
-3. Re-generates Prisma client via `npx prisma generate`.
-4. Applies pending database migrations safely without seeding (`npx prisma migrate deploy`).
-5. Builds fresh TypeScript API code into `dist/` with `npm run build`.
-6. Reloads/starts PM2 seamlessly with updated environment variables (`pm2 reload ecosystem.config.js --env production --update-env`).
-7. Checks for `apps/web` (automatically builds and starts frontend once frontend code is added, gracefully skipped for now).
+1. Loads **NVM** and activates the Node.js version defined in `.nvmrc` (v24).
+2. Performs `git pull` to fetch the latest code.
+3. Validates that `apps/api/.env` exists and contains a valid `DATABASE_URL`.
+4. Installs packages in `apps/api` (`npm install --include=dev`).
+5. Re-generates Prisma client via `npx prisma generate`.
+6. Applies pending database migrations safely without seeding (`npx prisma migrate deploy`).
+7. Builds fresh TypeScript API code into `dist/` with `npm run build`.
+8. Reloads/starts PM2 seamlessly with updated environment variables (`pm2 reload ecosystem.config.js --env production --update-env`).
+9. Checks for `apps/web` (automatically builds and starts frontend once frontend code is added, gracefully skipped for now).
 
 ---
 
