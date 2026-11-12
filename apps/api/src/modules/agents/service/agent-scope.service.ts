@@ -2,17 +2,28 @@ import { PrismaDb } from "../../../core/database/prisma.types";
 import { ForbiddenError } from "../../../core/errors/ForbiddenError";
 import { CurrentUser } from "../../../core/types/auth.types";
 
-import { AgentType, UserRole } from "../../../generated/prisma/enums";
+import {
+  AgentType,
+  SubscriptionOwnerType,
+  UserRole,
+} from "../../../generated/prisma/enums";
 import { AgentRepository } from "../repository/agent.repository";
+import SubscriptionRepository from "../../subscriptions/subscription.repository";
 
 export default class AgentScopeService {
   private readonly repository: AgentRepository;
+  private readonly subscriptionRepository: SubscriptionRepository;
 
   constructor(db: PrismaDb) {
     this.repository = new AgentRepository(db);
+    this.subscriptionRepository = new SubscriptionRepository(db);
   }
 
-  async getAgentScope(user: CurrentUser): Promise<string[]> {
+  /**
+   * The agents the user may see. `includeInactive`: also INACTIVE ones, for
+   * managing agents (list, detail, reactivate); data screens leave them out.
+   */
+  async getAgentScope(user: CurrentUser, includeInactive = false): Promise<string[]> {
     switch (user.role) {
       case UserRole.SUPER_ADMIN:
         return [];
@@ -21,7 +32,7 @@ export default class AgentScopeService {
       //     return [user.agentId];
 
       case UserRole.CSP_ADMIN: {
-        const koAgents = await this.repository.getChildAgents([user.agentId]);
+        const koAgents = await this.repository.getChildAgents([user.agentId], undefined, includeInactive);
 
         return [user.agentId, ...koAgents.map((agent) => agent.agentId)];
       }
@@ -31,11 +42,9 @@ export default class AgentScopeService {
          * Step 1
          * Fetch all CSPs under BC
          */
-        const cspAgents = await this.repository.getCspAgents(
-          //   [user.agentId],
-          //   AgentType.CSP,
-          user.agentId,
-        );
+        const linkedCsps = await this.repository.getCspAgents(user.agentId, includeInactive);
+
+        const cspAgents = await this.withVisibleRequestLinks(linkedCsps);
 
         /**
          * Step 2
@@ -47,6 +56,7 @@ export default class AgentScopeService {
             : await this.repository.getChildAgents(
                 cspAgents.map((agent) => agent.agentId),
                 AgentType.KO,
+                includeInactive,
               );
 
         const scope = [
@@ -64,6 +74,54 @@ export default class AgentScopeService {
 
       default:
         return [user.agentId];
+    }
+  }
+
+  /**
+   * CSPs linked through an approved BC link request (BC ₹799 plan) stay
+   * linked, but the BC sees their data only while the CSP's own subscription
+   * is active.
+   */
+  private async withVisibleRequestLinks<
+    T extends { agentId: string; bcLinkedByRequest: boolean },
+  >(csps: T[]): Promise<T[]> {
+    const requestLinked = csps
+      .filter((csp) => csp.bcLinkedByRequest)
+      .map((csp) => csp.agentId);
+
+    if (requestLinked.length === 0) {
+      return csps;
+    }
+
+    const subscribed =
+      await this.subscriptionRepository.findOwnerIdsWithActiveSubscription(
+        SubscriptionOwnerType.CSP,
+        requestLinked,
+      );
+
+    return csps.filter(
+      (csp) => !csp.bcLinkedByRequest || subscribed.has(csp.agentId),
+    );
+  }
+
+  /**
+   * The agents a selected agent stands for, inside the caller's scope: a CSP
+   * means the CSP and its KOs; a KO (or any other agent) means itself.
+   */
+  async expandSelection(agentId: string, scope: string[]): Promise<string[]> {
+    this.ensureAgentAccessible(agentId, scope);
+
+    const kos = await this.repository.getChildAgents([agentId], AgentType.KO);
+
+    const unit = [agentId, ...kos.map((agent) => agent.agentId)];
+
+    // Empty scope = SUPER_ADMIN (all agents).
+    return scope.length === 0 ? unit : unit.filter((id) => scope.includes(id));
+  }
+
+  ensureAgentsAccessible(requestedAgentIds: string[], allowedAgentIds: string[]) {
+    for (const agentId of requestedAgentIds) {
+      this.ensureAgentAccessible(agentId, allowedAgentIds);
     }
   }
 

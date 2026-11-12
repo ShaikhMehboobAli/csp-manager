@@ -29,6 +29,8 @@ export default class MachineHeartbeatRepository {
         lastTransactionAt: data.lastTransactionAt,
         lastHeartbeatAt: new Date(),
         isOnline: true,
+        // Back online: the next outage alerts the owner again.
+        offlineAlertAt: null,
       },
     });
   }
@@ -45,6 +47,8 @@ export default class MachineHeartbeatRepository {
       data: {
         lastHeartbeatAt: new Date(),
         isOnline: true,
+        // Back online: the next outage alerts the owner again.
+        offlineAlertAt: null,
       },
     });
   }

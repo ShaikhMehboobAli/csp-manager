@@ -7,8 +7,22 @@ import { ReportFilter } from "../report.dto";
 import {
   AgentType,
   ReceiptStatus,
+  ReceiptType,
   TransactionCategory,
 } from "../../../generated/prisma/enums";
+
+export type SocialSecurityScheme = "PMJJBY" | "PMSBY" | "APY" | "OTHER";
+
+function socialSecurityScheme(receiptType: ReceiptType): SocialSecurityScheme {
+  switch (receiptType) {
+    case ReceiptType.PMJJBY:
+    case ReceiptType.PMSBY:
+    case ReceiptType.APY:
+      return receiptType;
+    default:
+      return "OTHER";
+  }
+}
 
 export interface ReportSummaryRow {
   agentId: string;
@@ -22,6 +36,9 @@ export interface ReportSummaryRow {
       amount: number;
     }
   >;
+
+  // SOCIAL_SECURITY counts split by scheme (receiptType).
+  socialSecurity: Record<SocialSecurityScheme, number>;
 
   success: number;
 
@@ -41,18 +58,25 @@ export default class ReportSummaryRepository extends ReportCommonRepository {
   }
 
   async getSummary(filter: ReportFilter) {
-    const receiptWhere = this.buildReceiptWhere(filter);
+    const countWhere = this.buildCountWhere(filter);
 
     /**
-     * Fetch all CSPs under current scope
+     * CSPs and KOs under current scope. One row per CSP, counting the CSP and
+     * its KOs; a KO gets its own row only when its CSP isn't in view (e.g.
+     * one KO selected).
      */
-    const csps = await this.db.agent.findMany({
+    const agents = await this.db.agent.findMany({
       where: {
-        agentId: {
-          in: filter.agentIds,
-        },
+        // An empty scope is SUPER_ADMIN (all agents), not "none".
+        ...(filter.agentIds.length > 0 && {
+          agentId: {
+            in: filter.agentIds,
+          },
+        }),
 
-        type: AgentType.CSP,
+        type: {
+          in: [AgentType.CSP, AgentType.KO],
+        },
 
         isDeleted: false,
       },
@@ -61,6 +85,10 @@ export default class ReportSummaryRepository extends ReportCommonRepository {
         agentId: true,
 
         name: true,
+
+        type: true,
+
+        parentAgentId: true,
       },
 
       orderBy: {
@@ -68,18 +96,41 @@ export default class ReportSummaryRepository extends ReportCommonRepository {
       },
     });
 
+    const cspIds = new Set(
+      agents
+        .filter((agent) => agent.type === AgentType.CSP)
+        .map((agent) => agent.agentId),
+    );
+
+    const csps = agents.filter(
+      (agent) =>
+        agent.type === AgentType.CSP ||
+        !agent.parentAgentId ||
+        !cspIds.has(agent.parentAgentId),
+    );
+
+    // Receipts of a KO count on its CSP's row.
+    const rowIdOf = new Map(
+      agents.map((agent) => [
+        agent.agentId,
+        agent.type === AgentType.KO &&
+        agent.parentAgentId &&
+        cspIds.has(agent.parentAgentId)
+          ? agent.parentAgentId
+          : agent.agentId,
+      ]),
+    );
+
     /**
-     * Fetch all receipts
+     * Receipt counts (daily counts outlive the receipts)
      */
-    const receipts = await this.db.receipt.findMany({
-      where: receiptWhere,
+    const receipts = await this.db.receiptDailyCount.groupBy({
+      by: ["agentId", "transactionCategory", "receiptType", "status"],
 
-      select: {
-        agentId: true,
+      where: countWhere,
 
-        transactionCategory: true,
-
-        status: true,
+      _sum: {
+        count: true,
 
         amount: true,
       },
@@ -149,6 +200,8 @@ export default class ReportSummaryRepository extends ReportCommonRepository {
 
         services,
 
+        socialSecurity: { PMJJBY: 0, PMSBY: 0, APY: 0, OTHER: 0 },
+
         success: 0,
 
         failed: 0,
@@ -165,29 +218,37 @@ export default class ReportSummaryRepository extends ReportCommonRepository {
      * Aggregate receipts
      */
     for (const receipt of receipts) {
-      const row = reportMap.get(receipt.agentId);
+      const row = reportMap.get(
+        rowIdOf.get(receipt.agentId) ?? receipt.agentId,
+      );
 
       if (!row) {
         continue;
       }
 
+      const count = receipt._sum.count ?? 0;
+
       const service = row.services[receipt.transactionCategory];
 
-      service.count++;
+      service.count += count;
 
-      if (receipt.status === ReceiptStatus.SUCCESS) {
-        service.amount += Number(receipt.amount);
+      if (receipt.transactionCategory === TransactionCategory.SOCIAL_SECURITY) {
+        row.socialSecurity[socialSecurityScheme(receipt.receiptType)] += count;
       }
 
-      row.total++;
+      if (receipt.status === ReceiptStatus.SUCCESS) {
+        service.amount += Number(receipt._sum.amount ?? 0);
+      }
+
+      row.total += count;
 
       switch (receipt.status) {
         case ReceiptStatus.SUCCESS:
-          row.success++;
+          row.success += count;
           break;
 
         case ReceiptStatus.FAILED:
-          row.failed++;
+          row.failed += count;
           break;
       }
     }
