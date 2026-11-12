@@ -38,6 +38,18 @@ fi
 
 echo "📌 Using Node: $(node -v) | npm: $(npm -v)"
 
+# Ensure PM2 is installed in the active Node version
+if ! command -v pm2 > /dev/null 2>&1; then
+  if [ -x "/usr/local/bin/pm2" ]; then
+    export PATH="/usr/local/bin:$PATH"
+  fi
+fi
+
+if ! command -v pm2 > /dev/null 2>&1; then
+  echo "📦 PM2 is not installed in the active Node environment. Installing PM2..."
+  npm install -g pm2
+fi
+
 # 2. Pull latest code from Git
 echo ""
 echo "📥 [1/4] Pulling latest code..."
