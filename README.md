@@ -159,8 +159,18 @@ npm -v    # Should show 10.x.x+
 
 #### 2. Install PM2 globally
 
+> [!NOTE]
+> If you are using **NVM**, do **not** use `sudo`. NVM manages packages in your user directory. Simply run:
+
 ```bash
-sudo npm install -g pm2
+npm install -g pm2
+```
+
+*(Optional)* To make `node`, `npm`, and `pm2` accessible by `sudo` and system services, symlink them:
+```bash
+sudo ln -sf "$(which node)" /usr/local/bin/node
+sudo ln -sf "$(which npm)" /usr/local/bin/npm
+sudo ln -sf "$(which pm2)" /usr/local/bin/pm2
 ```
 
 #### 3. Install Nginx and Certbot
@@ -295,7 +305,8 @@ pm2 status
 pm2 save
 
 # Setup PM2 startup script on systemd
-sudo env PATH=$PATH:/usr/bin /usr/lib/node_modules/pm2/bin/pm2 startup systemd -u cspmanager --hp /home/cspmanager
+pm2 startup
+# (Copy and run the exact command that PM2 outputs to enable automatic reboot persistence)
 ```
 
 ---
