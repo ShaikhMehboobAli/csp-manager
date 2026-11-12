@@ -44,28 +44,23 @@ Production-ready backend API service for **CSP Manager**, built with Node.js, Ex
 ```text
 csp-manager/
 ├── apps/
-│   └── api/
-│       ├── prisma/
-│       │   ├── schema.prisma       # Database schema & models
-│       │   ├── migrations/         # SQL migration history
-│       │   ├── seed.ts             # Main seed script
-│       │   └── seeds/              # Super admin, plans, pricing seeds
-│       ├── src/
-│       │   ├── config/             # Environment & DB configurations
-│       │   ├── core/               # Middleware, security, JWT, rate-limiting
-│       │   ├── jobs/               # In-process scheduled cron jobs
-│       │   ├── modules/            # Domain modules (auth, machines, receipts, payments...)
-│       │   ├── app.ts              # Express application setup
-│       │   └── server.ts           # Server bootstrap & DB connection
-│       ├── .env.example            # Environment configuration template
-│       ├── package.json            # API dependencies & scripts
-│       └── tsconfig.json           # TypeScript configuration
-├── docs/                           # Architecture, API & pre-production checklists
-├── ecosystem.config.js             # PM2 process manager configuration
-├── nginx.conf.example              # Nginx reverse proxy configuration template
-├── deploy.sh                       # One-click zero-downtime deployment script
-├── .env.example                    # Root environment template
-└── package.json                    # Root helper scripts
+│   ├── api/                    # Backend API service
+│   │   ├── prisma/             # Database schema & SQL migrations
+│   │   │   ├── schema.prisma   # Database models
+│   │   │   ├── migrations/     # Migration history
+│   │   │   └── seeds/          # Seeds (super-admin, plans, pricing)
+│   │   ├── src/                # API source code & 11 background cron jobs
+│   │   ├── .env.example        # Environment configuration template
+│   │   ├── ecosystem.config.js # PM2 process manager configuration
+│   │   ├── package.json        # API dependencies & scripts
+│   │   └── tsconfig.json       # TypeScript configuration
+│   └── web/                    # Frontend Web App (coming soon)
+├── docs/                       # Architecture, API & deployment documentation
+│   └── nginx.conf.example      # Nginx reverse proxy configuration template
+├── .gitignore                  # Git ignore rules
+├── deploy.sh                   # One-click zero-downtime deployment script
+├── README.md                   # Deployment documentation
+└── todo.txt                    # Project task backlog
 ```
 
 ---
@@ -197,7 +192,7 @@ cd /home/cspmanager/apps/csp-manager
 Copy the example environment configuration into `apps/api/.env`:
 
 ```bash
-cp .env.example apps/api/.env
+cp apps/api/.env.example apps/api/.env
 nano apps/api/.env
 ```
 
@@ -288,10 +283,10 @@ The repository includes a production-ready `ecosystem.config.js`.
 From the repository root:
 
 ```bash
-cd /home/cspmanager/apps/csp-manager
+cd /home/cspmanager/apps/csp-manager/apps/api
 
-# Start the application using PM2 in production mode
-pm2 start ecosystem.config.js --env production
+# Start the application using PM2 in production mode (loads apps/api/.env)
+pm2 start ecosystem.config.js --env production --update-env
 
 # Check application status
 pm2 status
@@ -307,10 +302,10 @@ sudo env PATH=$PATH:/usr/bin /usr/lib/node_modules/pm2/bin/pm2 startup systemd -
 
 ### Step 8: Configure Nginx Reverse Proxy
 
-Copy the provided Nginx configuration template:
+Copy the provided Nginx configuration template from `docs/`:
 
 ```bash
-sudo cp /home/cspmanager/apps/csp-manager/nginx.conf.example /etc/nginx/sites-available/csp-manager.conf
+sudo cp /home/cspmanager/apps/csp-manager/docs/nginx.conf.example /etc/nginx/sites-available/csp-manager.conf
 ```
 
 Edit the file to match your domain name:
@@ -419,12 +414,13 @@ cd /home/cspmanager/apps/csp-manager
 
 ### What `deploy.sh` does automatically:
 
-1. Performs `git pull` to fetch latest code.
-2. Runs `npm install --include=dev` in `apps/api`.
+1. Performs `git pull` to fetch the latest code.
+2. Installs packages in `apps/api` (`npm install --include=dev`).
 3. Re-generates Prisma client via `npx prisma generate`.
-4. Runs pending database migrations with `npx prisma migrate deploy`.
-5. Builds fresh TypeScript code into `dist/` with `npm run build`.
-6. Reloads PM2 seamlessly (`pm2 reload ecosystem.config.js --env production`).
+4. Applies pending database migrations safely without seeding (`npx prisma migrate deploy`).
+5. Builds fresh TypeScript API code into `dist/` with `npm run build`.
+6. Reloads/starts PM2 seamlessly with updated environment variables (`pm2 reload ecosystem.config.js --env production --update-env`).
+7. Checks for `apps/web` (automatically builds and starts frontend once frontend code is added, gracefully skipped for now).
 
 ---
 
@@ -445,15 +441,19 @@ pm2 logs csp-manager-api --lines 100
 # Monitor CPU, Memory, and Event Loop in real-time
 pm2 monit
 
-# Reload without dropping connections (zero-downtime)
-pm2 reload ecosystem.config.js --env production
+# Reload without dropping connections (zero-downtime, updates environment variables)
+pm2 reload ecosystem.config.js --env production --update-env
 
-# Restart the application
-pm2 restart csp-manager-api
+# Restart the application with latest .env changes
+pm2 restart csp-manager-api --update-env
 
 # Stop the application
 pm2 stop csp-manager-api
 ```
+
+> [!TIP]
+> **Always use `--update-env` when modifying `.env`**
+> By default, PM2 caches the environment variables in memory from its initial startup. When changing variables such as `PORT` or database URLs in your `.env` file, passing `--update-env` ensures PM2 refreshes its in-memory environment with your new values.
 
 ### Automatic Log Rotation
 
