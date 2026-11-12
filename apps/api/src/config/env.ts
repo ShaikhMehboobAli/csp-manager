@@ -37,4 +37,19 @@ export const env = {
   // delivers to the Resend account's own email.
   emailFrom: process.env.EMAIL_FROM || "CSP Manager <onboarding@resend.dev>",
   emailReplyTo: process.env.EMAIL_REPLY_TO || "",
+
+  // Razorpay. Key id + secret set = real payments; unset = dev stand-in
+  // (refused in production). The webhook secret is the one set on the
+  // webhook in the Razorpay Dashboard (not the key secret).
+  razorpayKeyId: process.env.RAZORPAY_KEY_ID || "",
+  razorpayKeySecret: process.env.RAZORPAY_KEY_SECRET || "",
+  razorpayWebhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET || "",
+  // Most one UPI AutoPay debit may take, in rupees (₹15,000 = no extra
+  // approval per debit for most merchant categories).
+  razorpayMandateMaxAmount: Number(process.env.RAZORPAY_MANDATE_MAX_AMOUNT) || 15000,
+  // true = a CSP's monthly purchase is a UPI AutoPay order (pay + approve the
+  // mandate in one step). Needs Razorpay Recurring Payments enabled on the
+  // account; while it isn't, Checkout shows "No appropriate payment method
+  // found", so it stays off and purchases are normal one-time payments.
+  razorpayAutopayOnPurchase: process.env.RAZORPAY_AUTOPAY_ON_PURCHASE === "true",
 };

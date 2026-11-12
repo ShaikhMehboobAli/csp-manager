@@ -3,7 +3,9 @@
 **Audience:** the web team building the **Super Admin** console in React / Next.js.
 **Not covered here:** the BC/CSP mobile app → `docs/mobile-app-kt.md` (read its sections 3 and 18 for API conventions, errors and dates; they apply here too); the desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api`.
-**Last updated:** 2026-11-12 (rev 24)
+**Last updated:** 2026-11-12 (rev 25)
+
+> **Rev 25 (2026-11-12): Razorpay is live in test mode.** Payments show `paymentProvider: RAZORPAY`, `transactionReference` = the Razorpay order id (`order_…`), `gatewayTransactionId` = the Razorpay payment id (`pay_…`); search them in the Razorpay Dashboard. Mandates show `providerMandateId` (UPI token `token_…`), `providerCustomerId`, `maxAmount`. A renewal payment flagged "refund due" in `failureReason` must be refunded in the Razorpay Dashboard (no refund API yet). Renewals start 2 days before the end date.
 
 > **Rev 24 (2026-11-12): metric values are super-admin only** — `POST` / `PATCH /metrics/values` now refuse BC admins (403). Build the value entry screen in the console (§6).
 
@@ -626,6 +628,8 @@ The data exists today: `Subscription` (`ownerType`, `ownerId`, `planId`, `status
 - **Machines dropped:** a renewal with fewer machines (5 → 3) isn't a lost subscription but does lose 2 machines. This shows on the home page as its own figure, `machinesDropped`, with a list of the owners who reduced.
 
 ## 13. Changelog
+
+- 2026-11-12 (rev 25) — Razorpay: payment and mandate gateway fields; refunds by hand in the Razorpay Dashboard.
 
 - 2026-11-12 (rev 24) — Metric values: super admin only (`POST` / `PATCH /metrics/values`); new value entry screen in §6.
 

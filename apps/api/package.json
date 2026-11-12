@@ -7,6 +7,7 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "seed:super-admin": "tsx prisma/seeds/super-admin.seed.ts",
+    "db:reset": "tsx prisma/scripts/reset-db.ts",
     "cleanup:keep-cash": "tsx prisma/scripts/cleanup-keep-cash.ts"
   },
   "prisma": {

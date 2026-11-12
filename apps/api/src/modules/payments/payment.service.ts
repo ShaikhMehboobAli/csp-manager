@@ -30,6 +30,45 @@ import prisma from "../../config/prisma";
 import BillingSettingsService from "../settings/billing-settings.service";
 import SubscriptionBillingService from "../subscriptions/billing/subscription-billing.service";
 import { PaymentPurpose } from "../../generated/prisma/enums";
+import { env } from "../../config/env";
+import {
+  RazorpayClient,
+  RazorpayPayment,
+  razorpayEnabled,
+  toPaise,
+  verifyCheckoutSignature,
+} from "../../core/services/razorpay.client";
+import { ownerContact } from "../subscriptions/billing/subscription-billing.service";
+import { MANDATE_YEARS } from "../subscriptions/billing/billing.constants";
+
+type GatewayDetails = { orderId?: string; customerId?: string | null; recurring?: boolean };
+
+/** What the app passes to Razorpay Checkout for a pending Razorpay payment (null otherwise). */
+async function checkoutFor(db: PrismaDb, payment: Payment) {
+  if (payment.paymentProvider !== PaymentProvider.RAZORPAY || !payment.transactionReference) {
+    return null;
+  }
+
+  const details = (payment.gatewayResponse ?? {}) as GatewayDetails;
+  const [contact, plan] = await Promise.all([
+    ownerContact(db, payment.ownerId),
+    db.plan.findUnique({ where: { id: payment.planId }, select: { name: true } }),
+  ]);
+
+  return {
+    keyId: env.razorpayKeyId,
+    orderId: payment.transactionReference,
+    amount: toPaise(payment.totalAmount.toString()),
+    currency: "INR",
+    name: "CSP Manager",
+    description: `${plan?.name ?? "Plan"} (${payment.paymentNumber})`.slice(0, 50),
+    // CSP monthly purchase: paying also approves UPI AutoPay (UPI only).
+    recurring: details.recurring ? "1" : null,
+    customerId: details.customerId ?? null,
+    prefill: { name: contact.name, email: contact.email, contact: contact.contact },
+    notes: { paymentId: payment.id },
+  };
+}
 
 export default class PaymentService {
   async createOrder(data: CreatePaymentOrderInput) {
@@ -76,7 +115,7 @@ export default class PaymentService {
           return {
             success: true,
             message: "Payment order already exists for this Idempotency-Key.",
-            data: existing,
+            data: { ...existing, checkout: await checkoutFor(tx, existing) },
           };
         }
       }
@@ -137,14 +176,26 @@ export default class PaymentService {
           Number(quote.amount),
         );
 
+        // An older AutoPay (UPI-only) order isn't reused while AutoPay-on-purchase is off.
+        const wasAutopay = Boolean(((pendingPayment.gatewayResponse ?? {}) as GatewayDetails).recurring);
+        const sameProvider =
+          pendingPayment.paymentProvider === (razorpayEnabled() ? PaymentProvider.RAZORPAY : PaymentProvider.MANUAL) &&
+          (!wasAutopay || env.razorpayAutopayOnPurchase);
+
         if (
+          sameProvider &&
           pendingPayment.purpose === quote.purpose &&
           pendingPayment.amount.equals(quoted)
         ) {
           return {
             success: true,
             message: "Pending payment already exists.",
-            data: { ...pendingPayment, breakdown: quote.breakdown, mandate: null },
+            data: {
+              ...pendingPayment,
+              breakdown: quote.breakdown,
+              mandate: null,
+              checkout: await checkoutFor(tx, pendingPayment),
+            },
           };
         }
 
@@ -205,6 +256,10 @@ export default class PaymentService {
         currency: "INR",
       });
 
+      const opened = razorpayEnabled()
+        ? await this.openRazorpayOrder(tx, payment, data.ownerType === SubscriptionOwnerType.CSP && quote.purpose === PaymentPurpose.PURCHASE && data.billingCycle === BillingCycle.MONTHLY)
+        : payment;
+
       return {
         success: true,
         message:
@@ -212,7 +267,9 @@ export default class PaymentService {
             ? "Upgrade order created: you pay only the difference. The plan's end date doesn't change."
             : "Payment order created successfully.",
         data: {
-          ...payment,
+          ...opened,
+          // Open Razorpay Checkout with this (null = dev stand-in: verify with gatewayTransactionId).
+          checkout: await checkoutFor(tx, opened),
           // How the amount was worked out (UPGRADE only).
           breakdown: quote.breakdown,
           // CSP purchases set up a monthly UPI autopay mandate on success.
@@ -224,6 +281,87 @@ export default class PaymentService {
         },
       };
     });
+  }
+
+  /**
+   * Creates the Razorpay order for a new payment. A CSP's monthly purchase
+   * (up to the AutoPay limit) is a UPI order that also registers the monthly
+   * mandate, so the CSP approves once.
+   */
+  private async openRazorpayOrder(db: PrismaDb, payment: Payment, registerMandate: boolean) {
+    const client = new RazorpayClient();
+    const total = Number(payment.totalAmount);
+    // AutoPay with the purchase only once Razorpay Recurring Payments is enabled (env).
+    const recurring = env.razorpayAutopayOnPurchase && registerMandate && total <= env.razorpayMandateMaxAmount;
+    let customerId: string | null = null;
+
+    if (recurring) {
+      const contact = await ownerContact(db, payment.ownerId);
+
+      customerId = (await client.createCustomer({ ...contact, notes: { ownerId: payment.ownerId } })).id;
+    }
+
+    const expireAt = new Date();
+
+    expireAt.setFullYear(expireAt.getFullYear() + MANDATE_YEARS);
+
+    const order = await client.createOrder({
+      amountPaise: toPaise(total),
+      receipt: payment.paymentNumber,
+      notes: { paymentId: payment.id, purpose: payment.purpose },
+      ...(recurring &&
+        customerId && {
+          upiMandate: { customerId, maxAmountPaise: toPaise(Math.max(env.razorpayMandateMaxAmount, total)), expireAt },
+        }),
+    });
+
+    return db.payment.update({
+      where: { id: payment.id },
+      data: {
+        paymentProvider: PaymentProvider.RAZORPAY,
+        paymentMethod: recurring ? PaymentMethod.UPI : PaymentMethod.RAZORPAY,
+        transactionReference: order.id,
+        gatewayResponse: { orderId: order.id, customerId, recurring },
+      },
+    });
+  }
+
+  /**
+   * Razorpay told us (Checkout handler or webhook) about a payment on our
+   * order: checks it belongs to the order and the full amount was captured.
+   * Returns null when it's still being processed (authorized, not captured).
+   */
+  private assertGatewayPayment(payment: Payment, gateway: RazorpayPayment) {
+    if (gateway.order_id !== payment.transactionReference) {
+      throw new BadRequestError("This payment is for a different order.", "PAYMENT_ORDER_MISMATCH");
+    }
+
+    if (gateway.amount !== toPaise(payment.totalAmount.toString())) {
+      throw new BadRequestError("The paid amount doesn't match the order.", "PAYMENT_AMOUNT_MISMATCH");
+    }
+
+    if (gateway.status === "failed") {
+      throw new BadRequestError(gateway.error_description ?? "The payment failed. Please try again.", "PAYMENT_FAILED");
+    }
+
+    return gateway.status === "captured";
+  }
+
+  /** Webhook payment.captured / order.paid for a one-time payment (purchase, upgrade, BC). */
+  async completeFromRazorpay(paymentId: string, gateway: RazorpayPayment, db: PrismaDb) {
+    const repository = new PaymentRepository(db);
+
+    await repository.lockPayment(paymentId);
+
+    const payment = await repository.findPaymentById(paymentId);
+
+    if (!payment || payment.status !== PaymentStatus.PENDING) {
+      return;
+    }
+
+    if (this.assertGatewayPayment(payment, gateway)) {
+      await this.completePayment(payment, gateway.id, gateway.order_id ?? undefined, db);
+    }
   }
 
   private async completePayment(
@@ -304,6 +442,8 @@ export default class PaymentService {
       payment.machineCount > 0
         ? payment.amount.dividedBy(payment.machineCount)
         : payment.amount,
+      // Razorpay: this payment also registered UPI AutoPay (token on it).
+      payment.paymentProvider === PaymentProvider.RAZORPAY ? gatewayTransactionId : null,
     );
 
     const activationService = new ActivationService();
@@ -351,7 +491,7 @@ export default class PaymentService {
       if (payment.status === PaymentStatus.SUCCESS) {
         // A retry after a lost response (slow network, app killed) with the
         // same gateway transaction gets the original result, not an error.
-        if (payment.gatewayTransactionId === data.gatewayTransactionId) {
+        if (payment.gatewayTransactionId === (data.razorpayPaymentId ?? data.gatewayTransactionId)) {
           return {
             success: true,
             message: "Payment already verified.",
@@ -367,6 +507,38 @@ export default class PaymentService {
 
       if (payment.status !== PaymentStatus.PENDING) {
         throw new BadRequestError("Payment is no longer pending.");
+      }
+
+      if (payment.paymentProvider === PaymentProvider.RAZORPAY) {
+        if (!data.razorpayPaymentId || !data.razorpaySignature) {
+          throw new BadRequestError("Send razorpayOrderId, razorpayPaymentId and razorpaySignature from Checkout.");
+        }
+
+        // Signed over OUR order id, never the one the client sends.
+        if (
+          !payment.transactionReference ||
+          (data.razorpayOrderId && data.razorpayOrderId !== payment.transactionReference) ||
+          !verifyCheckoutSignature(payment.transactionReference, data.razorpayPaymentId, data.razorpaySignature)
+        ) {
+          throw new BadRequestError("The payment signature is invalid.", "PAYMENT_SIGNATURE_INVALID");
+        }
+
+        const gateway = await new RazorpayClient().fetchPayment(data.razorpayPaymentId);
+
+        if (!this.assertGatewayPayment(payment, gateway)) {
+          // Authorized but not captured yet: the webhook completes it.
+          return {
+            success: true,
+            message: "Payment received; we're confirming it with the bank. This takes a minute.",
+            data: { paymentId: payment.id, subscriptionId: null, status: "PROCESSING" as const },
+          };
+        }
+
+        return this.completePayment(payment, gateway.id, payment.transactionReference, tx);
+      }
+
+      if (!data.gatewayTransactionId) {
+        throw new BadRequestError("Send gatewayTransactionId.");
       }
 
       return this.completePayment(

@@ -3,9 +3,13 @@
 **Audience:** the React Native team building the CSP Manager mobile app for **BC** and **CSP** users.
 **Not covered here:** the Super Admin console (React / Next.js) → `docs/admin-web-kt.md`; the Windows desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api` (Express + Prisma + PostgreSQL).
-**Last updated:** 2026-11-12 (rev 33)
+**Last updated:** 2026-11-12 (rev 34)
 
 > Describes the backend once PRs #3–#8 are merged into `development`. Where an older build behaves differently it says so.
+>
+> **Start here (2026-11-12): `docs/mobile-next-build.md`** — the build list for push notifications, Razorpay, UPI AutoPay, email timers, onboarding email and the rev 31 asks, in order, with the contracts and a test checklist.
+>
+> **Rev 34 (2026-11-12): Razorpay payments — read §6D.** `create-order` returns `checkout` for Razorpay Checkout; `verify` takes `razorpayOrderId` / `razorpayPaymentId` / `razorpaySignature`; a CSP's monthly purchase also sets up UPI AutoPay (UPI only); new `POST /payments/mandates/setup`; renewals start 2 days before the end date.
 >
 > **Rev 33 (2026-11-12): onboarding email on assign + resend timers.** `POST /activations/assign` now emails the agent its code and password (result in `data.email`, §8); every code-sending call returns `resendAvailableAt` + `resendInSeconds`, "too soon" errors carry `details.retryAfterSeconds`, and every email has a central limit (429 `EMAIL_RATE_LIMITED`): §5.2 "Email codes, resend timer and limits".
 >
@@ -142,7 +146,7 @@ Machine plans give activation codes (one per machine) that the BC/CSP assigns to
 | Dates | `dayjs` with `utc` + `timezone` plugins, `Asia/Kolkata` | see section 18 |
 | Files | `expo-file-system` + `expo-sharing` | Excel exports (section 17) |
 | Images | `expo-image-picker` + `expo-image-manipulator` | visit photos ≤ 5 MB JPEG (section 16) |
-| Payments | `react-native-razorpay` once the backend switches to Razorpay (section 6, PENDING) | |
+| Payments | `react-native-razorpay` (Standard Checkout); the backend uses Razorpay since rev 34 (§6D) | |
 
 Config per environment: `API_BASE_URL` (HTTPS in production), `APP_ENV`. Use `react-native-config` or Expo `extra`.
 
@@ -294,7 +298,7 @@ GET /subscriptions/current → null → [Plans] GET /subscriptions/plans?ownerTy
 [Plan card] → cycle → machines stepper (1–100; total = price × machines)
   → [Pay]: new Idempotency-Key (UUID), saved with the attempt
   → POST /payments/create-order { planId, billingCycle, machineCount }     → payment PENDING
-  → (Razorpay later; today) POST /payments/verify { paymentId, gatewayTransactionId }
+  → Razorpay Checkout with data.checkout (rev 34) → POST /payments/verify { paymentId, razorpayOrderId, razorpayPaymentId, razorpaySignature }
   → GET /subscriptions/current → ACTIVE → reload features → [Home]
 ```
 
@@ -448,7 +452,8 @@ The last column points to the section with every field and error. Super-admin-on
 | POST | `/subscriptions/quote` (rev 26) | ✓ | — | login | `{ planId, machineCount }` → `purpose` PURCHASE / UPGRADE, amount + GST, breakdown | 6A.2 |
 | POST | `/subscriptions/current/cancel` (rev 26) | ✓ | — | running | `{ reason? }` → cancelled, usable until `endDate`, mandate cancelled | 6A.5 |
 | POST | `/payments/create-order` + `Idempotency-Key` | ✓ (`machineCount` 1–100) | ✓ (no `machineCount`) | login | `{ planId, billingCycle, machineCount? }` → payment `PENDING` with `purpose` (PURCHASE / UPGRADE), `breakdown`, `mandate` | 6, 6A |
-| POST | `/payments/verify` | ✓ | ✓ | login | `{ paymentId, gatewayTransactionId, transactionReference? }` → subscription created / extended | 6 |
+| POST | `/payments/verify` | ✓ | ✓ | login | `{ paymentId, razorpayOrderId, razorpayPaymentId, razorpaySignature }` (rev 34) → subscription created / extended, or `status: PROCESSING` | 6D |
+| POST | `/payments/mandates/setup` (rev 34) | ✓ | — | running | → `{ mandateId, status, authUrl, amount, maxAmount }` (UPI AutoPay approval link) | 6D.2 |
 | GET | `/payments/history` | *own* | *own* | login | → payments | 6 |
 | GET | `/payments/:paymentId` | *own* | *own* | login | → one payment (poll while `PENDING`) | 6 |
 
@@ -715,7 +720,7 @@ The 401 interceptor (§5.3) calls `/auth/refresh` once, retries the request, and
 | `GET /subscriptions/current` | `data: null` when there's no active subscription |
 | `GET /subscriptions/history` | all past subscriptions |
 | `POST /payments/create-order` `{ planId, billingCycle, machineCount? }` + header `Idempotency-Key` | creates a pending payment; `machineCount` 1–100 for **CSP plans** (default 1), not allowed for BC plans |
-| `POST /payments/verify` `{ paymentId, gatewayTransactionId, transactionReference? }` | completes it, creates/extends the subscription |
+| `POST /payments/verify` `{ paymentId, razorpayOrderId, razorpayPaymentId, razorpaySignature }` (rev 34, Razorpay) or `{ paymentId, gatewayTransactionId }` (dev stand-in only) | completes it, creates/extends the subscription (§6D) |
 | `GET /payments/history`, `GET /payments/:paymentId` | own payments only |
 
 Plan: `{ id, code, name, ownerType, level, machineLimit, pricing: [{ billingCycle, durationDays, price, gstPercent, gstAmount, priceWithGst }], features: [{ code, name, description, category }] }` (`price`, `gstAmount`, `priceWithGst` are **strings**; for CSP plans they're per machine).
@@ -752,9 +757,55 @@ Current subscription: `{ id, subscriptionNumber, status, subscriptionType, machi
 - After the plan (and its grace) ended → new subscription from now.
 - Buying a plan of the wrong owner type → 400 `This plan is not available for your account.`; unknown cycle → 400 `Selected billing cycle is not available.`
 
-**Payment status — PENDING backend work:** today the payment is "manual": the app calls `create-order` and then `verify` with any `gatewayTransactionId`. Razorpay is being integrated (pre-production checklist 1.1–1.5). Build the checkout behind one function `payForPlan(planId, billingCycle)` so swapping in `react-native-razorpay` later only changes that function. Don't ship the manual flow to production users.
+**Payment status (rev 34): Razorpay is live in test mode** — follow §6D (`checkout` from `create-order` → Razorpay Checkout → `verify` with the three Razorpay values). The `gatewayTransactionId` flow only works on a dev server without Razorpay keys; don't ship it. Keep the checkout behind one function `payForPlan(planId, billingCycle)`.
 
 **UI notes:** plan cards list every `pricing` entry (cycle selector) with "+ GST"; CSP plans show "per machine" and a machine stepper (default and minimum while a plan runs: current `machineLimit`, §6A). Show "Renews on `endDate` by UPI autopay". Switching a BC machine plan to `BC_CSP_LINK` (0 machines) must warn: "Your machines will stop working."
+
+## 6D. Razorpay payments and UPI AutoPay (rev 34)
+
+The server now uses **Razorpay** when its keys are set (test keys in dev, live keys in production). Without keys (some dev machines) everything works as before with `gatewayTransactionId` (dev stand-in). Use **`react-native-razorpay`** (Standard Checkout).
+
+### 6D.1 Pay: create-order → Checkout → verify
+
+1. `POST /payments/create-order` (unchanged body, + `Idempotency-Key`) → `data` adds **`checkout`**:
+
+```json
+"checkout": {
+  "keyId": "rzp_test_…", "orderId": "order_…", "amount": 64900, "currency": "INR",
+  "name": "CSP Manager", "description": "CSP Complete (PAY…)",
+  "recurring": "1", "customerId": "cust_…",
+  "prefill": { "name": "Ravi", "email": "ravi@…", "contact": "91000…" },
+  "notes": { "paymentId": "…" }
+}
+```
+   - `amount` is in **paise** (₹649 = 64900). `checkout: null` = no Razorpay on this server (dev stand-in, old flow).
+   - **`recurring: "1"` + `customerId`** = a **CSP monthly purchase**: this one payment also approves **UPI AutoPay** for the monthly renewal. It is **UPI only** (the customer approves the mandate in the UPI app with the payment). Pass `recurring` and `customer_id` to Checkout. `recurring: null` = a normal payment (upgrade difference, BC plans, half-yearly / yearly): any method.
+2. Open Checkout with `{ key: keyId, order_id: orderId, amount, currency, name, description, prefill, notes, …(recurring && { recurring, customer_id: customerId }) }`.
+3. On success Checkout returns `razorpay_payment_id`, `razorpay_order_id`, `razorpay_signature` → **`POST /payments/verify`** `{ paymentId, razorpayOrderId, razorpayPaymentId, razorpaySignature }`:
+
+| Answer | Meaning | App |
+|---|---|---|
+| 200 `Payment verified successfully.` / `Upgrade paid…` `data: { paymentId, subscriptionId }` | done | refresh `/subscriptions/access`, `/activations` |
+| 200 `data.status: "PROCESSING"` (`subscriptionId: null`) | authorized, not captured yet; the webhook finishes it | "Confirming payment…", poll `GET /payments/:paymentId` every 5 s (max ~2 min) until `status: SUCCESS` |
+| 400 `PAYMENT_SIGNATURE_INVALID` | the signature doesn't match our order | "Payment couldn't be verified"; don't retry the same values; contact support if money was taken |
+| 400 `PAYMENT_AMOUNT_MISMATCH` / `PAYMENT_ORDER_MISMATCH` | tampered / wrong order | same |
+| 400 `PAYMENT_FAILED` | Razorpay says failed | let the user pay again (same order: call create-order again, it returns the same pending order) |
+| 502 `PAYMENT_GATEWAY_ERROR` | Razorpay didn't answer | retry verify after a few seconds (safe: same values → same result) |
+
+   - **If the app is killed after paying:** the server also gets Razorpay's webhook and completes the payment itself. On next open, refetch `/subscriptions/access` / `GET /payments/history`.
+   - Checkout **dismissed / failed** (user closed it, bank declined): nothing to call; the order stays pending and can be paid again.
+   - Retrying verify with the same `razorpayPaymentId` after success → 200 `Payment already verified.`
+
+### 6D.2 UPI AutoPay (monthly renewal) with Razorpay
+
+- **Set up:** with the CSP's monthly purchase (above). The mandate becomes **ACTIVE** when Razorpay confirms it (usually seconds after paying). `GET /subscriptions/access` shows the mandate state.
+- **No mandate / removed / price changed:** `POST /payments/mandates/setup` (CSP) → `data: { mandateId, status, authUrl, amount, maxAmount }`. `status: "ACTIVE"` → already set up; `authUrl` → open it (browser / in-app) so the CSP approves UPI AutoPay (Razorpay charges ₹1 for the approval and refunds it); `authUrl: null` and not active → "Try again in a minute". Errors: 400 `NO_RENEWING_PLAN`. Show a "Set up AutoPay" button on the Subscription screen when there's no ACTIVE mandate.
+- **Renewal timing (owner decision 2026-11-12):** the renewal charge starts **2 days before `endDate`**. Razorpay sends the customer a pre-debit notice, debits about a day later and retries itself. The plan keeps working until `endDate`.
+  - Success → `SUBSCRIPTION_RENEWED` notification, new `endDate`.
+  - Final failure **before** `endDate` → `SUBSCRIPTION_RENEWAL_FAILED` (`data.autoRenew: false`, `endsAt`): "Your plan works until <endsAt> and then stops. Renew or take a new plan." The plan is **not** blocked early.
+  - Still no successful debit at `endDate` → the plan is blocked from `endDate` (as before, no grace); a late successful debit brings it back.
+- **Mandate cancelled / paused / rejected in the UPI app** → `MANDATE_REVOKED` notification; offer "Set up AutoPay" (`/payments/mandates/setup`).
+- One UPI debit can be at most **₹15,000** (the mandate's `maxAmount`); a monthly total above it needs a new approval (`/payments/mandates/setup`).
 
 ## 6A. Subscription rules (rev 26): upgrade, cancel, UPI mandate, auto renewal
 
@@ -2301,6 +2352,7 @@ Errors: none new (as §11).
 ## 20. Changelog
 
 - 2026-11-08 (rev 32, app team ask) — New §19.6 R25: `services[].lastTransactionAt` in `/dashboard/summary` and a `CIF` receipt type for money transfer, for the new Home "Today's services" card and Service counts screen.
+- 2026-11-12 (rev 34) — Razorpay (§6D): `checkout` on create-order, new verify body and errors (`PAYMENT_SIGNATURE_INVALID`, `PAYMENT_AMOUNT_MISMATCH`, `PAYMENT_ORDER_MISMATCH`, `PAYMENT_FAILED`, `PAYMENT_GATEWAY_ERROR`, `status: PROCESSING`), UPI AutoPay registered with the CSP's monthly purchase, `POST /payments/mandates/setup`, renewal 2 days before `endDate` (final failure before it: works until `endDate`, `autoRenew: false`).
 - 2026-11-12 (rev 33) — Metric values are super-admin only: `POST` / `PATCH /metrics/values` refuse BC and CSP (403); the app's Metrics screen becomes read-only.
 - 2026-11-12 (rev 33) — Onboarding email on `POST /activations/assign` (`data.email`: `sent` / `NO_EMAIL` / `RATE_LIMITED` / `SEND_FAILED`); `resendAvailableAt` + `resendInSeconds` on signup, resend-otp, forgot password, profile email change; error `details.retryAfterSeconds` on `OTP_RESEND_TOO_SOON` / `OTP_RESEND_LIMIT`; central 429 `EMAIL_RATE_LIMITED`.
 - 2026-11-11 (rev 32) — Emails through Resend; new 503 `EMAIL_SEND_FAILED` / `EMAIL_NOT_CONFIGURED` on `/auth/signup`, `/auth/resend-otp`, `PATCH /auth/me` (email change), `POST /activations/:id/send`. Forgot password is unchanged (always the same answer).

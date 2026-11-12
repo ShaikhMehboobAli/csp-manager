@@ -4,6 +4,8 @@
 **Source of truth for the backend:** `csp-manager/apps/api` (Express + Prisma). This doc lists what the desktop must add, modify, or remove to match the backend.
 **Last updated:** 2026-11-12 (rev 31)
 
+> **Start here (2026-11-12): `docs/desktop-next-build.md`** — the build list for #35–#40 and the email OTP changes, in order, with the contracts and a test checklist. The desktop gets no push and no payments.
+
 > **Rev 31 (2026-11-12): resend timer on email OTPs.** Both email OTP calls return `resendAvailableAt` + `resendInSeconds` (60): disable "Send again" and show a countdown. "Too soon" / "too many" errors carry `details.retryAfterSeconds`; restart the countdown from it. The agent also gets a welcome email with its Agent ID, activation code and password when the CSP assigns the code (nothing to call on the desktop).
 
 > **Rev 30 (2026-11-11): email OTPs are now really emailed (Resend).** `POST /machines/activate/email/otp` and `POST /machines/runtime/cash/email/otp` can answer **503 `EMAIL_SEND_FAILED`** when the email provider fails: show `message` and allow "Send again" after the 60 s wait. Subjects: "Verify your email for CSP Manager" / "Your CSP Manager cash login code".
