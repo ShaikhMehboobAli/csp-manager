@@ -13,6 +13,8 @@ export type FamilyAgent = {
   email: string | null;
   emailMasked: string | null;
   emailVerified: boolean;
+  /** SBI kiosk User ID when it differs from agentId (null = the agentId). */
+  sbiUserId: string | null;
 };
 
 /**
@@ -50,7 +52,7 @@ export default class MachineFamilyService {
           { parentAgentId: cspAgentId, type: AgentType.KO },
         ],
       },
-      select: { agentId: true, name: true, type: true, email: true, emailVerifiedAt: true },
+      select: { agentId: true, name: true, type: true, email: true, emailVerifiedAt: true, sbiUserId: true },
       orderBy: [{ type: "asc" }, { agentId: "asc" }],
     });
 
@@ -61,6 +63,7 @@ export default class MachineFamilyService {
       email: row.email,
       emailMasked: maskEmail(row.email),
       emailVerified: !!row.email && !!row.emailVerifiedAt,
+      sbiUserId: row.sbiUserId,
     }));
   }
 
@@ -70,6 +73,29 @@ export default class MachineFamilyService {
     if (!member) {
       throw new ForbiddenError(
         "This agent can't use this PC: only the CSP that owns it and its KOs can.",
+        "AGENT_NOT_IN_FAMILY",
+      );
+    }
+
+    return member;
+  }
+
+  /**
+   * Who logged in to SBI on this PC: by agentId, else by the User ID typed
+   * on the SBI kiosk (an agent's `sbiUserId`, or its agentId), ignoring case.
+   */
+  async resolveMember(authenticated: AuthenticatedMachine, input: { agentId?: string; sbiUserId?: string }) {
+    const members = await this.agents(authenticated);
+    const same = (a: string | null, b: string | undefined) => !!a && !!b && a.toUpperCase() === b.trim().toUpperCase();
+
+    const member =
+      members.find((agent) => same(agent.agentId, input.agentId)) ??
+      members.find((agent) => same(agent.sbiUserId, input.sbiUserId) || same(agent.agentId, input.sbiUserId)) ??
+      members.find((agent) => same(agent.sbiUserId, input.agentId));
+
+    if (!member) {
+      throw new ForbiddenError(
+        "This SBI user can't use this PC: only the CSP that owns it and its KOs can.",
         "AGENT_NOT_IN_FAMILY",
       );
     }

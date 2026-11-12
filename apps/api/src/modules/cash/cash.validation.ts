@@ -330,6 +330,18 @@ export const machineDayCloseSchema = z.object({
   ...machineCredentials,
   countedCashInHand: requiredMoney("Counted cash in hand"),
   countedDrawer: fullDrawerSchema,
+  // Optional: the cash in account SBI shows now (nothing moves; compared only).
+  countedCashInAccount: moneyValidator("Counted cash in account"),
+});
+
+/** Desktop: the notes of a cash receipt uploaded without them ("Count needed"). */
+export const machineReceiptCountSchema = z.object({
+  ...machineCredentials,
+  cashDenomination: fullDrawerSchema,
+});
+
+export const receiptCountStatusQuerySchema = z.object({
+  status: z.enum(["PENDING", "DONE", "ALL"]).default("PENDING"),
 });
 
 const taskTitle = z

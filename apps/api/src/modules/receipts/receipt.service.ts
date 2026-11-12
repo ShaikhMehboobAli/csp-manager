@@ -31,6 +31,7 @@ import {
   SubscriptionStatus,
 } from "../../generated/prisma/enums";
 import CashService, { ReceiptCashResult } from "../cash/cash.service";
+import { isEmptyDenomination } from "../cash/cash-receipt-count.service";
 import ReceiptListRepository from "./repository/receipt-list.repository";
 import { mapReceiptDetail, mapReceiptList } from "./receipt.mapper";
 import ReceiptDetailRepository from "./repository/receipt-detail.repository";
@@ -418,6 +419,7 @@ export default class ReceiptService {
           transactionAt: receipt.transactionAt,
           amount: receipt.amount,
           count: receipt.count,
+          source: receipt.source ?? null,
         })),
       );
 
@@ -445,10 +447,11 @@ export default class ReceiptService {
         acceptedReceipts.push({ receiptId: receipt.receiptId, count: 1 });
       }
 
+      // An empty denomination ({} or all zero) counts as "no notes".
       await repository.createCashDenominations(
         saved.flatMap(({ receipt, id }) =>
-          receipt.cashDenomination
-            ? [{ receiptRecordId: id, ...receipt.cashDenomination }]
+          !isEmptyDenomination(receipt.cashDenomination)
+            ? [{ receiptRecordId: id, ...receipt.cashDenomination! }]
             : [],
         ),
       );
@@ -460,17 +463,37 @@ export default class ReceiptService {
           receiptRecordId: id,
           transactionCategory: receipt.transactionCategory,
           amount: receipt.amount,
-          cashDenomination: receipt.cashDenomination,
+          cashDenomination: isEmptyDenomination(receipt.cashDenomination) ? null : receipt.cashDenomination,
         })),
         { type: "MACHINE", id: authenticated.machine.machineCode },
       );
+
+      // A cash receipt applied without its notes: the balances moved, the
+      // drawer waits for the agent's count ("Count needed"). Only on a plan
+      // with cash management.
+      const countsNeeded =
+        (await entitlementService.canViewCashManagement(authenticated.subscription))
+          ? saved.filter(
+              ({ receipt, id }) =>
+                cash.get(id)?.status === "APPLIED" && isEmptyDenomination(receipt.cashDenomination),
+            )
+          : [];
+
+      if (countsNeeded.length > 0) {
+        await tx.receipt.updateMany({
+          where: { id: { in: countsNeeded.map(({ id }) => id) } },
+          data: { denominationPending: true },
+        });
+      }
+
+      const pendingIds = new Set(countsNeeded.map(({ id }) => id));
 
       // Cash receipts say whether they changed the balances.
       for (const [index, { id }] of saved.entries()) {
         const result = cash.get(id);
 
         if (result) {
-          acceptedReceipts[index].cash = result;
+          acceptedReceipts[index].cash = pendingIds.has(id) ? { status: "APPLIED", denomination: "PENDING" } : result;
         }
       }
 

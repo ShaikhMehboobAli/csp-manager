@@ -19,8 +19,10 @@ import {
   machineDateQuerySchema,
   machineDaysQuerySchema,
   machineDuesQuerySchema,
+  receiptCountStatusQuerySchema,
   taskStatusQuerySchema,
 } from "../../cash/cash.validation";
+import CashReceiptCountService from "../../cash/cash-receipt-count.service";
 import SubscriptionEntitlementService from "../../subscriptions/subscription-entitlement.service";
 import MachineAuthenticationService from "./machine-auth.service";
 import MachineRuntimeValidator from "./machine-runtime-validator";
@@ -345,11 +347,40 @@ export default class MachineRuntimeController {
         agentId,
         countedCashInHand: req.body.countedCashInHand,
         countedDrawer: req.body.countedDrawer,
+        countedCashInAccount: req.body.countedCashInAccount,
         machineCode,
       });
     });
 
     return res.status(201).json({ success: true, message: result.message, data: result.close });
+  }
+
+  /** "Count needed": cash receipts uploaded without their notes. */
+  async getReceiptCounts(req: Request, res: Response) {
+    const { status } = receiptCountStatusQuerySchema.parse(req.query);
+
+    const data = await withReadOnly(async (tx) => {
+      const { agentId } = await this.machineAgent(tx, req.body);
+
+      return new CashReceiptCountService(tx).list(agentId, status);
+    });
+
+    return res.status(200).json({ success: true, message: "Receipt counts fetched successfully.", data });
+  }
+
+  async fillReceiptCount(req: Request, res: Response) {
+    const data = await withTransaction(async (tx) => {
+      const { agentId, machineCode } = await this.machineAgent(tx, req.body, { write: true });
+
+      return new CashReceiptCountService(tx).fill({
+        agentId,
+        receiptId: req.params.receiptId as string,
+        cashDenomination: req.body.cashDenomination,
+        machineCode,
+      });
+    });
+
+    return res.status(200).json({ success: true, message: "Count saved.", data });
   }
 
   async getDayClose(req: Request, res: Response) {

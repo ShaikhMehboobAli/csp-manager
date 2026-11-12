@@ -29,6 +29,12 @@ export function mapReceiptList(receipts: any[]) {
     machineCode: receipt.machine?.machineCode ?? null,
 
     machineName: receipt.machine?.machineName ?? null,
+
+    // AUTOMATION | MANUAL | null (older desktops).
+    source: receipt.source ?? null,
+
+    // The notes of this cash receipt still need counting on the desktop.
+    denominationPending: receipt.denominationPending ?? false,
   }));
 }
 
@@ -57,6 +63,10 @@ export function mapReceiptDetail(receipt: any) {
     terminalId: receipt.terminalId ?? null,
 
     location: receipt.location ?? null,
+
+    source: receipt.source ?? null,
+
+    denominationPending: receipt.denominationPending ?? false,
 
     // Extra fields, only when the super admin allows the desktop to send them.
     bankName: receipt.bankName ?? null,

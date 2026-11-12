@@ -1,4 +1,6 @@
 import { withReadOnly, withTransaction } from "../../core/database/transaction";
+import NotificationService from "../notifications/notification.service";
+import { NotificationKind } from "../../generated/prisma/enums";
 import { PrismaDb } from "../../core/database/prisma.types";
 import { ConflictError } from "../../core/errors/ConflictError";
 import { NotFoundError } from "../../core/errors/NotFoundError";
@@ -84,6 +86,13 @@ export default class ActivationRevokeService {
         createdByUserId: user.userId,
       });
 
+      await new NotificationService(tx).notifySuperAdmins({
+        title: "Revoke request",
+        message: `${activation.subscription.ownerId} asked to revoke ${activation.activationCode}${request.machineCode ? ` (PC ${request.machineCode})` : ""}: ${input.reason}`,
+        kind: NotificationKind.ACTIVATION_REVOKE_REQUESTED,
+        data: { requestId: request.id, requestNumber, activationId: activation.id, activationCode: activation.activationCode, ownerId: activation.subscription.ownerId, machineCode: request.machineCode },
+      });
+
       return mapRevokeRequest(request);
     });
   }
@@ -159,6 +168,13 @@ export default class ActivationRevokeService {
         reviewedAt: new Date(),
       });
 
+      await new NotificationService(tx).notifyAgent(current.ownerId, {
+        title: "Revoke approved",
+        message: `${activation.activationCode} is revoked${current.machineCode ? `; the PC ${current.machineCode} has stopped working` : ""}. Assign the code again to use it on another PC.${remarks ? ` Note: ${remarks}` : ""}`,
+        kind: NotificationKind.ACTIVATION_REVOKE_APPROVED,
+        data: { requestId: current.id, requestNumber: current.requestNumber, activationId: activation.id, activationCode: activation.activationCode, machineCode: current.machineCode },
+      });
+
       return { ...mapRevokeRequest(updated), revoked };
     });
   }
@@ -180,6 +196,13 @@ export default class ActivationRevokeService {
         reviewRemarks: remarks,
         reviewedByUserId: user.userId,
         reviewedAt: new Date(),
+      });
+
+      await new NotificationService(tx).notifyAgent(current.ownerId, {
+        title: "Revoke rejected",
+        message: `Your request to revoke ${current.activation.activationCode} was rejected; it keeps working.${remarks ? ` Reason: ${remarks}` : ""}`,
+        kind: NotificationKind.ACTIVATION_REVOKE_REJECTED,
+        data: { requestId: current.id, requestNumber: current.requestNumber, activationId: current.activationId, activationCode: current.activation.activationCode },
       });
 
       return mapRevokeRequest(updated);

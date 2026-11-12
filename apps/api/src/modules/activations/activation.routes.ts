@@ -41,6 +41,14 @@ router.post(
   ActivationController.regeneratePassword,
 );
 
+// Email the code + a fresh password to the assigned agent (or to the owner).
+router.post(
+  "/:activationId/send",
+  authMiddleware,
+  authorize(UserRole.CSP_ADMIN, UserRole.BC_ADMIN),
+  ActivationController.sendActivationEmail,
+);
+
 // Owners raise a revoke request; the super admin approves or rejects it.
 router.post(
   "/:activationId/revoke-requests",

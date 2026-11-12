@@ -38,6 +38,10 @@ export default class ReceiptListRepository extends ReceiptCommonRepository {
         select: {
           receiptId: true,
 
+          source: true,
+
+          denominationPending: true,
+
           receiptType: true,
 
           transactionCategory: true,
