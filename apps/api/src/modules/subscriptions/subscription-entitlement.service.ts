@@ -8,6 +8,7 @@ export const DesktopFeature = {
   RECEIPT_SYNC: "RECEIPT_SYNC",
   CASH_MANAGEMENT: "CASH_MANAGEMENT",
   MOBILE_TRACKING: "MOBILE_TRACKING",
+  CSP_LINKING: "CSP_LINKING",
 } as const;
 
 /**

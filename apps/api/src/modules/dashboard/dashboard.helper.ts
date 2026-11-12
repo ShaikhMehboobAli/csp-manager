@@ -1,6 +1,13 @@
 // export const HEARTBEAT_TIMEOUT_MS = 360 * 1000;
 
 import { HEARTBEAT_TIMEOUT_MS } from "../machines/runtime/machine-runtime.constants";
+import {
+  addDays,
+  endOfIstDay,
+  istDateKey,
+  istParts,
+  startOfIstDay,
+} from "../../core/utils/ist";
 
 export function getMachineStatus(lastHeartbeatAt: Date | null) {
   if (!lastHeartbeatAt) {
@@ -13,45 +20,37 @@ export function getMachineStatus(lastHeartbeatAt: Date | null) {
 }
 
 export function getTodayRange() {
-  const start = new Date();
-
-  start.setHours(0, 0, 0, 0);
-
-  const end = new Date();
-
-  end.setHours(23, 59, 59, 999);
+  const now = new Date();
 
   return {
-    start,
-    end,
+    start: startOfIstDay(now),
+    end: endOfIstDay(now),
   };
 }
 
+/** Chart bucket label for a transaction, on the IST calendar. */
 export function getTrendLabel(
   date: Date,
   groupBy: "hour" | "day" | "week" | "month" | "year",
 ): string {
+  const { year, month, hour, weekday } = istParts(date);
+
   switch (groupBy) {
     case "hour":
-      return `${date.getHours()}:00`;
+      return `${hour}:00`;
 
     case "day":
-      return date.toISOString().split("T")[0];
+      return istDateKey(date);
 
-    case "week": {
-      const firstDay = new Date(date);
-      firstDay.setDate(date.getDate() - date.getDay());
-      return firstDay.toISOString().split("T")[0];
-    }
+    // Week starts on Sunday.
+    case "week":
+      return istDateKey(addDays(date, -weekday));
 
     case "month":
-      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(
-        2,
-        "0",
-      )}`;
+      return `${year}-${String(month + 1).padStart(2, "0")}`;
 
     case "year":
-      return `${date.getFullYear()}`;
+      return `${year}`;
   }
 }
 

@@ -6,7 +6,7 @@ import { PrismaDb } from "./prisma.types";
  * tight for a remote database: multi-receipt uploads make many sequential
  * round trips and were aborted mid-way (P2028).
  */
-const TRANSACTION_OPTIONS = {
+export const TRANSACTION_OPTIONS = {
   maxWait: 10_000,
   timeout: 15_000,
 };

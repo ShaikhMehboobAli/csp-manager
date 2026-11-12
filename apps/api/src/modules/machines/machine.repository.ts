@@ -72,12 +72,21 @@ export default class MachineRepository {
     });
   }
 
-  reassignMachine(machineId: string, agentId: string, apiKeyHash: string) {
+  reassignMachine(
+    machineId: string,
+    agentId: string,
+    apiKeyHash: string,
+    deviceKey: Pick<
+      Prisma.MachineUpdateInput,
+      "devicePublicKey" | "devicePublicKeyRegisteredAt"
+    >,
+  ) {
     return this.db.machine.update({
       where: {
         id: machineId,
       },
       data: {
+        ...deviceKey,
         apiKeyHash,
         apiKeyIssuedAt: new Date(),
         currentAgentId: agentId,
@@ -86,6 +95,25 @@ export default class MachineRepository {
             agentId,
           },
         },
+      },
+    });
+  }
+
+  // Re-activation of the same machine: the new key replaces the old one.
+  rotateApiKey(
+    machineId: string,
+    apiKeyHash: string,
+    details: Prisma.MachineUpdateInput,
+  ) {
+    return this.db.machine.update({
+      where: {
+        id: machineId,
+      },
+      data: {
+        ...details,
+        apiKeyHash,
+        apiKeyIssuedAt: new Date(),
+        apiKeyExpiresAt: null,
       },
     });
   }
