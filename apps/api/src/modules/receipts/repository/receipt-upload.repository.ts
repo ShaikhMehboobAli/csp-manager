@@ -93,6 +93,7 @@ export default class ReceiptRepository {
         status: true,
         transactionAt: true,
         amount: true,
+        commissionAmount: true,
       },
     });
   }

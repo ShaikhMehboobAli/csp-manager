@@ -4,6 +4,7 @@ import { addDays, istCalendarDate } from "../../core/utils/ist";
 import ReceiptRetentionSettingsService from "../settings/receipt-retention-settings.service";
 
 import ReceiptDailyCountRepository from "./repository/receipt-daily-count.repository";
+import ReceiptSlipService from "./receipt-slip.service";
 
 // Small batches keep each delete well under the statement timeout.
 const DELETE_BATCH_SIZE = 5000;
@@ -63,6 +64,7 @@ export default class ReceiptRetentionService {
         receiptsToDelete,
         undercountedDays: undercountedDays.length,
         receiptsDeleted: 0,
+        slipsDeleted: 0,
         countsDeleted: 0,
         countsRepaired: 0,
       };
@@ -71,6 +73,7 @@ export default class ReceiptRetentionService {
     let receiptsDeleted = 0;
     let countsDeleted = 0;
     let countsRepaired = 0;
+    let slipsDeleted = 0;
 
     try {
       const undercounted = await this.repository.findUndercountedDays();
@@ -91,12 +94,16 @@ export default class ReceiptRetentionService {
       }
 
       for (;;) {
-        const deleted = await this.repository.deleteReceiptsBefore(
+        const { deleted, slipKeys } = await this.repository.deleteReceiptsBefore(
           receiptCutoff,
           DELETE_BATCH_SIZE,
         );
 
         receiptsDeleted += deleted;
+
+        // Their slip images too (best effort: an S3 lifecycle rule on
+        // receipt-slips/ is the backstop).
+        slipsDeleted += await ReceiptSlipService.deleteSlips(slipKeys).catch(() => 0);
 
         if (deleted < DELETE_BATCH_SIZE) {
           break;
@@ -110,6 +117,7 @@ export default class ReceiptRetentionService {
         startedAt,
         receiptCutoff,
         receiptsDeleted,
+        slipsDeleted,
         countsDeleted,
         countsRepaired,
       });
@@ -120,6 +128,7 @@ export default class ReceiptRetentionService {
         startedAt,
         receiptCutoff,
         receiptsDeleted,
+        slipsDeleted,
         countsDeleted,
         countsRepaired,
         error: error instanceof Error ? error.message : String(error),
@@ -136,6 +145,7 @@ export default class ReceiptRetentionService {
       receiptsToDelete: 0,
       undercountedDays: 0,
       receiptsDeleted,
+      slipsDeleted,
       countsDeleted,
       countsRepaired,
     };
@@ -146,6 +156,7 @@ export default class ReceiptRetentionService {
     startedAt: Date;
     receiptCutoff: Date;
     receiptsDeleted: number;
+    slipsDeleted: number;
     countsDeleted: number;
     countsRepaired: number;
     error?: string;

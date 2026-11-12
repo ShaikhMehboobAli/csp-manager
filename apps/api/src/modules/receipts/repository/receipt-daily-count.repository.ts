@@ -17,6 +17,7 @@ export type CountedReceipt = {
   status: ReceiptStatus | null;
   transactionAt: Date | null;
   amount: Prisma.Decimal | number | null;
+  commissionAmount?: Prisma.Decimal | number | null;
 };
 
 export type DailyCountFilter = {
@@ -106,6 +107,7 @@ const RECEIPT_GROUPS_SQL = Prisma.sql`
     "transactionType", "status",
     COUNT(*)::int AS "count",
     COALESCE(SUM("amount"), 0) AS "amount",
+    COALESCE(SUM("commissionAmount"), 0) AS "commissionAmount",
     MIN("transactionAt") AS "firstTransactionAt",
     MAX("transactionAt") AS "lastTransactionAt"
   FROM "Receipt"
@@ -130,6 +132,7 @@ export default class ReceiptDailyCountRepository {
         receipt: CountedReceipt;
         count: number;
         amount: Prisma.Decimal;
+        commission: Prisma.Decimal;
         first: Date;
         last: Date;
       }
@@ -158,12 +161,14 @@ export default class ReceiptDailyCountRepository {
         receipt,
         count: 0,
         amount: new Prisma.Decimal(0),
+        commission: new Prisma.Decimal(0),
         first: receipt.transactionAt,
         last: receipt.transactionAt,
       };
 
       group.count += 1;
       group.amount = group.amount.plus(receipt.amount ?? 0);
+      group.commission = group.commission.plus(receipt.commissionAmount ?? 0);
 
       if (receipt.transactionAt < group.first) {
         group.first = receipt.transactionAt;
@@ -191,12 +196,12 @@ export default class ReceiptDailyCountRepository {
     await this.db.$executeRaw`
       INSERT INTO "ReceiptDailyCount" (
         "date", "agentId", "machineId", "receiptType", "transactionCategory",
-        "transactionType", "status", "count", "amount",
+        "transactionType", "status", "count", "amount", "commissionAmount",
         "firstTransactionAt", "lastTransactionAt", "updatedAt"
       )
       VALUES ${Prisma.join(
         rows.map(
-          ({ date, receipt, count, amount, first, last }) => Prisma.sql`(
+          ({ date, receipt, count, amount, commission, first, last }) => Prisma.sql`(
             ${date}::date,
             ${receipt.agentId},
             ${receipt.machineId},
@@ -206,6 +211,7 @@ export default class ReceiptDailyCountRepository {
             ${receipt.status}::"ReceiptStatus",
             ${count},
             ${amount.toString()}::numeric,
+            ${commission.toString()}::numeric,
             ${first},
             ${last},
             CURRENT_TIMESTAMP
@@ -218,6 +224,7 @@ export default class ReceiptDailyCountRepository {
       ) DO UPDATE SET
         "count" = "ReceiptDailyCount"."count" + EXCLUDED."count",
         "amount" = "ReceiptDailyCount"."amount" + EXCLUDED."amount",
+        "commissionAmount" = "ReceiptDailyCount"."commissionAmount" + EXCLUDED."commissionAmount",
         "firstTransactionAt" = LEAST(
           "ReceiptDailyCount"."firstTransactionAt",
           EXCLUDED."firstTransactionAt"
@@ -263,7 +270,7 @@ export default class ReceiptDailyCountRepository {
     return this.db.$executeRaw`
       INSERT INTO "ReceiptDailyCount" (
         "date", "agentId", "machineId", "receiptType", "transactionCategory",
-        "transactionType", "status", "count", "amount",
+        "transactionType", "status", "count", "amount", "commissionAmount",
         "firstTransactionAt", "lastTransactionAt", "updatedAt"
       )
       SELECT r.*, CURRENT_TIMESTAMP
@@ -275,6 +282,7 @@ export default class ReceiptDailyCountRepository {
       ) DO UPDATE SET
         "count" = EXCLUDED."count",
         "amount" = EXCLUDED."amount",
+        "commissionAmount" = EXCLUDED."commissionAmount",
         "firstTransactionAt" = LEAST(
           "ReceiptDailyCount"."firstTransactionAt",
           EXCLUDED."firstTransactionAt"
@@ -306,8 +314,9 @@ export default class ReceiptDailyCountRepository {
    * whole recent days intact. Cash denominations cascade; float ledger rows stay and lose only
    * their receipt link.
    */
+  /** Deletes a batch; returns how many and the slip images to delete. */
   async deleteReceiptsBefore(cutoff: Date, limit: number) {
-    return this.db.$executeRaw`
+    const rows = await this.db.$queryRaw<{ slipKey: string | null }[]>`
       DELETE FROM "Receipt"
       WHERE "id" IN (
         SELECT "id" FROM "Receipt"
@@ -316,7 +325,13 @@ export default class ReceiptDailyCountRepository {
         ORDER BY "transactionAt" ASC NULLS FIRST
         LIMIT ${limit}
       )
+      RETURNING "slipKey"
     `;
+
+    return {
+      deleted: rows.length,
+      slipKeys: rows.flatMap((row) => (row.slipKey ? [row.slipKey] : [])),
+    };
   }
 
   async deleteCountsBefore(date: Date) {

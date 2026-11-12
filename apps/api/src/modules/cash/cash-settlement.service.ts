@@ -1,10 +1,13 @@
 import { PrismaDb } from "../../core/database/prisma.types";
+import { NotificationKind } from "../../generated/prisma/enums";
+import { notifyCspOfKo } from "./cash-notify.helper";
 import { BadRequestError } from "../../core/errors/BadRequestError";
 import { ConflictError } from "../../core/errors/ConflictError";
 import { NotFoundError } from "../../core/errors/NotFoundError";
-import { endOfIstDay, startOfIstDay } from "../../core/utils/ist";
+import { endOfIstDay, istCalendarDate, istDateKey, startOfIstDay } from "../../core/utils/ist";
 import { Prisma } from "../../generated/prisma/client";
 import {
+  AgentType,
   CashActorType,
   CashLedgerType,
   CashSettlementDirection,
@@ -13,7 +16,9 @@ import {
   TransactionCategory,
 } from "../../generated/prisma/enums";
 
-import { Drawer, drawerOf, drawerTotal, emptyDrawer } from "./cash.constants";
+import { DRAWER_KEYS, Drawer, drawerOf, drawerTotal, emptyDrawer } from "./cash.constants";
+import { mapDayClose } from "./cash-day.service";
+import CashDeskService from "./cash-desk.service";
 import {
   D,
   NOT_SET_UP_MESSAGE,
@@ -22,6 +27,7 @@ import {
   moveDrawer,
   rupees,
 } from "./cash.helpers";
+import CashReceiptCountService from "./cash-receipt-count.service";
 import CashRepository, { LockedPool } from "./cash.repository";
 
 type Settlement = Prisma.CashSettlementGetPayload<object>;
@@ -96,7 +102,11 @@ export default class CashSettlementService {
     }
 
     if (input.direction === CashSettlementDirection.BANK_TO_HAND) {
-      return this.createFromLeftInBank({ ...input, cspAgentId, pool });
+      const single = await this.createFromLeftInBank({ ...input, cspAgentId, pool });
+
+      await this.notifyCsp(cspAgentId, input.agentId, "STARTED", single.id, input.direction, D(input.amount));
+
+      return single;
     }
 
     const cash = await this.repository.lockAgentCash([input.agentId]);
@@ -187,7 +197,38 @@ export default class CashSettlementService {
 
     await this.repository.refreshFloatMirror(cspAgentId);
 
+    await this.notifyCsp(cspAgentId, input.agentId, "STARTED", settlement.id, input.direction, amount);
+
     return this.map(settlement);
+  }
+
+  /** The CSP hears about its KOs' settlements (not its own). */
+  private notifyCsp(
+    cspAgentId: string,
+    agentId: string,
+    event: "STARTED" | "COMPLETED" | "CANCELLED",
+    settlementId: string,
+    direction: CashSettlementDirection,
+    amount: Prisma.Decimal,
+    settled?: Prisma.Decimal,
+  ) {
+    const what = STEP_LABEL[direction][direction === CashSettlementDirection.BANK_TO_HAND ? "FROM_BANK" : "TO_BANK"];
+    const route = direction === CashSettlementDirection.ACCOUNT_TO_HAND ? "Cash in account → cash in hand"
+      : direction === CashSettlementDirection.HAND_TO_ACCOUNT ? "Cash in hand → cash in account" : what;
+    const left = settled && !settled.equals(amount) ? ` ${rupees(amount.minus(settled))} is left in bank.` : "";
+
+    const text = {
+      STARTED: { kind: NotificationKind.CASH_SETTLEMENT_STARTED, title: "Settlement started", message: (ko: string) => `${ko} started a settlement of ${rupees(amount)}: ${route}.` },
+      COMPLETED: { kind: NotificationKind.CASH_SETTLEMENT_COMPLETED, title: "Settlement completed", message: (ko: string) => `${ko} completed a settlement of ${rupees(settled ?? amount)}: ${route}.${left}` },
+      CANCELLED: { kind: NotificationKind.CASH_SETTLEMENT_CANCELLED, title: "Settlement cancelled", message: (ko: string) => `${ko} cancelled a settlement of ${rupees(amount)}: ${route}. The money is back where it came from.` },
+    }[event];
+
+    return notifyCspOfKo(this.db, {
+      cspAgentId,
+      agentId,
+      ...text,
+      data: { settlementId, direction, amount: amount.toFixed(2), settledAmount: settled ? settled.toFixed(2) : null },
+    });
   }
 
   /**
@@ -288,7 +329,9 @@ export default class CashSettlementService {
         },
       });
 
-      return { approved: this.map({ ...settlement, status: "APPROVED", ...review }), next: this.map(next) };
+      const approved = { ...settlement, status: CashSettlementStatus.APPROVED, ...review };
+
+      return { approved: this.map(approved), next: this.map(next, approved) };
     }
 
     const cash = await this.repository.lockAgentCash([settlement.agentId]);
@@ -375,7 +418,9 @@ export default class CashSettlementService {
 
     await this.repository.refreshFloatMirror(cspAgentId);
 
-    return { approved: this.map(updated), next: null };
+    await this.notifyCsp(cspAgentId, settlement.agentId, "COMPLETED", updated.parentId ?? updated.id, settlement.direction, amount, settled);
+
+    return { approved: await this.mapOne(updated), next: null };
   }
 
   /** Cancels an open step: the money (and notes) go back where they came from. */
@@ -448,47 +493,97 @@ export default class CashSettlementService {
 
     await this.repository.refreshFloatMirror(cspAgentId);
 
-    return this.map(updated);
+    await this.notifyCsp(cspAgentId, settlement.agentId, "CANCELLED", updated.parentId ?? updated.id, settlement.direction, amount);
+
+    return this.mapOne(updated);
   }
 
   /**
    * The KO's cash screen on the desktop: its own cash in hand and drawer,
-   * the shared limit and cash in account, today's history and open
-   * settlements. Today = the IST day.
+   * the shared limit and cash in account, the day's history and open
+   * settlements. `day` (IST) defaults to today; for a past day the balances
+   * and drawer are those at the end of that day.
    */
-  async getAgentToday(agentId: string, agentName: string | null) {
-    const cspAgentId = await this.repository.findPoolCspId(agentId);
+  async getAgentToday(agentId: string, day?: Date) {
+    // One query for the name and the pool's CSP (a CSP its own, a KO its parent's).
+    const agent = await this.db.agent.findUnique({
+      where: { agentId },
+      select: { name: true, type: true, parentAgentId: true },
+    });
+    const cspAgentId =
+      agent?.type === AgentType.CSP ? agentId : agent?.type === AgentType.KO ? agent.parentAgentId : null;
+    const agentName = agent?.name ?? null;
 
     if (!cspAgentId) {
       throw new BadRequestError("This agent isn't part of a CSP.");
     }
 
     const now = new Date();
-    const today = { gte: startOfIstDay(now), lte: endOfIstDay(now) };
+    const date = day ?? now;
+    const isToday = istDateKey(date) === istDateKey(now);
+    const today = { gte: startOfIstDay(date), lte: endOfIstDay(date) };
 
-    const [pool, row, ledger, open, settledToday, lastRequest] = await Promise.all([
+    const [pool, row, ledger, open, settledToday, lastRequest, dayClose, dues, pendingCounts] = await Promise.all([
       this.repository.findPool(cspAgentId),
       this.db.agentCash.findUnique({ where: { agentId } }),
       this.db.cashLedger.findMany({
         where: { agentId, createdAt: today },
         orderBy: { createdAt: "desc" },
         take: 500,
-        include: { receipt: { select: { receiptId: true } } },
+        include: { receipt: { select: { receiptId: true, denominationPending: true, source: true } } },
       }),
-      this.db.cashSettlement.findMany({
-        where: { agentId, status: CashSettlementStatus.PENDING },
-        orderBy: { createdAt: "asc" },
-      }),
+      isToday
+        ? this.db.cashSettlement.findMany({
+            where: { agentId, status: CashSettlementStatus.PENDING },
+            orderBy: { createdAt: "asc" },
+          })
+        : Promise.resolve([]),
       this.db.cashSettlement.findMany({
         where: { agentId, createdAt: today, status: { not: CashSettlementStatus.PENDING } },
         orderBy: { createdAt: "desc" },
       }),
       this.db.cashRequest.findFirst({ where: { agentId }, orderBy: { createdAt: "desc" } }),
+      this.db.cashDayClose.findUnique({
+        where: { agentId_date: { agentId, date: istCalendarDate(date) } },
+      }),
+      new CashDeskService(this.db).dueTotals(agentId),
+      new CashReceiptCountService(this.db).pendingSummary(agentId),
     ]);
 
-    const drawer = row ? drawerOf(row) : emptyDrawer();
-    const hand = row ? D(row.cashInHand) : ZERO;
-    const totals = { deposits: ZERO, withdrawals: ZERO, moneyTransfers: ZERO, settlementsIn: ZERO, settlementsOut: ZERO };
+    const [settledSteps, openSteps] = await Promise.all([this.mapAll(settledToday), this.mapAll(open)]);
+
+    let drawer = row ? drawerOf(row) : emptyDrawer();
+    let hand = row ? D(row.cashInHand) : ZERO;
+    let balances = pool
+      ? {
+          cashLimit: D(pool.cashLimit),
+          cashInAccount: D(pool.cashInAccount),
+          cashInTransit: D(pool.cashInTransit),
+          cashLeftInBank: D(pool.cashLeftInBank),
+          cashOther: D(pool.cashOther),
+          cashDueExtra: D(pool.cashDueExtra),
+        }
+      : null;
+
+    if (!isToday) {
+      const end = await this.balancesAt(cspAgentId, agentId, today.lte, drawer);
+
+      hand = end.hand;
+      drawer = end.drawer;
+      balances = pool ? end.pool : null;
+    }
+
+    const totals = {
+      deposits: ZERO,
+      withdrawals: ZERO,
+      moneyTransfers: ZERO,
+      settlementsIn: ZERO,
+      settlementsOut: ZERO,
+      customIn: ZERO,
+      customOut: ZERO,
+      duesCollected: ZERO,
+      duesGiven: ZERO,
+    };
 
     for (const entry of ledger) {
       const change = D(entry.cashInHandChange);
@@ -506,22 +601,39 @@ export default class CashSettlementService {
       if (entry.type === CashLedgerType.SETTLEMENT_TO_BANK && change.isNegative()) {
         totals.settlementsOut = totals.settlementsOut.plus(change.negated());
       }
+
+      if (entry.type === CashLedgerType.CUSTOM) {
+        if (change.isPositive()) totals.customIn = totals.customIn.plus(change);
+        if (change.isNegative()) totals.customOut = totals.customOut.plus(change.negated());
+      }
+
+      if (entry.type === CashLedgerType.DUE_SETTLED) {
+        if (change.isPositive()) totals.duesCollected = totals.duesCollected.plus(change);
+        if (change.isNegative()) totals.duesGiven = totals.duesGiven.plus(change.negated());
+      }
     }
 
     const num = (value: Prisma.Decimal | null) => (value === null ? null : money(D(value)));
 
     return {
       setUp: !!pool,
-      date: now,
+      date: isToday ? now : today.lte,
+      day: istDateKey(date),
+      isToday,
       agent: { agentId, name: agentName, cspAgentId },
-      cashLimit: pool ? money(D(pool.cashLimit)) : null,
-      cashInAccount: pool ? money(D(pool.cashInAccount)) : null,
-      cashInTransit: pool ? money(D(pool.cashInTransit)) : null,
-      cashLeftInBank: pool ? money(D(pool.cashLeftInBank)) : null,
+      cashLimit: balances ? money(balances.cashLimit) : null,
+      cashInAccount: balances ? money(balances.cashInAccount) : null,
+      cashInTransit: balances ? money(balances.cashInTransit) : null,
+      cashLeftInBank: balances ? money(balances.cashLeftInBank) : null,
+      cashOther: balances ? money(balances.cashOther) : null,
+      cashDueExtra: balances ? money(balances.cashDueExtra) : null,
       cashInHand: money(hand),
       drawer,
       drawerTotal: drawerTotal(drawer),
       drawerMatchesCashInHand: drawerTotal(drawer) === money(hand),
+      // Cash receipts waiting for their notes: why the drawer differs.
+      pendingCountAmount: pendingCounts.amount,
+      pendingCounts,
       today: {
         totals: Object.fromEntries(
           Object.entries(totals).map(([key, value]) => [key, money(value)]),
@@ -534,17 +646,26 @@ export default class CashSettlementService {
           amount: num(entry.amount),
           cashInHandChange: money(D(entry.cashInHandChange)),
           cashInAccountChange: money(D(entry.cashInAccountChange)),
+          cashOtherChange: money(D(entry.cashOtherChange)),
+          cashDueExtraChange: money(D(entry.cashDueExtraChange)),
           balanceCashInHand: num(entry.balanceCashInHand),
           balanceCashInAccount: num(entry.balanceCashInAccount),
           drawerChange: entry.drawerChange,
           receiptId: entry.receipt?.receiptId ?? null,
+          // RECEIPT rows: the notes still need counting ("Fill count").
+          denominationPending: entry.type === CashLedgerType.RECEIPT ? entry.receipt?.denominationPending ?? false : false,
+          // AUTOMATION | MANUAL | null (not sent / not a receipt).
+          source: entry.receipt?.source ?? null,
           settlementId: entry.settlementId,
           remarks: entry.remarks,
           createdAt: entry.createdAt,
         })),
-        settlements: settledToday.map((item) => this.map(item)),
+        settlements: settledSteps,
       },
-      openSettlements: open.map((item) => this.map(item)),
+      openSettlements: openSteps,
+      dayClose: dayClose ? mapDayClose(dayClose) : null,
+      // Open balance dues: { toCollect, toGive, openCount, bySide } (now).
+      dues,
       lastRequest: lastRequest
         ? {
             id: lastRequest.id,
@@ -554,6 +675,58 @@ export default class CashSettlementService {
             createdAt: lastRequest.createdAt,
           }
         : null,
+    };
+  }
+
+  /**
+   * Balances at `end`: the latest ledger balance of each kind up to then;
+   * the drawer is today's minus every drawer change after `end`.
+   */
+  private async balancesAt(cspAgentId: string, agentId: string, end: Date, drawerNow: Drawer) {
+    const last = (where: Prisma.CashLedgerWhereInput) =>
+      this.db.cashLedger.findFirst({
+        where: { createdAt: { lte: end }, ...where },
+        orderBy: { createdAt: "desc" },
+      });
+
+    const [hand, account, limit, transit, left, other, dueExtra, later] = await Promise.all([
+      last({ agentId, balanceCashInHand: { not: null } }),
+      last({ cspAgentId, balanceCashInAccount: { not: null } }),
+      last({ cspAgentId, balanceCashLimit: { not: null } }),
+      last({ cspAgentId, balanceCashInTransit: { not: null } }),
+      last({ cspAgentId, balanceCashLeftInBank: { not: null } }),
+      last({ cspAgentId, balanceCashOther: { not: null } }),
+      last({ cspAgentId, balanceCashDueExtra: { not: null } }),
+      this.db.cashLedger.findMany({
+        where: { agentId, createdAt: { gt: end }, drawerChange: { not: Prisma.DbNull } },
+        select: { drawerChange: true },
+      }),
+    ]);
+
+    const drawer = { ...drawerNow };
+
+    for (const entry of later) {
+      const change = entry.drawerChange as Partial<Drawer>;
+
+      for (const key of DRAWER_KEYS) {
+        drawer[key] = Math.max(0, drawer[key] - (change[key] ?? 0));
+      }
+    }
+
+    const value = (entry: { [key: string]: unknown } | null, key: string) =>
+      entry && entry[key] !== null ? D(entry[key] as Prisma.Decimal) : ZERO;
+
+    return {
+      hand: value(hand, "balanceCashInHand"),
+      drawer,
+      pool: {
+        cashLimit: value(limit, "balanceCashLimit"),
+        cashInAccount: value(account, "balanceCashInAccount"),
+        cashInTransit: value(transit, "balanceCashInTransit"),
+        cashLeftInBank: value(left, "balanceCashLeftInBank"),
+        cashOther: value(other, "balanceCashOther"),
+        cashDueExtra: value(dueExtra, "balanceCashDueExtra"),
+      },
     };
   }
 
@@ -591,7 +764,7 @@ export default class CashSettlementService {
     ]);
 
     return {
-      items: items.map((item) => ({ ...this.map(item), agentName: item.agent.name })),
+      items: (await this.mapAll(items)).map((item, index) => ({ ...item, agentName: items[index].agent.name })),
       pagination: {
         page: filter.page,
         limit: filter.limit,
@@ -682,9 +855,63 @@ export default class CashSettlementService {
     ]);
   }
 
-  private map(settlement: Settlement) {
+  /** The agent's open step for the heartbeat (what's waiting for the KO), or null. */
+  async openStepSummary(agentId: string) {
+    const open = await this.db.cashSettlement.findFirst({
+      where: { agentId, status: CashSettlementStatus.PENDING },
+    });
+
+    if (!open) {
+      return null;
+    }
+
+    const step = await this.mapOne(open);
+
+    return {
+      id: step.id,
+      requestId: step.requestId,
+      direction: step.direction,
+      step: step.step,
+      stepNumber: step.stepNumber,
+      stepCount: step.stepCount,
+      amount: step.amount,
+      label: step.label,
+      needsDenomination: step.needsDenomination,
+    };
+  }
+
+  /** Maps steps with their step 1 loaded (one query for the whole list). */
+  async mapAll(settlements: Settlement[]) {
+    const parentIds = settlements.map((item) => item.parentId).filter((id): id is string => !!id);
+    const parents = parentIds.length
+      ? await this.db.cashSettlement.findMany({ where: { id: { in: parentIds } } })
+      : [];
+    const byId = new Map(parents.map((parent) => [parent.id, parent]));
+
+    return settlements.map((item) => this.map(item, item.parentId ? byId.get(item.parentId) : undefined));
+  }
+
+  private async mapOne(settlement: Settlement) {
+    return (await this.mapAll([settlement]))[0];
+  }
+
+  /**
+   * One step. `requestId` ties both steps of a request together (step 1's
+   * id); step 2 also has `previousStep`.
+   */
+  private map(settlement: Settlement, parent?: Settlement) {
+    const single = settlement.direction === CashSettlementDirection.BANK_TO_HAND;
+    const second = settlement.step === CashSettlementStep.FROM_BANK && !single;
+
     return {
       id: settlement.id,
+      requestId: settlement.parentId ?? settlement.id,
+      requestStartedAt: parent?.createdAt ?? settlement.createdAt,
+      stepNumber: second ? 2 : 1,
+      stepCount: single ? 1 : 2,
+      previousStep: parent
+        ? { id: parent.id, approvedAt: parent.reviewedAt, amount: money(D(parent.amount)) }
+        : null,
       cspAgentId: settlement.cspAgentId,
       agentId: settlement.agentId,
       direction: settlement.direction,

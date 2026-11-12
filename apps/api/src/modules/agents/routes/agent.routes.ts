@@ -37,6 +37,14 @@ router.get(
 );
 
 router.get("/:agentId", authMiddleware, AgentController.getAgent);
+
+// A new KO takes over the old one's machine and cash management.
+router.post(
+  "/:agentId/replace",
+  authMiddleware,
+  authorize(UserRole.CSP_ADMIN),
+  AgentController.replaceKO,
+);
 router.patch("/:agentId", authMiddleware, AgentController.updateAgent);
 router.delete("/:agentId", authMiddleware, AgentController.deleteAgent);
 

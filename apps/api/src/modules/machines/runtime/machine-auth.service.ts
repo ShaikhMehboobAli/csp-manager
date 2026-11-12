@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import bcrypt from "bcrypt";
 
 import {
@@ -20,6 +21,12 @@ import {
   CurrentActivation,
   Subscription,
 } from "./machine-auth.dto";
+
+
+/** API keys that matched their stored hash recently: hash → sha256(key). */
+const verifiedKeys = new Map<string, { digest: string; expiresAt: number }>();
+const VERIFIED_KEY_TTL_MS = 10 * 60 * 1000;
+const VERIFIED_KEYS_MAX = 10_000;
 
 export default class MachineAuthenticationService {
   private readonly repository: MachineAuthenticationRepository;
@@ -135,11 +142,26 @@ export default class MachineAuthenticationService {
       throw new BadRequestError("Machine API key not found.");
     }
 
+    // bcrypt costs ~100 ms per call; a key that matched this hash recently
+    // is accepted from memory. A new key (re-activation) has a new hash.
+    const digest = createHash("sha256").update(apiKey).digest("hex");
+    const known = verifiedKeys.get(apiKeyHash);
+
+    if (known && known.digest === digest && known.expiresAt > Date.now()) {
+      return;
+    }
+
     const isValid = await bcrypt.compare(apiKey, apiKeyHash);
 
     if (!isValid) {
       throw new BadRequestError("Invalid API key.");
     }
+
+    if (verifiedKeys.size >= VERIFIED_KEYS_MAX) {
+      verifiedKeys.clear();
+    }
+
+    verifiedKeys.set(apiKeyHash, { digest, expiresAt: Date.now() + VERIFIED_KEY_TTL_MS });
   }
 
   private verifyFingerprint(
@@ -162,7 +184,10 @@ export default class MachineAuthenticationService {
       throw new BadRequestError("Subscription is not active.");
     }
 
-    if (subscription.endDate && subscription.endDate < new Date()) {
+    // Works until the end of the grace period, if any.
+    const stopsAt = subscription.graceEndsAt ?? subscription.endDate;
+
+    if (stopsAt && stopsAt < new Date()) {
       throw new BadRequestError("Subscription has expired.");
     }
   }

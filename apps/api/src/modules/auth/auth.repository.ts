@@ -205,4 +205,86 @@ export default class AuthRepository {
       },
     });
   }
+
+  // ---------------------------------------------------------------------------
+  // Sessions (refresh tokens)
+  // ---------------------------------------------------------------------------
+
+  createSession(data: {
+    userId: string;
+    refreshTokenHash: string;
+    expiresAt: Date;
+    ipAddress: string | null;
+    userAgent: string | null;
+  }) {
+    return this.db.userSession.create({ data });
+  }
+
+  findSession(id: string) {
+    return this.db.userSession.findUnique({ where: { id }, include: { user: true } });
+  }
+
+  rotateSession(id: string, refreshTokenHash: string, expiresAt: Date) {
+    return this.db.userSession.update({ where: { id }, data: { refreshTokenHash, expiresAt } });
+  }
+
+  revokeSession(id: string) {
+    return this.db.userSession.updateMany({ where: { id, revokedAt: null }, data: { revokedAt: new Date() } });
+  }
+
+  /**
+   * Ties this phone's push token to the session (and user). A token that was
+   * on another login or session moves here: one phone, the last login.
+   */
+  async savePushDevice(userId: string, sessionId: string, device: { pushToken: string; platform: "android" | "ios"; appVersion?: string }) {
+    const data = { userId, sessionId, platform: device.platform, appVersion: device.appVersion ?? null, lastSeenAt: new Date() };
+
+    await this.db.notificationDevice.upsert({
+      where: { token: device.pushToken },
+      update: data,
+      create: { token: device.pushToken, ...data },
+    });
+
+    // A phone has one token per session: drop the old one Firebase replaced.
+    await this.db.notificationDevice.deleteMany({ where: { sessionId, token: { not: device.pushToken } } });
+  }
+
+  /** Logout: the session's phone stops getting pushes. */
+  deletePushDevicesOfSession(sessionId: string) {
+    return this.db.notificationDevice.deleteMany({ where: { sessionId } });
+  }
+
+  /** Expired or long-revoked sessions of the user (kept tidy at each login). */
+  deleteOldSessions(userId: string) {
+    return this.db.userSession.deleteMany({
+      where: { userId, OR: [{ expiresAt: { lt: new Date() } }, { revokedAt: { not: null } }] },
+    });
+  }
+
+  findUserById(id: string) {
+    return this.db.user.findUnique({ where: { id } });
+  }
+
+  findLatestOtp(userId: string, purpose: OtpPurpose) {
+    return this.db.otp.findFirst({ where: { userId, purpose }, orderBy: { createdAt: "desc" } });
+  }
+
+  deleteOtps(userId: string, purpose: OtpPurpose) {
+    return this.db.otp.deleteMany({ where: { userId, purpose } });
+  }
+
+  updatePassword(userId: string, passwordHash: string) {
+    return this.db.user.update({
+      where: { id: userId },
+      data: { passwordHash, passwordChangedAt: new Date() },
+    });
+  }
+
+  /** Signs the user out everywhere (password change, block). */
+  revokeUserSessions(userId: string) {
+    return this.db.userSession.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+  }
 }

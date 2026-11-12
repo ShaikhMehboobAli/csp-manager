@@ -38,6 +38,10 @@ export default class ReceiptListRepository extends ReceiptCommonRepository {
         select: {
           receiptId: true,
 
+          source: true,
+
+          denominationPending: true,
+
           receiptType: true,
 
           transactionCategory: true,
@@ -124,6 +128,7 @@ export default class ReceiptListRepository extends ReceiptCommonRepository {
 
         _sum: {
           amount: true,
+          commissionAmount: true,
         },
       }),
     ]);
@@ -136,6 +141,9 @@ export default class ReceiptListRepository extends ReceiptCommonRepository {
       failed,
 
       totalAmount: Number(totalAmount._sum.amount ?? 0),
+
+      // What the CSP earned on these receipts.
+      commissionAmount: Number(totalAmount._sum.commissionAmount ?? 0),
     };
   }
 
@@ -162,6 +170,8 @@ export default class ReceiptListRepository extends ReceiptCommonRepository {
         count: true,
 
         amount: true,
+
+        commissionAmount: true,
       },
     });
 
@@ -176,6 +186,8 @@ export default class ReceiptListRepository extends ReceiptCommonRepository {
       failed: of("FAILED")?.count ?? 0,
 
       totalAmount: Number(of("SUCCESS")?.amount ?? 0),
+
+      commissionAmount: Number(of("SUCCESS")?.commissionAmount ?? 0),
     };
   }
 

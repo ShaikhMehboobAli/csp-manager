@@ -2,7 +2,9 @@ import { Request, Response } from "express";
 
 import { BadRequestError } from "../../core/errors/BadRequestError";
 
+import BillingSettingsService from "./billing-settings.service";
 import DesktopSettingsService from "./desktop-settings.service";
+import ReceiptFieldsSettingsService from "./receipt-fields-settings.service";
 import ReceiptRetentionSettingsService, {
   maxReceiptRetentionDays,
 } from "./receipt-retention-settings.service";
@@ -10,6 +12,10 @@ import ReceiptRetentionSettingsService, {
 const service = new DesktopSettingsService();
 
 const retentionService = new ReceiptRetentionSettingsService();
+
+const receiptFieldsService = new ReceiptFieldsSettingsService();
+
+const billingService = new BillingSettingsService();
 
 export const getDesktopSettings = async (_req: Request, res: Response) => {
   const data = await service.getSettings();
@@ -93,6 +99,35 @@ export const updateReceiptRetention = async (req: Request, res: Response) => {
     success: true,
     message:
       "Receipt retention updated. Uploads use it within a minute; older receipts are deleted at the next daily run (03:30 IST).",
+    data,
+  });
+};
+
+export const getReceiptFields = async (_req: Request, res: Response) => {
+  const data = await receiptFieldsService.getAdminView();
+
+  return res.status(200).json({ success: true, message: "Receipt fields fetched successfully.", data });
+};
+
+export const updateReceiptFields = async (req: Request, res: Response) => {
+  const data = await receiptFieldsService.update(req.body.extra, req.user!.userId);
+
+  return res.status(200).json({ success: true, message: "Receipt fields updated.", data });
+};
+
+export const getBillingSettings = async (_req: Request, res: Response) => {
+  const data = await billingService.get({ fresh: true });
+
+  return res.status(200).json({ success: true, message: "Billing settings fetched successfully.", data });
+};
+
+export const updateBillingSettings = async (req: Request, res: Response) => {
+  const data = await billingService.update(req.body, req.user!.userId);
+
+  return res.status(200).json({
+    success: true,
+    message:
+      "Billing settings updated. New orders use the GST rate; running subscriptions follow the grace period.",
     data,
   });
 };

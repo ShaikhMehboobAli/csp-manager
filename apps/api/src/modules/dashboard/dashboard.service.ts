@@ -59,6 +59,7 @@ function hideMonitoringFloat<T>(summary: T): T {
 }
 import { DashboardCspDetailRepository } from "./repository/dashboard-csp-detail.repository";
 import { addDays, istDateKey, istMonthKey } from "../../core/utils/ist";
+import CommissionService from "../commission/commission.service";
 import CashService from "../cash/cash.service";
 import { DRAWER_KEYS, drawerTotal, emptyDrawer } from "../cash/cash.constants";
 
@@ -225,7 +226,12 @@ export default class DashboardService {
 
       // Shared limit / cash in account per CSP, every agent's cash in hand and
       // drawer; null for CSP plans without CASH_MANAGEMENT.
-      cash: canViewFloat ? await this.getCashSummary(dashboardFilter.agentIds) : null,
+      cash: canViewFloat ? await this.getCashSummary(dashboardFilter.agentIds, isBc) : null,
+
+      // Commission the CSPs in view earn: today and this month (1st → today, IST).
+      commission: await new CommissionService(this.db).todayAndMonth(
+        dashboardFilter.agentIds.length ? dashboardFilter.agentIds : null,
+      ),
 
       statusSummary: mapStatusSummary(statusSummary),
 
@@ -266,8 +272,11 @@ export default class DashboardService {
     };
   }
 
-  /** Cash for the agents in view, grouped by their CSP's pool. */
-  private async getCashSummary(agentIds: string[]) {
+  /**
+   * Cash for the agents in view, grouped by their CSP's pool. A BC sees the
+   * cash limit and its distribution only (no other cash / extra dues).
+   */
+  private async getCashSummary(agentIds: string[], isBc = false) {
     // The super admin's whole-system view has no agent list; pick an agent.
     if (agentIds.length === 0) {
       return null;
@@ -286,17 +295,20 @@ export default class DashboardService {
       ),
     ];
 
-    const pools = await new CashService(this.db).getViews(cspIds, agentIds);
+    const views = await new CashService(this.db).getViews(cspIds, agentIds);
+    const pools = isBc
+      ? views.map(({ cashOther: _other, cashDueExtra: _dueExtra, ...pool }) => pool)
+      : views;
     const drawer = emptyDrawer();
 
-    for (const pool of pools) {
+    for (const pool of views) {
       for (const key of DRAWER_KEYS) {
         drawer[key] += pool.drawer[key];
       }
     }
 
-    const sum = (pick: (pool: (typeof pools)[number]) => number | null) =>
-      Number(pools.reduce((total, pool) => total + (pick(pool) ?? 0), 0).toFixed(2));
+    const sum = (pick: (pool: (typeof views)[number]) => number | null) =>
+      Number(views.reduce((total, pool) => total + (pick(pool) ?? 0), 0).toFixed(2));
 
     return {
       totals: {
@@ -304,6 +316,12 @@ export default class DashboardService {
         cashInAccount: sum((pool) => pool.cashInAccount),
         cashInTransit: sum((pool) => pool.cashInTransit),
         cashLeftInBank: sum((pool) => pool.cashLeftInBank),
+        ...(isBc
+          ? {}
+          : {
+              cashOther: sum((pool) => pool.cashOther),
+              cashDueExtra: sum((pool) => pool.cashDueExtra),
+            }),
         totalCashInHand: sum((pool) => pool.totalCashInHand),
         drawer,
         drawerTotal: drawerTotal(drawer),

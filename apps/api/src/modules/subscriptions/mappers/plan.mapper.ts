@@ -1,4 +1,7 @@
-export function mapPlan(plan: any) {
+import { Prisma } from "../../../generated/prisma/client";
+
+/** `gstPercent`: GST added to the price at checkout (CSP plans: per machine). */
+export function mapPlan(plan: any, gstPercent = 0) {
   return {
     id: plan.id,
     code: plan.code,
@@ -11,6 +14,11 @@ export function mapPlan(plan: any) {
       billingCycle: pricing.billingCycle,
       durationDays: pricing.durationDays,
       price: pricing.price.toString(),
+      gstPercent,
+      gstAmount: gstOf(pricing.price, gstPercent).toFixed(2),
+      priceWithGst: new Prisma.Decimal(pricing.price)
+        .plus(gstOf(pricing.price, gstPercent))
+        .toFixed(2),
     })),
 
     features: plan.features.map((feature: any) => ({
@@ -20,4 +28,11 @@ export function mapPlan(plan: any) {
       category: feature.feature.category,
     })),
   };
+}
+
+function gstOf(price: Prisma.Decimal | string | number, gstPercent: number) {
+  return new Prisma.Decimal(price)
+    .times(gstPercent)
+    .dividedBy(100)
+    .toDecimalPlaces(2);
 }

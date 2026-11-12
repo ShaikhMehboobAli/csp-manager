@@ -24,9 +24,16 @@ async function selectAgents(
   scopeService: AgentScopeService,
   agentId: string | undefined,
   scope: string[],
+  includeKos = true,
 ) {
   if (!agentId) {
     return { agentId: undefined, agentIds: scope };
+  }
+
+  if (!includeKos) {
+    scopeService.ensureAgentAccessible(agentId, scope);
+
+    return { agentId, agentIds: [agentId] };
   }
 
   const agentIds = await scopeService.expandSelection(agentId, scope);
@@ -96,7 +103,7 @@ export default class DashboardController {
       const scopeService = new AgentScopeService(tx);
 
       const scope = await scopeService.getAgentScope(req.user!);
-      const selection = await selectAgents(scopeService, query.agentId, scope);
+      const selection = await selectAgents(scopeService, query.agentId, scope, query.includeKos);
       const agentIds = selection.agentIds;
 
       console.log("Dashboard Scope:", {
@@ -148,7 +155,7 @@ export default class DashboardController {
       const scopeService = new AgentScopeService(tx);
 
       const scope = await scopeService.getAgentScope(req.user!);
-      const selection = await selectAgents(scopeService, query.agentId, scope);
+      const selection = await selectAgents(scopeService, query.agentId, scope, query.includeKos);
 
       const result = await service.getAnalytics({
         ...query,
