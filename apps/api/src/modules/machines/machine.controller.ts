@@ -2,7 +2,13 @@ import { Request, Response } from "express";
 
 import MachineService from "./machine.service";
 
-import { activateMachineSchema } from "./validators/activate-machine.schema";
+import {
+  activateMachineSchema,
+  activationEmailOtpSchema,
+  activationEmailVerifySchema,
+  activationPreviewSchema,
+} from "./validators/activate-machine.schema";
+import MachineActivationService from "./services/machine-activation.service";
 import { MachineParams } from "./machine.dto";
 import { updateMachineSchema } from "./validators/update-machine.schema";
 import { machineListQuerySchema } from "./validators/machine.validation";
@@ -15,6 +21,25 @@ export const activateMachine = async (req: Request, res: Response) => {
   const result = await machineService.activateMachine(body);
 
   return res.status(201).json(result);
+};
+
+/** Activation form pre-fill: agent, email, plan, the cash in hand the CSP gave. */
+export const previewActivation = async (req: Request, res: Response) => {
+  const result = await new MachineActivationService().preview(activationPreviewSchema.parse(req.body));
+
+  return res.status(200).json(result);
+};
+
+export const sendActivationEmailOtp = async (req: Request, res: Response) => {
+  const result = await new MachineActivationService().sendEmailOtp(activationEmailOtpSchema.parse(req.body));
+
+  return res.status(200).json(result);
+};
+
+export const verifyActivationEmail = async (req: Request, res: Response) => {
+  const result = await new MachineActivationService().verifyEmail(activationEmailVerifySchema.parse(req.body));
+
+  return res.status(200).json(result);
 };
 
 export const getMachines = async (req: Request, res: Response) => {

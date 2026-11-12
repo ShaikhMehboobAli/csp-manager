@@ -94,7 +94,10 @@ export const approveRequest = async (req: Request, res: Response) => {
 
   return res.status(200).json({
     success: true,
-    message: "Link request approved. The CSP is now linked to the BC.",
+    message:
+      data.linkedKoAgentIds.length > 0
+        ? `Link request approved. The CSP and its ${data.linkedKoAgentIds.length} KO(s) are now linked to the BC.`
+        : "Link request approved. The CSP is now linked to the BC.",
     data,
   });
 };
@@ -111,4 +114,10 @@ export const rejectRequest = async (req: Request, res: Response) => {
     message: "Link request rejected.",
     data,
   });
+};
+
+export const unlinkCsp = async (req: Request, res: Response) => {
+  const data = await service.unlinkCsp(req.user!, req.params.cspAgentId as string, req.body?.reason);
+
+  return res.status(200).json({ success: true, message: "CSP unlinked.", data });
 };

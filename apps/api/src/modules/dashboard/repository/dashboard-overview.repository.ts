@@ -11,68 +11,51 @@ export default class DashboardOverviewRepository extends DashboardCommonReposito
     super(db);
   }
 
+  // From the daily counts, so totals survive receipt retention.
   async getOverview(filter: DashboardFilter) {
-    const where = this.buildReceiptWhere(filter);
+    const byStatus = await this.db.receiptDailyCount.groupBy({
+      by: ["status"],
 
-    const [
-      totalTransactions,
-      successfulTransactions,
-      failedTransactions,
-      successfulAmount,
-      lastTransaction,
-    ] = await Promise.all([
-      this.db.receipt.count({
-        where,
-      }),
+      where: this.buildCountWhere(filter),
 
-      this.db.receipt.count({
-        where: {
-          ...where,
-          status: ReceiptStatus.SUCCESS,
-        },
-      }),
+      _sum: {
+        count: true,
+        amount: true,
+      },
 
-      this.db.receipt.count({
-        where: {
-          ...where,
-          status: ReceiptStatus.FAILED,
-        },
-      }),
+      _max: {
+        lastTransactionAt: true,
+      },
+    });
 
-      this.db.receipt.aggregate({
-        where: {
-          ...where,
-          status: ReceiptStatus.SUCCESS,
-        },
+    const countOf = (status: ReceiptStatus) =>
+      byStatus.find((row) => row.status === status)?._sum.count ?? 0;
 
-        _sum: {
-          amount: true,
-        },
-      }),
-
-      this.db.receipt.findFirst({
-        where,
-
-        orderBy: {
-          transactionAt: "desc",
-        },
-
-        select: {
-          transactionAt: true,
-        },
-      }),
-    ]);
+    const lastTransactionAt = byStatus.reduce<Date | null>(
+      (latest, row) =>
+        row._max.lastTransactionAt &&
+        (!latest || row._max.lastTransactionAt > latest)
+          ? row._max.lastTransactionAt
+          : latest,
+      null,
+    );
 
     return {
-      totalTransactions,
+      totalTransactions: byStatus.reduce(
+        (total, row) => total + (row._sum.count ?? 0),
+        0,
+      ),
 
-      successfulTransactions,
+      successfulTransactions: countOf(ReceiptStatus.SUCCESS),
 
-      failedTransactions,
+      failedTransactions: countOf(ReceiptStatus.FAILED),
 
-      totalTransactionAmount: Number(successfulAmount._sum.amount ?? 0),
+      totalTransactionAmount: Number(
+        byStatus.find((row) => row.status === ReceiptStatus.SUCCESS)?._sum
+          .amount ?? 0,
+      ),
 
-      lastTransactionAt: lastTransaction?.transactionAt ?? null,
+      lastTransactionAt,
     };
   }
 }

@@ -37,6 +37,7 @@ export default class PaymentRepository {
     ownerId: string,
     planId: string,
     billingCycle: BillingCycle,
+    machineCount: number,
   ) {
     return this.db.payment.findFirst({
       where: {
@@ -44,10 +45,49 @@ export default class PaymentRepository {
         ownerId,
         planId,
         billingCycle,
+        machineCount,
         status: PaymentStatus.PENDING,
+        // Mandate renewals are charged by the job, never reused as an order.
+        purpose: { not: "RENEWAL" },
       },
       orderBy: {
         createdAt: "desc",
+      },
+    });
+  }
+
+  // Serialises create-order per owner for the rest of the transaction, so
+  // two concurrent requests cannot both open a payment.
+  async lockOwner(ownerId: string) {
+    await this.db
+      .$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`payment-owner:${ownerId}`}))`;
+  }
+
+  // Row lock held until the transaction ends: a second verify/webhook for the
+  // same payment waits, then sees it already SUCCESS.
+  async lockPayment(paymentId: string) {
+    await this.db
+      .$queryRaw`SELECT "id" FROM "Payment" WHERE "id" = ${paymentId} FOR UPDATE`;
+  }
+
+  findByIdempotencyKey(ownerId: string, idempotencyKey: string) {
+    return this.db.payment.findUnique({
+      where: {
+        ownerId_idempotencyKey: {
+          ownerId,
+          idempotencyKey,
+        },
+      },
+    });
+  }
+
+  findByGatewayTransactionId(gatewayTransactionId: string) {
+    return this.db.payment.findUnique({
+      where: {
+        gatewayTransactionId,
+      },
+      select: {
+        id: true,
       },
     });
   }
@@ -72,7 +112,8 @@ export default class PaymentRepository {
     paymentId: string,
     subscriptionId: string,
     gatewayTransactionId: string,
-    transactionReference?: string,
+    transactionReference: string | undefined,
+    invoiceNumber: string,
   ) {
     return this.db.payment.update({
       where: {
@@ -80,6 +121,8 @@ export default class PaymentRepository {
       },
       data: {
         subscriptionId,
+
+        invoiceNumber,
 
         gatewayTransactionId,
 

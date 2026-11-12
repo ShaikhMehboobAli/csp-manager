@@ -13,14 +13,14 @@ router.get("/", authMiddleware, MetricValueController.getMetricValues);
 router.post(
   "/",
   authMiddleware,
-  authorize(UserRole.SUPER_ADMIN, UserRole.BC_ADMIN),
+  authorize(UserRole.SUPER_ADMIN),
   MetricValueController.createMetricValue,
 );
 
 router.patch(
   "/:valueId",
   authMiddleware,
-  authorize(UserRole.SUPER_ADMIN, UserRole.BC_ADMIN),
+  authorize(UserRole.SUPER_ADMIN),
   MetricValueController.updateMetricValue,
 );
 
