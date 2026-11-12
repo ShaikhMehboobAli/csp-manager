@@ -2,7 +2,9 @@
 
 **Audience:** the engineer/agent implementing changes in the C# desktop repo (`ReceiptWarcher/`).
 **Source of truth for the backend:** `csp-manager/apps/api` (Express + Prisma). This doc lists what the desktop must add, modify, or remove to match the backend.
-**Last updated:** 2026-11-11 (rev 30)
+**Last updated:** 2026-11-12 (rev 31)
+
+> **Rev 31 (2026-11-12): resend timer on email OTPs.** Both email OTP calls return `resendAvailableAt` + `resendInSeconds` (60): disable "Send again" and show a countdown. "Too soon" / "too many" errors carry `details.retryAfterSeconds`; restart the countdown from it. The agent also gets a welcome email with its Agent ID, activation code and password when the CSP assigns the code (nothing to call on the desktop).
 
 > **Rev 30 (2026-11-11): email OTPs are now really emailed (Resend).** `POST /machines/activate/email/otp` and `POST /machines/runtime/cash/email/otp` can answer **503 `EMAIL_SEND_FAILED`** when the email provider fails: show `message` and allow "Send again" after the 60 s wait. Subjects: "Verify your email for CSP Manager" / "Your CSP Manager cash login code".
 
@@ -1192,7 +1194,7 @@ When an agent completes the SBI kiosk login **with a successful fingerprint veri
 Cash panel → "Log in to cash management":
 
 1. Dropdown of `accessAgents` (name + id). Disable entries with `emailMasked: null` ("No email — ask your CSP to add it in the app").
-2. **`POST /machines/runtime/cash/login/otp` `{ machineCode, fingerprint, agentId }`** → 200 `OTP sent to the agent's email.` `data: { sentTo: "ra***@gmail.com", expiresInSeconds: 600 }`. Errors: 400 `AGENT_EMAIL_MISSING`, 403 `AGENT_NOT_IN_FAMILY`, 400 `Please wait N seconds before asking for a new OTP.` (60 s between sends), `Too many OTPs sent. Try again in an hour.` (5 / hour).
+2. **`POST /machines/runtime/cash/login/otp` `{ machineCode, fingerprint, agentId }`** → 200 `OTP sent to the agent's email.` `data: { sentTo: "ra***@gmail.com", expiresInSeconds: 600, resendAvailableAt, resendInSeconds: 60 }` (rev 31: timer fields). Errors: 400 `AGENT_EMAIL_MISSING`, 403 `AGENT_NOT_IN_FAMILY`, 400 `OTP_RESEND_TOO_SOON` `Please wait N seconds before asking for a new OTP.` (60 s between sends), 400 `OTP_RESEND_LIMIT` `Too many OTPs sent. Please try again in an hour.` (5 / hour); both with `details: { retryAfterSeconds, resendAvailableAt }`. 429 `EMAIL_RATE_LIMITED` (central limit: 10 emails per address per hour), 503 `EMAIL_SEND_FAILED`.
 3. **`POST /machines/runtime/cash/login/verify` `{ machineCode, fingerprint, agentId, otp }`** (6 digits) → 200 `Logged in to cash management.` `data: { cashAgent: { agentId, name, type, emailMasked, emailVerified: true }, loginMethod: "EMAIL_OTP", cash: { … same as heartbeat cash … } }`. Errors: `Invalid OTP.` (5 tries), `OTP has expired. Ask for a new one.`, `Maximum OTP attempts exceeded. Ask for a new one.`, `OTP not found. Ask for a new one.` A successful login OTP also marks the agent's email verified.
 4. **`POST /machines/runtime/cash/logout`** → back to the PC's own agent. An email OTP login stays until logout or until a different agent's kiosk login replaces it.
 
@@ -1242,7 +1244,7 @@ On a plan **without** cash management, `cashInHand` / `cashDenomination` are no 
 
 ### 27.3 KO email at activation
 
-In the activation form show the agent's email (`agent.email`, editable) with **[Verify]**: `POST /api/v1/machines/activate/email/otp` `{ agentId, activationCode, activationPassword, email? }` → `{ sentTo, expiresInSeconds }`, then `POST /api/v1/machines/activate/email/verify` `{ agentId, activationCode, activationPassword, otp }` → `{ agentId, emailVerified: true }` (saves the email). Optional: the KO may skip and verify later in the cash panel (26.5); it needs a verified email for the email OTP cash login.
+In the activation form show the agent's email (`agent.email`, editable) with **[Verify]**: `POST /api/v1/machines/activate/email/otp` `{ agentId, activationCode, activationPassword, email? }` → `{ sentTo, expiresInSeconds, resendAvailableAt, resendInSeconds }`, then `POST /api/v1/machines/activate/email/verify` `{ agentId, activationCode, activationPassword, otp }` → `{ agentId, emailVerified: true }` (saves the email). Optional: the KO may skip and verify later in the cash panel (26.5); it needs a verified email for the email OTP cash login.
 
 ### 27.4 One activation per agent
 
@@ -2073,6 +2075,8 @@ Response 200: `{ approved, next }` (next = step 2 or null) or `{ cancelled, next
 ---
 
 ## Changelog
+
+- 2026-11-12 (rev 31) — Email OTPs: `resendAvailableAt`, `resendInSeconds`; errors `details.retryAfterSeconds` (`OTP_RESEND_TOO_SOON`, `OTP_RESEND_LIMIT`); 429 `EMAIL_RATE_LIMITED`. Onboarding email to the agent on assign.
 
 - 2026-11-11 (rev 30) — Email OTPs sent through Resend; 503 `EMAIL_SEND_FAILED` on the two email OTP calls.
 

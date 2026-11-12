@@ -1,4 +1,5 @@
 import prisma from "../../config/prisma";
+import { resendLimitError, resendTimer, resendTooSoonError } from "../../core/services/otp-timer.helper";
 import { Logger } from "../../core/utils/logger";
 
 import AuthRepository from "./auth.repository";
@@ -129,6 +130,7 @@ export default class AuthService {
         message: "Signup successful. OTP sent for verification.",
         data: {
           userId: user.id,
+          ...resendTimer(),
         },
       };
     });
@@ -186,6 +188,7 @@ export default class AuthService {
         data: {
           userId: user.id,
           openingFloat,
+          ...resendTimer(),
         },
       };
     });
@@ -856,11 +859,11 @@ export default class AuthService {
         const wait = Math.ceil((last.createdAt.getTime() + RESEND_WAIT_MS - now) / 1000);
 
         if (wait > 0) {
-          throw new ConflictError(`Please wait ${wait} second${wait === 1 ? "" : "s"} before asking for a new OTP.`);
+          throw resendTooSoonError(last.createdAt);
         }
 
         if (last.resendCount >= RESEND_MAX && now - last.createdAt.getTime() < RESEND_WINDOW_MS) {
-          throw new ConflictError("Too many OTPs sent. Please try again in an hour.");
+          throw resendLimitError(last.createdAt);
         }
       }
 
@@ -886,7 +889,7 @@ export default class AuthService {
       return {
         success: true,
         message: "OTP sent again.",
-        data: { expiresAt, resendAvailableAt: new Date(now + RESEND_WAIT_MS) },
+        data: { expiresAt, ...resendTimer(now) },
       };
     });
   }
@@ -901,7 +904,7 @@ export default class AuthService {
     const answer = {
       success: true,
       message: FORGOT_PASSWORD_MESSAGE,
-      data: { resendAvailableAt: new Date(now + RESEND_WAIT_MS) },
+      data: resendTimer(now),
     };
 
     const user = await this.repository.findUserByAgentId(data.agentId);

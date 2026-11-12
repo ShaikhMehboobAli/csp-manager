@@ -2932,6 +2932,36 @@ model NotificationPreference {
 }
 
 /// Each time an activation code + a fresh password were emailed (R24).
+enum EmailLogStatus {
+  SENT
+  FAILED
+  // No provider configured (development): logged instead of sent.
+  LOGGED
+}
+
+/// Every email the API tried to send (central rate limit and support). Kept 30 days.
+model EmailLog {
+  id String @id @default(cuid())
+
+  // Lower-case recipient.
+  to String
+
+  // OTP_SIGNUP, OTP_FORGOT_PASSWORD, OTP_EMAIL_CHANGE, OTP_AGENT_EMAIL_VERIFICATION, OTP_CASH_LOGIN, ACTIVATION
+  kind String
+
+  status EmailLogStatus
+
+  // Resend's email id when sent.
+  providerId String?
+
+  error String?
+
+  createdAt DateTime @default(now())
+
+  @@index([to, createdAt])
+  @@index([createdAt])
+}
+
 model ActivationEmail {
   id String @id @default(cuid())
 
