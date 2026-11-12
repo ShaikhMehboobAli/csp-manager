@@ -6,8 +6,10 @@ import {
 } from "../../generated/prisma/client";
 
 import {
+  BillingCycle,
   PaymentMethod,
   PlanOwnerType,
+  SubscriptionEventType,
   SubscriptionOwnerType,
   SubscriptionStatus,
   SubscriptionType,
@@ -33,7 +35,11 @@ export default class SubscriptionRepository {
             durationDays: "asc",
           },
         },
-        features: true,
+        features: {
+          include: {
+            feature: true,
+          },
+        },
       },
       orderBy: {
         level: "asc",
@@ -63,6 +69,7 @@ export default class SubscriptionRepository {
 
     startDate: Date;
     endDate: Date;
+    graceEndsAt: Date | null;
   }) {
     return this.db.subscription.create({
       data: {
@@ -74,22 +81,122 @@ export default class SubscriptionRepository {
         amountPaid: data.amountPaid,
         startDate: data.startDate,
         endDate: data.endDate,
+        graceEndsAt: data.graceEndsAt,
         subscriptionType: SubscriptionType.PAID,
         status: SubscriptionStatus.ACTIVE,
       },
     });
   }
 
-  expireActiveSubscription(ownerId: string, planId: string) {
-    return this.db.subscription.updateMany({
+  /**
+   * Latest ACTIVE or EXPIRED subscription for an owner, used as the base for
+   * renewals, upgrades and machine carry-over.
+   */
+  findLatestSubscription(ownerType: SubscriptionOwnerType, ownerId: string) {
+    return this.db.subscription.findFirst({
       where: {
+        ownerType,
         ownerId,
-        planId,
+        status: {
+          in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.EXPIRED],
+        },
+      },
+      orderBy: {
+        endDate: "desc",
+      },
+    });
+  }
+
+  extendSubscription(
+    subscriptionId: string,
+    endDate: Date,
+    graceEndsAt: Date | null,
+    additionalAmount: number,
+  ) {
+    return this.db.subscription.update({
+      where: {
+        id: subscriptionId,
+      },
+      data: {
+        endDate,
+        graceEndsAt,
         status: SubscriptionStatus.ACTIVE,
+        amountPaid: {
+          increment: additionalAmount,
+        },
+      },
+    });
+  }
+
+  expireSubscription(subscriptionId: string) {
+    return this.db.subscription.update({
+      where: {
+        id: subscriptionId,
       },
       data: {
         status: SubscriptionStatus.EXPIRED,
       },
+    });
+  }
+
+  /**
+   * Marks subscriptions whose end date (and grace period, if any) has passed.
+   */
+  expireEndedSubscriptions(now: Date) {
+    return this.db.subscription.updateMany({
+      where: {
+        status: SubscriptionStatus.ACTIVE,
+        subscriptionType: {
+          not: SubscriptionType.LIFETIME,
+        },
+        endDate: {
+          lt: now,
+        },
+        OR: [
+          {
+            graceEndsAt: null,
+          },
+          {
+            graceEndsAt: {
+              lt: now,
+            },
+          },
+        ],
+        NOT: [
+          // A mandate charge still waiting for the gateway's answer: the
+          // renewal job / webhook decides (renews or lapses it).
+          {
+            payments: {
+              some: { purpose: "RENEWAL", status: "PENDING" },
+            },
+          },
+          // CSP subscriptions renewing by mandate: the renewal job charges
+          // them on the end date and lapses them after the 3rd failed attempt.
+          // They are not usable after the end date meanwhile (no grace).
+          {
+            ownerType: SubscriptionOwnerType.CSP,
+            autoRenew: true,
+            cancelledAt: null,
+            lapsedAt: null,
+          },
+        ],
+      },
+      data: {
+        status: SubscriptionStatus.EXPIRED,
+      },
+    });
+  }
+
+  createHistory(data: {
+    subscriptionId: string;
+    eventType: SubscriptionEventType;
+    previousPlanId?: string;
+    newPlanId: string;
+    amount: number;
+    remarks?: string;
+  }) {
+    return this.db.subscriptionHistory.create({
+      data,
     });
   }
 
@@ -100,7 +207,9 @@ export default class SubscriptionRepository {
         status: "ACTIVE",
       },
       include: {
-        plan: true,
+        // Features too, so the app gates screens without a second call
+        // (a plan deactivated after purchase isn't in the public list).
+        plan: { include: { features: { include: { feature: true } } } },
         payments: {
           orderBy: {
             createdAt: "desc",
@@ -111,6 +220,38 @@ export default class SubscriptionRepository {
       orderBy: {
         endDate: "desc",
       },
+    });
+  }
+
+  findPlanPricing(planId: string, billingCycle: BillingCycle) {
+    return this.db.planPricing.findUnique({
+      where: {
+        planId_billingCycle: {
+          planId,
+          billingCycle,
+        },
+      },
+    });
+  }
+
+  upsertPlanPricing(data: {
+    planId: string;
+    billingCycle: BillingCycle;
+    price: number;
+    durationDays: number;
+    isActive: boolean;
+  }) {
+    const { planId, billingCycle, ...values } = data;
+
+    return this.db.planPricing.upsert({
+      where: {
+        planId_billingCycle: {
+          planId,
+          billingCycle,
+        },
+      },
+      update: values,
+      create: data,
     });
   }
 
@@ -190,6 +331,50 @@ export default class SubscriptionRepository {
         createdAt: "desc",
       },
     });
+  }
+
+  /**
+   * Owners (of the given type) whose subscription is usable right now.
+   */
+  async findOwnerIdsWithActiveSubscription(
+    ownerType: SubscriptionOwnerType,
+    ownerIds: string[],
+  ): Promise<Set<string>> {
+    if (ownerIds.length === 0) {
+      return new Set();
+    }
+
+    const now = new Date();
+
+    const subscriptions = await this.db.subscription.findMany({
+      where: {
+        ownerType,
+        ownerId: {
+          in: ownerIds,
+        },
+        status: SubscriptionStatus.ACTIVE,
+        startDate: {
+          lte: now,
+        },
+        OR: [
+          {
+            endDate: {
+              gte: now,
+            },
+          },
+          {
+            graceEndsAt: {
+              gte: now,
+            },
+          },
+        ],
+      },
+      select: {
+        ownerId: true,
+      },
+    });
+
+    return new Set(subscriptions.map((subscription) => subscription.ownerId));
   }
 
   async getCurrentSubscription(ownerId: string, ownerType?: "BC" | "CSP") {

@@ -22,18 +22,36 @@ export function mapReportSummary(rows: ReportSummaryRow[]) {
     cashWithdrawalAmount:
       row.services[TransactionCategory.CASH_WITHDRAWAL]?.amount ?? 0,
 
+    moneyTransferCount:
+      row.services[TransactionCategory.MONEY_TRANSFER]?.count ?? 0,
+
+    moneyTransferAmount:
+      row.services[TransactionCategory.MONEY_TRANSFER]?.amount ?? 0,
+
+    fundTransferCount:
+      row.services[TransactionCategory.FUND_TRANSFER]?.count ?? 0,
+
+    fundTransferAmount:
+      row.services[TransactionCategory.FUND_TRANSFER]?.amount ?? 0,
+
     miniStatement: row.services[TransactionCategory.MINI_STATEMENT]?.count ?? 0,
 
     balanceEnquiry:
       row.services[TransactionCategory.BALANCE_ENQUIRY]?.count ?? 0,
 
-    // passbookPrint: row.services[TransactionCategory.PASSBOOK_PRINT] ?? 0,
+    passbookPrint:
+      row.services[TransactionCategory.PASSBOOK_PRINTING]?.count ?? 0,
 
-    // pmjjby: row.services[TransactionCategory.PMJJBY] ?? 0,
+    socialSecurity:
+      row.services[TransactionCategory.SOCIAL_SECURITY]?.count ?? 0,
 
-    // pmsby: row.services[TransactionCategory.PMSBY] ?? 0,
+    pmjjby: row.socialSecurity.PMJJBY,
 
-    // apy: row.services[TransactionCategory.APY] ?? 0,
+    pmsby: row.socialSecurity.PMSBY,
+
+    apy: row.socialSecurity.APY,
+
+    otherSocialSecurity: row.socialSecurity.OTHER,
 
     accountOpening:
       row.services[TransactionCategory.ACCOUNT_OPENING]?.count ?? 0,

@@ -28,5 +28,16 @@ export async function seedPlans() {
     });
   }
 
+  await prisma.plan.updateMany({
+    where: {
+      code: {
+        in: ["CSP_BASIC", "CSP_PRO", "CSP_AUTOMATION_CASH_MANAGEMENT"],
+      },
+    },
+    data: {
+      isActive: false,
+    },
+  });
+
   console.log("✅ Plans seeded.");
 }

@@ -1,4 +1,5 @@
 import CspVisitRepository from "./csp-visit.repository";
+import { istInstant, istParts } from "../../core/utils/ist";
 import { CreateCspVisitInput } from "./csp-visit.dto";
 import CodeGeneratorService from "../../core/services/code-generator.service";
 import RunningNumberRepository from "../../core/repositories/running-number.repository";
@@ -7,6 +8,8 @@ import { BadRequestError } from "../../core/errors/BadRequestError";
 import { PrismaDb } from "../../core/database/prisma.types";
 import AgentScopeService from "../agents/service/agent-scope.service";
 import S3StorageService from "../uploads/storage/s3.storage";
+import UploadService from "../uploads/upload.service";
+import { NotFoundError } from "../../core/errors/NotFoundError";
 
 export default class CspVisitService {
   private readonly visitRepository: CspVisitRepository;
@@ -60,31 +63,12 @@ export default class CspVisitService {
       throw new BadRequestError("Invalid CSP agent.");
     }
 
-    const visitDate = new Date(input.visitDate);
+    // One visit per CSP per IST calendar month.
+    const { year, month } = istParts(new Date(input.visitDate));
 
-    const monthStart = new Date(
-      Date.UTC(
-        visitDate.getUTCFullYear(),
-        visitDate.getUTCMonth(),
-        1,
-        0,
-        0,
-        0,
-        0,
-      ),
-    );
+    const monthStart = istInstant(year, month, 1);
 
-    const monthEnd = new Date(
-      Date.UTC(
-        visitDate.getUTCFullYear(),
-        visitDate.getUTCMonth() + 1,
-        0,
-        23,
-        59,
-        59,
-        999,
-      ),
-    );
+    const monthEnd = istInstant(year, month + 1, 0, 23, 59, 59, 999);
 
     const existingVisit = await this.visitRepository.findByCspAndDateRange(
       input.cspAgentId,
@@ -99,6 +83,11 @@ export default class CspVisitService {
     }
 
     if (input.photoUrl) {
+      // The photo must have been uploaded by the visitor.
+      if (!UploadService.isOwnedBy(input.photoUrl, visitedByAgentId)) {
+        throw new BadRequestError("Invalid CSP visit photo.");
+      }
+
       const photoExists = await this.storageService.objectExists(
         input.photoUrl,
       );
@@ -117,11 +106,16 @@ export default class CspVisitService {
     });
   }
 
-  async getVisit(id: string) {
+  async getVisit(id: string, accessibleAgentIds: string[]) {
     const visit = await this.visitRepository.findById(id);
 
-    if (!visit) {
-      throw new BadRequestError("CSP visit not found.");
+    // Hide visits outside the caller's scope (empty scope = SUPER_ADMIN).
+    if (
+      !visit ||
+      (accessibleAgentIds.length > 0 &&
+        !accessibleAgentIds.includes(visit.cspAgentId))
+    ) {
+      throw new NotFoundError("CSP visit not found.");
     }
 
     let photoUrl = visit.photoUrl;

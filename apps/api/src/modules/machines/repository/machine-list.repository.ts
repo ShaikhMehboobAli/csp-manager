@@ -1,4 +1,8 @@
 import { PrismaDb } from "../../../core/database/prisma.types";
+import {
+  asReceiptGroups,
+  buildDailyCountWhere,
+} from "../../receipts/repository/receipt-daily-count.repository";
 import { normalizeDateRange } from "../../../core/utils/date-range.helper";
 import { Prisma } from "../../../generated/prisma/client";
 import { buildAgentScope } from "../../dashboard/dashboard.helper";
@@ -410,36 +414,96 @@ export default class MachineListRepository {
     });
   }
 
+  /**
+   * Each PC on its own (rather than its CSP unit): the agent working on it,
+   * its own status, and the transactions and services counted on that
+   * machine in the range (daily counts carry the machine).
+   */
+  async getPcStats(
+    machines: { id: string; agentId: string | null; currentAgentId: string | null; status: string; lastHeartbeatAt: Date | null; lastStartupAt: Date | null }[],
+    filter?: { from?: Date; to?: Date },
+  ) {
+    const ids = machines.map((machine) => machine.id);
+
+    if (ids.length === 0) {
+      return new Map<string, ReturnType<typeof emptyPc>>();
+    }
+
+    const { from, to } = normalizeDateRange(filter?.from, filter?.to);
+    const where = { ...buildDailyCountWhere({ from, to }), machineId: { in: ids } };
+    const agentIds = [...new Set(machines.map((machine) => machine.currentAgentId ?? machine.agentId).filter((id): id is string => !!id))];
+
+    const [byStatus, byCategory, agents] = await Promise.all([
+      this.db.receiptDailyCount.groupBy({ by: ["machineId", "status"], where, _sum: { count: true, amount: true } }),
+      this.db.receiptDailyCount.groupBy({ by: ["machineId", "transactionCategory"], where, _sum: { count: true } }),
+      this.db.agent.findMany({ where: { agentId: { in: agentIds } }, select: { agentId: true, name: true, type: true } }),
+    ]);
+
+    const agentById = new Map(agents.map((agent) => [agent.agentId, agent]));
+    const result = new Map<string, ReturnType<typeof emptyPc>>();
+
+    for (const machine of machines) {
+      const ownId = machine.currentAgentId ?? machine.agentId;
+
+      result.set(machine.id, {
+        ...emptyPc(),
+        agent: ownId ? agentById.get(ownId) ?? { agentId: ownId, name: null, type: null } : null,
+        machineStatus: machine.status,
+        connectionStatus: getMachineStatus(machine.lastHeartbeatAt),
+        lastHeartbeatAt: machine.lastHeartbeatAt,
+        lastStartupAt: machine.lastStartupAt,
+      });
+    }
+
+    for (const row of byStatus) {
+      const pc = result.get(row.machineId)!;
+      const count = row._sum.count ?? 0;
+
+      pc.transaction.count += count;
+      pc.transaction.amount += Number(row._sum.amount ?? 0);
+
+      if (row.status === "SUCCESS") pc.transaction.success += count;
+      if (row.status === "FAILED") pc.transaction.failed += count;
+    }
+
+    for (const row of byCategory) {
+      result.get(row.machineId)!.services.push({
+        transactionCategory: row.transactionCategory,
+        count: row._sum.count ?? 0,
+      });
+    }
+
+    for (const pc of result.values()) {
+      pc.transaction.amount = Number(pc.transaction.amount.toFixed(2));
+      pc.services.sort((a, b) => b.count - a.count);
+    }
+
+    return result;
+  }
+
   async getTransactionSummary(agentIds: string[], filter?: MachineListFilter) {
     const { from, to } = normalizeDateRange(filter?.from, filter?.to);
 
     console.log("frpm---", from, "/n", to);
 
-    const result = await this.db.receipt.groupBy({
-      by: ["agentId", "status"],
+    const result = asReceiptGroups(
+      await this.db.receiptDailyCount.groupBy({
+        by: ["agentId", "status"],
 
-      where: {
-        agentId: {
-          in: agentIds,
+        where: {
+          ...buildDailyCountWhere({ from, to }),
+
+          agentId: {
+            in: agentIds,
+          },
         },
 
-        transactionAt: {
-          gte: from,
-
-          ...(to && {
-            lte: to,
-          }),
+        _sum: {
+          count: true,
+          amount: true,
         },
-      },
-
-      _count: {
-        id: true,
-      },
-
-      _sum: {
-        amount: true,
-      },
-    });
+      }),
+    );
 
     console.log("Transaction Summary Result", result);
 
@@ -449,27 +513,23 @@ export default class MachineListRepository {
   async getServiceSummary(agentIds: string[], filter?: MachineListFilter) {
     const { from, to } = normalizeDateRange(filter?.from, filter?.to);
 
-    const result = await this.db.receipt.groupBy({
-      by: ["agentId", "transactionCategory"],
+    const result = asReceiptGroups(
+      await this.db.receiptDailyCount.groupBy({
+        by: ["agentId", "transactionCategory"],
 
-      where: {
-        agentId: {
-          in: agentIds,
+        where: {
+          ...buildDailyCountWhere({ from, to }),
+
+          agentId: {
+            in: agentIds,
+          },
         },
 
-        transactionAt: {
-          gte: from,
-
-          ...(to && {
-            lte: to,
-          }),
+        _sum: {
+          count: true,
         },
-      },
-
-      _count: {
-        id: true,
-      },
-    });
+      }),
+    );
 
     console.log("Transaction service Result", result);
     return result;
@@ -504,4 +564,16 @@ export default class MachineListRepository {
       },
     });
   }
+}
+
+function emptyPc() {
+  return {
+    agent: null as { agentId: string; name: string | null; type: string | null } | null,
+    machineStatus: "" as string,
+    connectionStatus: "OFFLINE" as string,
+    lastHeartbeatAt: null as Date | null,
+    lastStartupAt: null as Date | null,
+    transaction: { count: 0, amount: 0, success: 0, failed: 0 },
+    services: [] as { transactionCategory: string; count: number }[],
+  };
 }

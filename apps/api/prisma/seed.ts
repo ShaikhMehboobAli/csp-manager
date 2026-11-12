@@ -4,6 +4,9 @@ import { seedPlans } from "./seeds/plan.seed";
 import { seedPlanPricing } from "./seeds/pricing.seed";
 import { seedRunningNumbers } from "./seeds/running-number.seed";
 import { seedMetrics } from "./seeds/metric.seed";
+import { seedFeatures } from "./seeds/feature.seed";
+import { seedPlanFeatures } from "./seeds/plan-feature.seed";
+import { seedSuperAdmin } from "./seeds/super-admin.seed";
 
 async function main() {
   console.log("🌱 Starting database seed...");
@@ -14,7 +17,14 @@ async function main() {
 
   await seedPlanPricing();
 
+  await seedFeatures();
+
+  await seedPlanFeatures();
+
   await seedMetrics();
+
+  // Only when SUPER_ADMIN_EMAIL / SUPER_ADMIN_PASSWORD are set.
+  await seedSuperAdmin();
 
   console.log("✅ Database seed completed.");
 }

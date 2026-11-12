@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import bcrypt from "bcrypt";
 
 import {
@@ -10,6 +11,8 @@ import { PrismaDb } from "../../../core/database/prisma.types";
 import { BadRequestError } from "../../../core/errors/BadRequestError";
 
 import MachineAuthenticationRepository from "./machine-auth.repository";
+import { getVerifiedMachineCode } from "../../../core/context/machine-context";
+import { env } from "../../../config/env";
 
 import {
   MachineAuthenticationInput,
@@ -18,6 +21,12 @@ import {
   CurrentActivation,
   Subscription,
 } from "./machine-auth.dto";
+
+
+/** API keys that matched their stored hash recently: hash → sha256(key). */
+const verifiedKeys = new Map<string, { digest: string; expiresAt: number }>();
+const VERIFIED_KEY_TTL_MS = 10 * 60 * 1000;
+const VERIFIED_KEYS_MAX = 10_000;
 
 export default class MachineAuthenticationService {
   private readonly repository: MachineAuthenticationRepository;
@@ -51,9 +60,9 @@ export default class MachineAuthenticationService {
 
     /**
      * STEP 4
-     * Verify API Key
+     * Verify the request signature (device key) or the API key
      */
-    await this.verifyApiKey(input.apiKey, machine.apiKeyHash);
+    await this.verifyCredential(machine, input.apiKey);
 
     /**
      * STEP 5
@@ -100,9 +109,46 @@ export default class MachineAuthenticationService {
     return activation;
   }
 
+  private async verifyCredential(
+    machine: MachineWithRelations,
+    apiKey: string | undefined,
+  ) {
+    // verifyMachineSignature already checked the signature for this code.
+    if (getVerifiedMachineCode() === machine.machineCode) {
+      return;
+    }
+
+    // Once a device key is registered, the API key alone is not enough: a
+    // leaked key can't be used without the private key on the PC.
+    if (machine.devicePublicKey) {
+      throw new BadRequestError("Signed request required for this machine.");
+    }
+
+    if (env.machineSignatureRequired) {
+      throw new BadRequestError(
+        "Signed requests are required. Re-activate this PC to register a device key.",
+      );
+    }
+
+    if (!apiKey) {
+      throw new BadRequestError("Machine API key is required.");
+    }
+
+    await this.verifyApiKey(apiKey, machine.apiKeyHash);
+  }
+
   private async verifyApiKey(apiKey: string, apiKeyHash: string | null) {
     if (!apiKeyHash) {
       throw new BadRequestError("Machine API key not found.");
+    }
+
+    // bcrypt costs ~100 ms per call; a key that matched this hash recently
+    // is accepted from memory. A new key (re-activation) has a new hash.
+    const digest = createHash("sha256").update(apiKey).digest("hex");
+    const known = verifiedKeys.get(apiKeyHash);
+
+    if (known && known.digest === digest && known.expiresAt > Date.now()) {
+      return;
     }
 
     const isValid = await bcrypt.compare(apiKey, apiKeyHash);
@@ -110,6 +156,12 @@ export default class MachineAuthenticationService {
     if (!isValid) {
       throw new BadRequestError("Invalid API key.");
     }
+
+    if (verifiedKeys.size >= VERIFIED_KEYS_MAX) {
+      verifiedKeys.clear();
+    }
+
+    verifiedKeys.set(apiKeyHash, { digest, expiresAt: Date.now() + VERIFIED_KEY_TTL_MS });
   }
 
   private verifyFingerprint(
@@ -132,7 +184,10 @@ export default class MachineAuthenticationService {
       throw new BadRequestError("Subscription is not active.");
     }
 
-    if (subscription.endDate && subscription.endDate < new Date()) {
+    // Works until the end of the grace period, if any.
+    const stopsAt = subscription.graceEndsAt ?? subscription.endDate;
+
+    if (stopsAt && stopsAt < new Date()) {
       throw new BadRequestError("Subscription has expired.");
     }
   }

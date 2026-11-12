@@ -13,7 +13,10 @@ export const createCspVisitSchema = z.object({
   photoUrl: z
     .string()
     .trim()
-    .regex(/^csp-visits\/\d{4}\/\d{2}\/[^/]+$/, "Invalid CSP visit photo key.")
+    .regex(
+      /^csp-visits\/[^/]+\/\d{4}\/\d{2}\/[^/]+$/,
+      "Invalid CSP visit photo key.",
+    )
     .optional(),
 
   remarks: z.string().max(2000).optional(),

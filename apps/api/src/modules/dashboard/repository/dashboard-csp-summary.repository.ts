@@ -1,5 +1,9 @@
 import { PrismaDb } from "../../../core/database/prisma.types";
 import {
+  asReceiptGroups,
+  buildDailyCountWhere,
+} from "../../receipts/repository/receipt-daily-count.repository";
+import {
   DashboardCspSocialSecuritySummary,
   DashboardCspSummary,
   DashboardCspTransactionSummary,
@@ -12,6 +16,8 @@ export default class DashboardCspSummaryRepository {
     bcAgentId: string,
     from: Date,
     to: Date,
+    // The BC's agent scope; drops request-linked CSPs whose plan lapsed.
+    visibleAgentIds?: string[],
   ): Promise<DashboardCspSummary> {
     /**
      * 1. Fetch all CSPs belonging to this BC.
@@ -23,6 +29,12 @@ export default class DashboardCspSummaryRepository {
         type: "CSP",
 
         isDeleted: false,
+
+        ...(visibleAgentIds && {
+          agentId: {
+            in: visibleAgentIds,
+          },
+        }),
       },
 
       select: {
@@ -128,49 +140,40 @@ export default class DashboardCspSummaryRepository {
     const bcName = bc?.name ?? null;
 
     /**
-     * 5. Fetch receipt aggregation.
+     * 5. Fetch receipt aggregation (daily counts).
      *
      * We intentionally fetch grouped data once for
      * all CSP + KO agents instead of running a query
      * for every CSP.
      */
-    const receipts = await this.db.receipt.groupBy({
-      by: ["agentId", "receiptType", "transactionCategory"],
+    const countWhere = {
+      ...buildDailyCountWhere({ from, to }),
+      agentId: { in: scopedAgentIds },
+    };
 
-      where: {
-        agentId: {
-          in: scopedAgentIds,
+    const receipts = asReceiptGroups(
+      await this.db.receiptDailyCount.groupBy({
+        by: ["agentId", "receiptType", "transactionCategory"],
+
+        where: countWhere,
+
+        _sum: {
+          count: true,
         },
+      }),
+    );
 
-        transactionAt: {
-          gte: from,
-          lte: to,
+    const totalReceiptCounts = asReceiptGroups(
+      await this.db.receiptDailyCount.groupBy({
+        by: ["agentId"],
+
+        where: countWhere,
+
+        _sum: {
+          count: true,
         },
-      },
-
-      _count: {
-        id: true,
-      },
-    });
-
-    const totalReceiptCounts = await this.db.receipt.groupBy({
-      by: ["agentId"],
-
-      where: {
-        agentId: {
-          in: scopedAgentIds,
-        },
-
-        transactionAt: {
-          gte: from,
-          lte: to,
-        },
-      },
-
-      _count: {
-        id: true,
-      },
-    });
+      }),
+    );
 
     const manualMetricValues = await this.db.metricValue.findMany({
       where: {
@@ -283,12 +286,16 @@ export default class DashboardCspSummaryRepository {
       const counts = {
         totalTxn: 0,
 
+        passbookPrinter: 0,
+
         cashWithdrawal: 0,
         cashDeposit: 0,
         microAtmTxn: 0,
         accountOpening: 0,
         miniStatement: 0,
         balanceInquiry: 0,
+        moneyTransfer: 0,
+        fundTransfer: 0,
       };
 
       /**
@@ -309,6 +316,9 @@ export default class DashboardCspSummaryRepository {
 
         // counts.pmsby += agentReceipts.get("PMSBY") ?? 0;
 
+        counts.passbookPrinter +=
+          agentReceipts.get("CATEGORY:PASSBOOK_PRINTING") ?? 0;
+
         counts.cashWithdrawal +=
           agentReceipts.get("CATEGORY:CASH_WITHDRAWAL") ?? 0;
 
@@ -324,6 +334,11 @@ export default class DashboardCspSummaryRepository {
 
         counts.balanceInquiry +=
           agentReceipts.get("CATEGORY:BALANCE_ENQUIRY") ?? 0;
+
+        counts.moneyTransfer +=
+          agentReceipts.get("CATEGORY:MONEY_TRANSFER") ?? 0;
+
+        counts.fundTransfer += agentReceipts.get("CATEGORY:FUND_TRANSFER") ?? 0;
       }
 
       const metrics = metricDefinitions.map((metric) => {
@@ -400,9 +415,6 @@ export default class DashboardCspSummaryRepository {
 
       /**
        * Transaction row.
-       *
-       * Passbook Printer is intentionally 0
-       * until that transaction type is implemented.
        */
       transactions.push({
         agentId: csp.agentId,
@@ -411,7 +423,7 @@ export default class DashboardCspSummaryRepository {
 
         totalTxn: counts.totalTxn,
 
-        passbookPrinter: 0,
+        passbookPrinter: counts.passbookPrinter,
 
         cashWithdrawal: counts.cashWithdrawal,
 
@@ -424,6 +436,10 @@ export default class DashboardCspSummaryRepository {
         miniStatement: counts.miniStatement,
 
         balanceInquiry: counts.balanceInquiry,
+
+        moneyTransfer: counts.moneyTransfer,
+
+        fundTransfer: counts.fundTransfer,
       });
     }
 

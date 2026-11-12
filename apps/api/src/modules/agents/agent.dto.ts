@@ -8,6 +8,7 @@ export interface UpdateAgentDto {
 
   cashLimit?: number;
   openingCash?: number;
+  openingCashInAccount?: number;
 
   status?: AgentStatus;
 }

@@ -29,6 +29,26 @@ export default class MachineHeartbeatRepository {
         lastTransactionAt: data.lastTransactionAt,
         lastHeartbeatAt: new Date(),
         isOnline: true,
+        // Back online: the next outage alerts the owner again.
+        offlineAlertAt: null,
+      },
+    });
+  }
+
+  /**
+   * Liveness only (used by the CSP activity heartbeat, which has no
+   * watcher/OS details).
+   */
+  async markOnline(machineId: string) {
+    return this.db.machine.update({
+      where: {
+        id: machineId,
+      },
+      data: {
+        lastHeartbeatAt: new Date(),
+        isOnline: true,
+        // Back online: the next outage alerts the owner again.
+        offlineAlertAt: null,
       },
     });
   }

@@ -37,6 +37,8 @@ export default class ReceiptDetailRepository extends ReceiptCommonRepository {
             type: true,
           },
         },
+
+        cashDenomination: true,
       },
     });
   }

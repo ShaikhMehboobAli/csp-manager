@@ -1,0 +1,468 @@
+import { PrismaDb } from "../../core/database/prisma.types";
+import { withReadOnly, withTransaction } from "../../core/database/transaction";
+import { BadRequestError } from "../../core/errors/BadRequestError";
+import { ConflictError } from "../../core/errors/ConflictError";
+import { ForbiddenError } from "../../core/errors/ForbiddenError";
+import { NotFoundError } from "../../core/errors/NotFoundError";
+import { createCodeGeneratorService } from "../../core/services/service.factory";
+import { CurrentUser } from "../../core/types/auth.types";
+import {
+  AgentType,
+  AuditAction,
+  AuditEntity,
+  BcLinkRequestStatus,
+  NotificationKind,
+  SubscriptionOwnerType,
+  UserRole,
+} from "../../generated/prisma/enums";
+import NotificationService from "../notifications/notification.service";
+import { buildPagination } from "../receipts/receipt.helper";
+import SubscriptionEntitlementService, {
+  DesktopFeature,
+} from "../subscriptions/subscription-entitlement.service";
+import SubscriptionRepository from "../subscriptions/subscription.repository";
+import SubscriptionAccessValidator from "../subscriptions/subscription-validator/subscription-access-validator";
+import SubscriptionResolver from "../subscriptions/subscription-validator/subscription-resolver.service";
+
+import BcLinkRepository, {
+  BcLinkRequestWithRelations,
+} from "./bc-link.repository";
+import {
+  CreateLinkRequestInput,
+  ListLinkRequestsQuery,
+} from "./bc-link.validation";
+
+/**
+ * BC ₹799 flow: a BC on a plan with CSP_LINKING asks to link an
+ * already-subscribed CSP; SUPER_ADMIN approves or rejects. Approval sets the
+ * CSP's bcId, so the BC's agent scope (dashboards, reports, receipts, ledger)
+ * includes the CSP while the CSP's own subscription is active.
+ */
+export default class BcLinkService {
+  async searchCsps(user: CurrentUser, search: string) {
+    return withReadOnly(async (db) => {
+      const bcId = user.agentId;
+
+      await requireLinkingPlan(db, bcId);
+
+      const repository = new BcLinkRepository(db);
+
+      const csps = await repository.searchCsps(search);
+
+      const cspIds = csps.map((csp) => csp.agentId);
+
+      const [subscribed, pending] = await Promise.all([
+        new SubscriptionRepository(db).findOwnerIdsWithActiveSubscription(
+          SubscriptionOwnerType.CSP,
+          cspIds,
+        ),
+
+        repository.findPendingCspIds(bcId, cspIds),
+      ]);
+
+      const pendingIds = new Set(pending.map((item) => item.cspAgentId));
+
+      // Only already-subscribed CSPs can be linked.
+      return csps
+        .filter((csp) => subscribed.has(csp.agentId))
+        .map((csp) => ({
+          agentId: csp.agentId,
+          name: csp.name,
+          address: csp.address,
+          // Approval links the CSP together with all of these KOs.
+          koCount: csp._count.childAgents,
+          linkStatus:
+            csp.bcId === bcId
+              ? "LINKED"
+              : csp.bcId
+                ? "LINKED_TO_OTHER_BC"
+                : "NOT_LINKED",
+          hasPendingRequest: pendingIds.has(csp.agentId),
+        }));
+    });
+  }
+
+  async createRequest(user: CurrentUser, input: CreateLinkRequestInput) {
+    return withTransaction(async (tx) => {
+      const bcId = user.agentId;
+
+      await requireLinkingPlan(tx, bcId);
+
+      const request = await raiseLinkRequest(tx, {
+        bcId,
+        cspAgentId: input.cspAgentId,
+        remarks: input.remarks,
+        createdByUserId: user.userId,
+        cspSubscriptionRequired: true,
+      });
+
+      await new NotificationService(tx).notifySuperAdmins({
+        title: "Link request",
+        message: `BC ${bcId} asked to link CSP ${input.cspAgentId}${request.isConflict ? " (already linked to another BC)" : ""}.`,
+        kind: NotificationKind.BC_LINK_REQUESTED,
+        data: { requestId: request.id, bcId, cspAgentId: input.cspAgentId, isConflict: request.isConflict },
+      });
+
+      return mapRequest(request, user);
+    });
+  }
+
+  async listRequests(user: CurrentUser, filter: ListLinkRequestsQuery) {
+    return withReadOnly(async (db) => {
+      const { items, total } = await new BcLinkRepository(db).list({
+        ...filter,
+        // A BC only ever sees its own requests.
+        bcId: user.role === UserRole.SUPER_ADMIN ? filter.bcId : user.agentId,
+      });
+
+      return {
+        items: items.map((item) => mapRequest(item, user)),
+        pagination: buildPagination(filter.page, filter.limit, total),
+      };
+    });
+  }
+
+  async getRequest(user: CurrentUser, requestId: string) {
+    return withReadOnly(async (db) => {
+      const request = await findAccessibleRequest(db, user, requestId);
+
+      return mapRequest(request, user);
+    });
+  }
+
+  async cancelRequest(user: CurrentUser, requestId: string) {
+    return withTransaction(async (tx) => {
+      const request = await findAccessibleRequest(tx, user, requestId);
+
+      ensurePending(request, "Only pending requests can be cancelled.");
+
+      const updated = await new BcLinkRepository(tx).updateRequest(request.id, {
+        status: BcLinkRequestStatus.CANCELLED,
+      });
+
+      return mapRequest(updated, user);
+    });
+  }
+
+  async approveRequest(user: CurrentUser, requestId: string, remarks?: string) {
+    return withTransaction(async (tx) => {
+      const repository = new BcLinkRepository(tx);
+
+      const request = await findAccessibleRequest(tx, user, requestId);
+
+      ensurePending(request, "This request has already been reviewed.");
+
+      const csp = await repository.findCsp(request.cspAgentId);
+
+      if (!csp) {
+        throw new BadRequestError("The CSP is no longer active.");
+      }
+
+      if (
+        request.cspSubscriptionRequired &&
+        !(await hasLinkingPlan(tx, request.bcId))
+      ) {
+        throw new BadRequestError(
+          "The BC does not have an active CSP linking plan.",
+        );
+      }
+
+      // Linked elsewhere at approval time (even if not when raised): moving
+      // it is the admin's decision, recorded on the request.
+      const linkedElsewhere = Boolean(csp.bcId) && csp.bcId !== request.bcId;
+
+      const linkedKoAgentIds = await repository.linkCsp(
+        csp.agentId,
+        request.bcId,
+        request.cspSubscriptionRequired,
+      );
+
+      await repository.flagPendingAsConflict(
+        csp.agentId,
+        request.id,
+        request.bcId,
+      );
+
+      const updated = await repository.updateRequest(request.id, {
+        status: BcLinkRequestStatus.APPROVED,
+        isConflict: request.isConflict || linkedElsewhere,
+        currentBcId: linkedElsewhere ? csp.bcId : request.currentBcId,
+        reviewRemarks: remarks,
+        reviewedByUserId: user.userId,
+        reviewedAt: new Date(),
+      });
+
+      const notifications = new NotificationService(tx);
+      const bc = await tx.businessCorrespondent.findUnique({ where: { bcId: request.bcId }, select: { name: true } });
+
+      await notifications.notifyAgent(request.bcId, {
+        title: "Link approved",
+        message: `CSP ${csp.name ?? csp.agentId} (${csp.agentId}) is now linked to you${linkedKoAgentIds.length ? ` with ${linkedKoAgentIds.length} KO(s)` : ""}.`,
+        kind: NotificationKind.BC_LINK_APPROVED,
+        data: { requestId: request.id, cspAgentId: csp.agentId },
+      });
+
+      await notifications.notifyAgent(csp.agentId, {
+        title: "Linked to a BC",
+        message: `${bc?.name ?? request.bcId} can now see your CSP data. Your plan is unchanged.`,
+        kind: NotificationKind.BC_LINKED,
+        data: { bcId: request.bcId, bcName: bc?.name ?? null },
+      });
+
+      return { ...mapRequest(updated, user), linkedKoAgentIds };
+    });
+  }
+
+  /**
+   * The BC drops a CSP it linked through a link request (₹799). The CSP and
+   * its KOs leave the BC's scope at once; the CSP keeps its own plan and
+   * data. A CSP the BC created itself (BC_MANAGED) is deleted, not unlinked.
+   * No running plan is needed: a BC can always clean up its list.
+   */
+  async unlinkCsp(user: CurrentUser, cspAgentId: string, reason?: string) {
+    return withTransaction(async (tx) => {
+      const bcId = user.agentId;
+
+      const csp = await tx.agent.findFirst({
+        where: { agentId: cspAgentId, type: AgentType.CSP, isDeleted: false, bcId },
+      });
+
+      if (!csp) {
+        throw new NotFoundError("CSP not found.");
+      }
+
+      if (!csp.bcLinkedByRequest) {
+        throw new BadRequestError("You created this CSP; delete it instead.", "UNLINK_NOT_ALLOWED");
+      }
+
+      const now = new Date();
+
+      await tx.agent.update({
+        where: { agentId: cspAgentId },
+        data: { bcId: null, linkedAt: null, bcLinkedByRequest: false },
+      });
+
+      const kos = await tx.agent.updateMany({
+        where: { parentAgentId: cspAgentId, type: AgentType.KO, bcId },
+        data: { bcId: null, linkedAt: null },
+      });
+
+      // The approved request(s) that made the link now say UNLINKED.
+      await tx.bcLinkRequest.updateMany({
+        where: { bcId, cspAgentId, status: BcLinkRequestStatus.APPROVED },
+        data: {
+          status: BcLinkRequestStatus.UNLINKED,
+          unlinkedAt: now,
+          unlinkedByUserId: user.userId,
+          unlinkReason: reason ?? null,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          userId: user.userId,
+          action: AuditAction.UPDATE,
+          entityType: AuditEntity.AGENT,
+          entityId: csp.id,
+          description: `BC ${bcId} unlinked CSP ${cspAgentId}${reason ? ` (${reason})` : ""}`,
+          oldData: { bcId, bcLinkedByRequest: true },
+          newData: { bcId: null, bcLinkedByRequest: false },
+        },
+      });
+
+      const bc = await tx.businessCorrespondent.findUnique({ where: { bcId }, select: { name: true } });
+
+      await new NotificationService(tx).notifyAgent(cspAgentId, {
+        title: "BC unlinked",
+        message: `${bc?.name ?? bcId} no longer sees your data. Your plan and data are unchanged.`,
+        kind: NotificationKind.BC_UNLINKED,
+        data: { bcId, bcName: bc?.name ?? null },
+      });
+
+      return { cspAgentId, unlinkedAt: now, koCount: kos.count };
+    });
+  }
+
+  async rejectRequest(user: CurrentUser, requestId: string, remarks?: string) {
+    return withTransaction(async (tx) => {
+      const request = await findAccessibleRequest(tx, user, requestId);
+
+      ensurePending(request, "This request has already been reviewed.");
+
+      const updated = await new BcLinkRepository(tx).updateRequest(request.id, {
+        status: BcLinkRequestStatus.REJECTED,
+        reviewRemarks: remarks,
+        reviewedByUserId: user.userId,
+        reviewedAt: new Date(),
+      });
+
+      await new NotificationService(tx).notifyAgent(request.bcId, {
+        title: "Link rejected",
+        message: `Your request to link CSP ${request.cspAgentId} was rejected.${remarks ? ` Reason: ${remarks}` : ""}`,
+        kind: NotificationKind.BC_LINK_REJECTED,
+        data: { requestId: request.id, cspAgentId: request.cspAgentId },
+      });
+
+      return mapRequest(updated, user);
+    });
+  }
+}
+
+/**
+ * Validates and records a pending link request. Used by POST /bc-links/requests
+ * and by the legacy POST /agents flow when the CSP already exists: linking an
+ * existing CSP always needs SUPER_ADMIN approval.
+ */
+export async function raiseLinkRequest(
+  db: PrismaDb,
+  input: {
+    bcId: string;
+    cspAgentId: string;
+    remarks?: string;
+    createdByUserId: string;
+    cspSubscriptionRequired: boolean;
+  },
+) {
+  const repository = new BcLinkRepository(db);
+
+  const csp = await repository.findCsp(input.cspAgentId);
+
+  if (!csp) {
+    throw new NotFoundError("CSP not found.");
+  }
+
+  if (input.cspSubscriptionRequired) {
+    const subscribed = await new SubscriptionRepository(
+      db,
+    ).findOwnerIdsWithActiveSubscription(SubscriptionOwnerType.CSP, [
+      csp.agentId,
+    ]);
+
+    if (!subscribed.has(csp.agentId)) {
+      throw new BadRequestError(
+        "This CSP does not have an active subscription.",
+      );
+    }
+  }
+
+  if (csp.bcId === input.bcId) {
+    throw new BadRequestError(
+      "CSP is already linked with this Business Correspondent.",
+    );
+  }
+
+  if (await repository.findPendingRequest(input.bcId, csp.agentId)) {
+    throw new ConflictError("A link request for this CSP is already pending.");
+  }
+
+  const requestNumber =
+    await createCodeGeneratorService(db).generateBcLinkRequestNumber();
+
+  return repository.createRequest({
+    requestNumber,
+    bcId: input.bcId,
+    cspAgentId: csp.agentId,
+    // Linked to another BC: the admin decides whether to move it.
+    isConflict: Boolean(csp.bcId),
+    currentBcId: csp.bcId,
+    cspSubscriptionRequired: input.cspSubscriptionRequired,
+    remarks: input.remarks,
+    createdByUserId: input.createdByUserId,
+  });
+}
+
+async function requireLinkingPlan(db: PrismaDb, bcId: string) {
+  const subscription = await new SubscriptionResolver(
+    db,
+  ).getEffectiveSubscription(bcId);
+
+  // Explicit: inside a SUPER_ADMIN request the validator skips a missing
+  // subscription, but this is the BC's subscription.
+  if (!subscription) {
+    throw new ForbiddenError(
+      "No subscription found. Please purchase or activate a subscription to continue.",
+    );
+  }
+
+  SubscriptionAccessValidator.validate(subscription);
+
+  await new SubscriptionEntitlementService(db).requireFeatures(
+    subscription!.planId,
+    [DesktopFeature.CSP_LINKING],
+  );
+}
+
+export async function hasLinkingPlan(db: PrismaDb, bcId: string) {
+  try {
+    await requireLinkingPlan(db, bcId);
+
+    return true;
+  } catch (error) {
+    if (error instanceof ForbiddenError) {
+      return false;
+    }
+
+    throw error;
+  }
+}
+
+// A BC can only reach its own requests; others are "not found".
+async function findAccessibleRequest(
+  db: PrismaDb,
+  user: CurrentUser,
+  requestId: string,
+) {
+  const request = await new BcLinkRepository(db).findById(requestId);
+
+  if (
+    !request ||
+    (user.role !== UserRole.SUPER_ADMIN && request.bcId !== user.agentId)
+  ) {
+    throw new NotFoundError("Link request not found.");
+  }
+
+  return request;
+}
+
+function ensurePending(request: BcLinkRequestWithRelations, message: string) {
+  if (request.status !== BcLinkRequestStatus.PENDING) {
+    throw new ConflictError(message);
+  }
+}
+
+export function mapRequest(
+  request: BcLinkRequestWithRelations,
+  user: CurrentUser,
+) {
+  const isAdmin = user.role === UserRole.SUPER_ADMIN;
+
+  return {
+    id: request.id,
+    requestNumber: request.requestNumber,
+    status: request.status,
+
+    bcId: request.bcId,
+    bcName: request.businessCorrespondent.name,
+
+    cspAgentId: request.cspAgentId,
+    cspName: request.csp.name,
+
+    isConflict: request.isConflict,
+    // SUBSCRIBED_CSP (₹799): data visible while the CSP's plan is active.
+    linkType: request.cspSubscriptionRequired ? "SUBSCRIBED_CSP" : "BC_MANAGED",
+    // Which other BC the CSP belongs to is only shown to the admin.
+    currentBcId: isAdmin ? request.currentBcId : null,
+    cspCurrentBcId: isAdmin ? request.csp.bcId : null,
+
+    remarks: request.remarks,
+    reviewRemarks: request.reviewRemarks,
+    reviewedAt: request.reviewedAt,
+
+    // status UNLINKED: the BC unlinked the CSP after approval.
+    unlinkedAt: request.unlinkedAt,
+    unlinkReason: request.unlinkReason,
+
+    createdAt: request.createdAt,
+    updatedAt: request.updatedAt,
+  };
+}

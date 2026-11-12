@@ -165,6 +165,7 @@ export class AgentRepository {
 
         cashLimit: input.cashLimit,
         openingCash: input.openingCash,
+        openingCashInAccount: input.openingCashInAccount,
 
         bcId: input.bcId,
         parentAgentId: input.parentAgentId,
@@ -190,6 +191,7 @@ export class AgentRepository {
 
         cashLimit: input.cashLimit,
         openingCash: input.openingCash,
+        openingCashInAccount: input.openingCashInAccount,
 
         linkedAt: input.linkedAt,
 
@@ -231,6 +233,7 @@ export class AgentRepository {
 
         cashLimit: input.cashLimit,
         openingCash: input.openingCash,
+        openingCashInAccount: input.openingCashInAccount,
 
         updatedBy: input.updatedBy,
       },
@@ -258,15 +261,22 @@ export class AgentRepository {
     type?: AgentType;
     bcId?: string;
     parentAgentId?: string;
+    agentIds?: string[];
     skip: number;
     take: number;
   }) {
     return this.db.agent.findMany({
       where: {
         isDeleted: false,
-        ...(params.type && {
-          type: params.type,
+        ...(params.agentIds?.length && {
+          agentId: {
+            in: params.agentIds,
+          },
         }),
+        // The SUPER_ADMIN's own ADMIN record is never listed.
+        type: params.type ?? {
+          not: AgentType.ADMIN,
+        },
 
         ...(params.bcId && {
           bcId: params.bcId,
@@ -290,11 +300,17 @@ export class AgentRepository {
     type?: AgentType;
     bcId?: string;
     parentAgentId?: string;
+    agentIds?: string[];
   }) {
     return this.db.agent.count({
       where: {
         isDeleted: false,
-        ...(params.type && { type: params.type }),
+        ...(params.agentIds?.length && {
+          agentId: {
+            in: params.agentIds,
+          },
+        }),
+        type: params.type ?? { not: AgentType.ADMIN },
         ...(params.bcId && { bcId: params.bcId }),
         ...(params.parentAgentId && {
           parentAgentId: params.parentAgentId,
@@ -338,7 +354,7 @@ export class AgentRepository {
   /**
    * Returns direct child agents.
    */
-  async getChildAgents(parentAgentIds: string[], type?: AgentType) {
+  async getChildAgents(parentAgentIds: string[], type?: AgentType, includeInactive = false) {
     return this.db.agent.findMany({
       where: {
         parentAgentId: {
@@ -349,7 +365,7 @@ export class AgentRepository {
           type,
         }),
 
-        status: "ACTIVE",
+        ...(!includeInactive && { status: AgentStatus.ACTIVE }),
 
         isDeleted: false,
       },
@@ -360,20 +376,22 @@ export class AgentRepository {
     });
   }
 
-  async getCspAgents(bcId: string) {
+  async getCspAgents(bcId: string, includeInactive = false) {
     return this.db.agent.findMany({
       where: {
         bcId,
 
         type: AgentType.CSP,
 
-        status: AgentStatus.ACTIVE,
+        ...(!includeInactive && { status: AgentStatus.ACTIVE }),
 
         isDeleted: false,
       },
 
       select: {
         agentId: true,
+
+        bcLinkedByRequest: true,
       },
     });
   }

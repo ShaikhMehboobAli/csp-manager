@@ -1,7 +1,11 @@
 import { BadRequestError } from "../../core/errors/BadRequestError";
 import { PrismaDb } from "../../core/database/prisma.types";
 
-import { FloatLedgerType } from "../../generated/prisma/enums";
+import {
+  FloatLedgerType,
+  TransactionCategory,
+} from "../../generated/prisma/enums";
+import { Prisma } from "../../generated/prisma/client";
 
 import FloatLedgerRepository from "./float-ledger.repository";
 import AgentFloatRepository from "./agent-float.repository";
@@ -53,6 +57,104 @@ export default class FloatLedgerService {
     }
   }
 
+  /**
+   * Ledger entries for a batch of newly saved receipts, in the given order.
+   * Same balance maths as record() per receipt, but the agent's float is
+   * locked and read once, all entries are inserted together and the float is
+   * written once, so a 20-receipt upload costs a few queries, not ~10 each.
+   * Categories without a ledger rule effect are skipped.
+   */
+  async recordReceiptBatch(
+    agentId: string,
+    receipts: {
+      receiptRecordId: string;
+      transactionCategory: TransactionCategory;
+      amount?: number;
+    }[],
+    remarks: string,
+  ) {
+    const entries = receipts.flatMap((receipt) => {
+      const rule = getLedgerRule(receipt.transactionCategory);
+
+      return rule?.createLedger ? [{ receipt, rule }] : [];
+    });
+
+    if (entries.length === 0) {
+      return 0;
+    }
+
+    for (const { receipt } of entries) {
+      if (receipt.amount === undefined) {
+        throw new BadRequestError("Amount is required.");
+      }
+    }
+
+    let current = await this.lockAgentFloat(agentId);
+
+    if (!current) {
+      await this.getOrCreateAgentFloat(agentId);
+
+      current = await this.lockAgentFloat(agentId);
+    }
+
+    if (!current) {
+      throw new BadRequestError("Agent float is not initialized.");
+    }
+
+    let balance: LedgerCalculationResult | undefined;
+
+    const rows: Prisma.FloatLedgerCreateManyInput[] = [];
+
+    for (const { receipt, rule } of entries) {
+      balance = calculateNextBalance(current, receipt.amount!, rule.cashEffect);
+
+      rows.push({
+        agentId,
+        ledgerType: FloatLedgerType.RECEIPT,
+        cashInHandChange: balance.cashInHandChange,
+        cashInAccountChange: balance.cashInAccountChange,
+        balanceCashInHand: balance.balanceCashInHand,
+        balanceCashInAccount: balance.balanceCashInAccount,
+        receiptRecordId: receipt.receiptRecordId,
+        remarks,
+      });
+
+      current = {
+        cashInHand: balance.balanceCashInHand,
+        cashInAccount: balance.balanceCashInAccount,
+        totalFloat: balance.balanceTotalFloat,
+      };
+    }
+
+    await this.db.floatLedger.createMany({ data: rows });
+
+    await this.updateAgentFloat(agentId, balance!);
+
+    return rows.length;
+  }
+
+  // Row lock on the agent's float until the transaction ends, so concurrent
+  // uploads for one agent apply their balances one after the other.
+  private async lockAgentFloat(agentId: string) {
+    const rows = await this.db.$queryRaw<
+      {
+        currentCashInHand: Prisma.Decimal;
+        currentCashInAccount: Prisma.Decimal;
+        currentTotalFloat: Prisma.Decimal;
+      }[]
+    >`SELECT "currentCashInHand", "currentCashInAccount", "currentTotalFloat" FROM "AgentFloat" WHERE "agentId" = ${agentId} FOR UPDATE`;
+
+    const row = rows[0];
+
+    return row
+      ? {
+          cashInHand: Number(row.currentCashInHand),
+          cashInAccount: Number(row.currentCashInAccount),
+          totalFloat: Number(row.currentTotalFloat),
+        }
+      : null;
+  }
+
   private async createLedger(input: {
     agentId: string;
 
@@ -66,7 +168,7 @@ export default class FloatLedgerService {
 
     balanceCashInAccount: number;
 
-    receiptId?: string;
+    receiptRecordId?: string;
 
     remarks?: string;
 
@@ -93,10 +195,10 @@ export default class FloatLedgerService {
         },
       },
 
-      ...(input.receiptId && {
+      ...(input.receiptRecordId && {
         receipt: {
           connect: {
-            receiptId: input.receiptId,
+            id: input.receiptRecordId,
           },
         },
       }),
@@ -186,6 +288,65 @@ export default class FloatLedgerService {
   //     return agentFloat;
   //   }
 
+  /**
+   * Sets the agent's opening float (CSP signup). Creates the float and its
+   * OPENING ledger entry; if the float exists but nothing has been recorded on
+   * it yet (signup sent again before verifying), resets it to the new values.
+   * Once receipts or adjustments exist the balances are kept (KEPT): changes go
+   * through cash management. Run inside the signup transaction.
+   */
+  async setOpeningFloat(
+    agentId: string,
+    cashInHand: number,
+    cashInAccount: number,
+  ): Promise<"CREATED" | "UPDATED" | "KEPT"> {
+    const current = await this.lockAgentFloat(agentId);
+
+    const opening = {
+      ledgerType: FloatLedgerType.OPENING,
+      cashInHandChange: cashInHand,
+      cashInAccountChange: cashInAccount,
+      balanceCashInHand: cashInHand,
+      balanceCashInAccount: cashInAccount,
+      remarks: "Opening float at signup",
+    };
+
+    if (!current) {
+      await this.agentFloatRepository.initialize(
+        agentId,
+        cashInHand,
+        cashInAccount,
+      );
+
+      await this.createLedger({ agentId, ...opening });
+
+      return "CREATED";
+    }
+
+    const used = await this.db.floatLedger.count({
+      where: { agentId, ledgerType: { not: FloatLedgerType.OPENING } },
+    });
+
+    if (used > 0) {
+      return "KEPT";
+    }
+
+    await this.agentFloatRepository.update(agentId, {
+      openingFloat: cashInHand + cashInAccount,
+      currentCashInHand: cashInHand,
+      currentCashInAccount: cashInAccount,
+      currentTotalFloat: cashInHand + cashInAccount,
+    });
+
+    await this.db.floatLedger.deleteMany({
+      where: { agentId, ledgerType: FloatLedgerType.OPENING },
+    });
+
+    await this.createLedger({ agentId, ...opening });
+
+    return "UPDATED";
+  }
+
   private async getOrCreateAgentFloat(agentId: string) {
     let agentFloat = await this.agentFloatRepository.findByAgentId(agentId);
 
@@ -201,7 +362,8 @@ export default class FloatLedgerService {
 
     const cashInHand = Number(agent.openingCash ?? 0);
 
-    const cashInAccount = Number(agent.cashLimit ?? 0);
+    // cashLimit is the CSP limit, not a balance.
+    const cashInAccount = Number(agent.openingCashInAccount ?? 0);
 
     agentFloat = await this.agentFloatRepository.initialize(
       agentId,
@@ -272,12 +434,8 @@ export default class FloatLedgerService {
       throw new BadRequestError("Transaction category is required.");
     }
 
-    if (!input.receiptId) {
+    if (!input.receiptRecordId) {
       throw new BadRequestError("Receipt id is required.");
-    }
-
-    if (input.amount === undefined) {
-      throw new BadRequestError("Amount is required.");
     }
 
     // Get ledger rule
@@ -292,9 +450,13 @@ export default class FloatLedgerService {
       return null;
     }
 
+    if (input.amount === undefined) {
+      throw new BadRequestError("Amount is required.");
+    }
+
     // Prevent duplicate ledger creation
-    const existingLedger = await this.ledgerRepository.findByReceiptId(
-      input.receiptId,
+    const existingLedger = await this.ledgerRepository.findByReceiptRecordId(
+      input.receiptRecordId,
     );
 
     if (existingLedger) {
@@ -342,7 +504,7 @@ export default class FloatLedgerService {
 
       balanceCashInAccount: balance.balanceCashInAccount,
 
-      receiptId: input.receiptId,
+      receiptRecordId: input.receiptRecordId,
 
       remarks: input.remarks,
 

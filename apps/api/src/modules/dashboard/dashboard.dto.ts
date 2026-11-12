@@ -108,6 +108,10 @@ export interface DashboardCspTransactionSummary {
   miniStatement: number;
 
   balanceInquiry: number;
+
+  moneyTransfer: number;
+
+  fundTransfer: number;
 }
 
 /**
@@ -151,6 +155,10 @@ export interface DashboardCspTransactionDailyDetail {
   miniStatement: number;
 
   balanceInquiry: number;
+
+  moneyTransfer: number;
+
+  fundTransfer: number;
 }
 
 export interface DashboardCspDetailResponse {

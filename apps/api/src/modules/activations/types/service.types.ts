@@ -23,4 +23,7 @@ export interface AssignActivationInput {
   assignedByOwnerType: SubscriptionOwnerType;
 
   assignedByOwnerId: string;
+
+  /** The logged-in user (records the onboarding email). */
+  assignedByUserId?: string;
 }

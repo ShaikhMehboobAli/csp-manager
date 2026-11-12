@@ -58,7 +58,7 @@ export interface ServiceSummaryAggregate {
 
   receiptType: ReceiptType;
 
-  status: ReceiptStatus;
+  status: ReceiptStatus | null;
 
   _count: {
     id: number;

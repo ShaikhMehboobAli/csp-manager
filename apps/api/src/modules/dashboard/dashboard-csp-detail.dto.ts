@@ -20,6 +20,8 @@ export interface DashboardCspTransactionDailyDetail {
   accountOpening: number;
   miniStatement: number;
   balanceInquiry: number;
+  moneyTransfer: number;
+  fundTransfer: number;
 }
 
 export interface DashboardCspDetailResponse {

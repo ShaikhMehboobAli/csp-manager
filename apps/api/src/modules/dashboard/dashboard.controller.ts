@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 
-import { withTransaction } from "../../core/database/transaction";
+import { withReadOnly } from "../../core/database/transaction";
 
 import DashboardService from "./dashboard.service";
 import {
@@ -10,13 +10,43 @@ import {
 import { UnauthorizedError } from "../../core/errors/UnauthorizedError";
 import AgentScopeService from "../agents/service/agent-scope.service";
 import { getTodayRange } from "./dashboard.helper";
+import { endOfIstDay, istInstant } from "../../core/utils/ist";
 import { AppError } from "../../core/errors/AppError";
 import { DashboardCspDetailRepository } from "./repository/dashboard-csp-detail.repository";
 import { BadRequestError } from "../../core/errors/BadRequestError";
 
+/**
+ * `agentId` narrows the caller's scope: a CSP shows the CSP and all its KOs, a
+ * KO only itself. `agentId` stays set only for a single agent, which is what
+ * switches the summary to the single-agent view (float, one machine).
+ */
+async function selectAgents(
+  scopeService: AgentScopeService,
+  agentId: string | undefined,
+  scope: string[],
+  includeKos = true,
+) {
+  if (!agentId) {
+    return { agentId: undefined, agentIds: scope };
+  }
+
+  if (!includeKos) {
+    scopeService.ensureAgentAccessible(agentId, scope);
+
+    return { agentId, agentIds: [agentId] };
+  }
+
+  const agentIds = await scopeService.expandSelection(agentId, scope);
+
+  return {
+    agentId: agentIds.length === 1 ? agentIds[0] : undefined,
+    agentIds,
+  };
+}
+
 export default class DashboardController {
   async getSummary(req: Request, res: Response) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const service = new DashboardService(tx);
 
       console.log("dashboard controller---", req.user);
@@ -72,8 +102,9 @@ export default class DashboardController {
 
       const scopeService = new AgentScopeService(tx);
 
-      const agentIds = await scopeService.getAgentScope(req.user!);
-      scopeService.ensureAgentAccessible(query.agentId, agentIds);
+      const scope = await scopeService.getAgentScope(req.user!);
+      const selection = await selectAgents(scopeService, query.agentId, scope, query.includeKos);
+      const agentIds = selection.agentIds;
 
       console.log("Dashboard Scope:", {
         role: req.user!.role,
@@ -88,7 +119,7 @@ export default class DashboardController {
 
         currentAgentId: req.user!.agentId,
 
-        agentIds,
+        ...selection,
       });
 
       return res.status(200).json({
@@ -102,7 +133,7 @@ export default class DashboardController {
   }
 
   async getAnalytics(req: Request, res: Response) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const service = new DashboardService(tx);
 
       const query = dashboardAnalyticsSchema.parse(req.query);
@@ -123,8 +154,8 @@ export default class DashboardController {
 
       const scopeService = new AgentScopeService(tx);
 
-      const agentIds = await scopeService.getAgentScope(req.user!);
-      scopeService.ensureAgentAccessible(query.agentId, agentIds);
+      const scope = await scopeService.getAgentScope(req.user!);
+      const selection = await selectAgents(scopeService, query.agentId, scope, query.includeKos);
 
       const result = await service.getAnalytics({
         ...query,
@@ -133,7 +164,7 @@ export default class DashboardController {
 
         currentAgentId: req.user!.agentId,
 
-        agentIds,
+        ...selection,
       });
 
       return res.json({
@@ -147,7 +178,7 @@ export default class DashboardController {
   }
 
   async getCspDetail(req: Request, res: Response) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const currentUser = req.user!;
 
       if (!currentUser) {
@@ -181,25 +212,12 @@ export default class DashboardController {
 
       // const to = new Date(Date.UTC(year, monthNumber, 0, 23, 59, 59, 999));
 
-      const from = new Date(Date.UTC(year, monthNumber - 1, 1));
+      // The month and "today" are IST calendar days.
+      const from = istInstant(year, monthNumber - 1, 1);
 
-      const monthEnd = new Date(
-        Date.UTC(year, monthNumber, 0, 23, 59, 59, 999),
-      );
+      const monthEnd = istInstant(year, monthNumber, 0, 23, 59, 59, 999);
 
-      const now = new Date();
-
-      const today = new Date(
-        Date.UTC(
-          now.getUTCFullYear(),
-          now.getUTCMonth(),
-          now.getUTCDate(),
-          23,
-          59,
-          59,
-          999,
-        ),
-      );
+      const today = endOfIstDay(new Date());
 
       if (from > today) {
         throw new BadRequestError("Future month is not allowed.");
