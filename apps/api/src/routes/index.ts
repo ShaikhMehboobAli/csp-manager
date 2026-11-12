@@ -15,14 +15,23 @@ import uploadRoutes from "../modules/uploads/upload.routes";
 import cashRoutes from "../modules/cash/cash.routes";
 import bcLinkRoutes from "../modules/bc-links/bc-link.routes";
 import teamRoutes from "../modules/team/team.routes";
-import { commissionAdminRoutes, commissionRoutes } from "../modules/commission/commission.routes";
+import {
+  commissionAdminRoutes,
+  commissionRoutes,
+} from "../modules/commission/commission.routes";
 import desktopSettingsRoutes from "../modules/settings/desktop-settings.routes";
 import userStatusRoutes from "../modules/admin-users/user-status.routes";
 import receiptReportAdminRoutes from "../modules/receipts/receipt-report.routes";
 import notificationRoutes from "../modules/notifications/notification.routes";
 import { requireCspScreen } from "../core/middlewares/csp-plan-gate.middleware";
-import { trialAdminRoutes, trialRoutes } from "../modules/subscriptions/trial/trial.routes";
-import { appConfigAdminRoutes, appConfigRoutes } from "../modules/app-config/app-config.routes";
+import {
+  trialAdminRoutes,
+  trialRoutes,
+} from "../modules/subscriptions/trial/trial.routes";
+import {
+  appConfigAdminRoutes,
+  appConfigRoutes,
+} from "../modules/app-config/app-config.routes";
 import { diagnosticsAdminRoutes } from "../modules/machines/diagnostics/diagnostics.routes";
 
 const router = Router();
