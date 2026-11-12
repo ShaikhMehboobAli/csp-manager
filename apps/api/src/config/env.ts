@@ -47,4 +47,9 @@ export const env = {
   // Most one UPI AutoPay debit may take, in rupees (₹15,000 = no extra
   // approval per debit for most merchant categories).
   razorpayMandateMaxAmount: Number(process.env.RAZORPAY_MANDATE_MAX_AMOUNT) || 15000,
+  // true = a CSP's monthly purchase is a UPI AutoPay order (pay + approve the
+  // mandate in one step). Needs Razorpay Recurring Payments enabled on the
+  // account; while it isn't, Checkout shows "No appropriate payment method
+  // found", so it stays off and purchases are normal one-time payments.
+  razorpayAutopayOnPurchase: process.env.RAZORPAY_AUTOPAY_ON_PURCHASE === "true",
 };

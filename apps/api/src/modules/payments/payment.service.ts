@@ -176,8 +176,11 @@ export default class PaymentService {
           Number(quote.amount),
         );
 
+        // An older AutoPay (UPI-only) order isn't reused while AutoPay-on-purchase is off.
+        const wasAutopay = Boolean(((pendingPayment.gatewayResponse ?? {}) as GatewayDetails).recurring);
         const sameProvider =
-          pendingPayment.paymentProvider === (razorpayEnabled() ? PaymentProvider.RAZORPAY : PaymentProvider.MANUAL);
+          pendingPayment.paymentProvider === (razorpayEnabled() ? PaymentProvider.RAZORPAY : PaymentProvider.MANUAL) &&
+          (!wasAutopay || env.razorpayAutopayOnPurchase);
 
         if (
           sameProvider &&
@@ -288,7 +291,8 @@ export default class PaymentService {
   private async openRazorpayOrder(db: PrismaDb, payment: Payment, registerMandate: boolean) {
     const client = new RazorpayClient();
     const total = Number(payment.totalAmount);
-    const recurring = registerMandate && total <= env.razorpayMandateMaxAmount;
+    // AutoPay with the purchase only once Razorpay Recurring Payments is enabled (env).
+    const recurring = env.razorpayAutopayOnPurchase && registerMandate && total <= env.razorpayMandateMaxAmount;
     let customerId: string | null = null;
 
     if (recurring) {

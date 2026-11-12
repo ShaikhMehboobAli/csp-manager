@@ -661,7 +661,17 @@ export default class SubscriptionBillingService {
     });
 
     if (!mandate) {
-      // Removed in the UPI app / never approved: nothing to retry with.
+      // Never approved / removed in the UPI app: nothing to charge. The plan
+      // still runs until its end date (renewals may start up to 48 h early).
+      if (subscription.endDate > new Date()) {
+        await this.db.subscription.update({
+          where: { id: subscriptionId },
+          data: { nextRenewalAttemptAt: subscription.endDate },
+        });
+
+        return { status: "WAITING" as const };
+      }
+
       await this.lapse(subscription, "No active UPI mandate to charge.");
 
       return { status: "LAPSED" as const };

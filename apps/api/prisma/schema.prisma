@@ -858,6 +858,10 @@ model Subscription {
   cancelReason String?
   cancelledBy  String?
 
+  /// The cycle AutoPay renews at (set when the mandate is set up; CSP:
+  /// MONTHLY). null = not renewed by mandate (old BC plans, trials).
+  renewalCycle BillingCycle?
+
   /// Failed mandate charges for the renewal due at endDate (0–3).
   renewalAttempts      Int       @default(0)
   nextRenewalAttemptAt DateTime?
@@ -1778,6 +1782,11 @@ model Payment {
   mandateId     String?
   mandate       SubscriptionMandate? @relation(fields: [mandateId], references: [id], onDelete: SetNull)
   attemptNumber Int?
+
+  /// Razorpay one-time / registration payments: until when we wait for the
+  /// customer to finish Checkout. No captured payment by then → FAILED and
+  /// the app may start a new payment. null = not waiting (renewals, dev).
+  checkoutExpiresAt DateTime?
 
   @@unique([ownerId, idempotencyKey])
   @@index([mandateId])

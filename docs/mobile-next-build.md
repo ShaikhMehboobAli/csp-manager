@@ -78,6 +78,7 @@ Package: **`react-native-razorpay`** (Standard Checkout). Keep it behind one fun
      "recurring": "1", "customerId": "cust_…",
      "prefill": { "name": "…", "email": "…", "contact": "…" }, "notes": { "paymentId": "…" } }
    ```
+   **For now (2026-11-12) every order is a normal one-time payment (`recurring: null`)**: Razorpay Recurring Payments isn't enabled on the account yet (an AutoPay order shows "No appropriate payment method found"). Only pass `recurring` / `customer_id` to Checkout when the server sends them.
    `amount` is in **paise**. `recurring: "1"` + `customerId` = a CSP's **monthly purchase**: it is **UPI only** and also approves UPI AutoPay; pass `recurring` and `customer_id` to Checkout. `recurring: null` = any method. `checkout: null` = a dev server without Razorpay (don't ship that flow).
 2. Open Checkout: `{ key: keyId, order_id: orderId, amount, currency, name, description, prefill, notes, …(recurring && { recurring, customer_id: customerId }) }`.
 3. On success → `POST /payments/verify` `{ paymentId, razorpayOrderId, razorpayPaymentId, razorpaySignature }`:

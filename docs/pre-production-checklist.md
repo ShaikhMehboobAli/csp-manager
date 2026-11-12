@@ -231,6 +231,8 @@ Everything below is built or specified but **not finished for production**. Each
 
 ## Changelog
 
+- 2026-11-12 — AutoPay-with-purchase switched off (`RAZORPAY_AUTOPAY_ON_PURCHASE=false`): Checkout showed "No appropriate payment method found" because Razorpay Recurring Payments isn't enabled on the account. Purchases are one-time payments; no mandate means the plan runs to its end date and stops. Turn it on (`true`) after Razorpay enables UPI AutoPay (7.1).
+
 - 2026-11-12 — Razorpay built (test mode): orders + Checkout signature, signed webhook with event de-duplication, UPI AutoPay registration with the CSP's monthly purchase or an approval link, renewals 48 h before the end date (Razorpay pre-debit notice and retries; final failure before the end date → works until it, auto-renew off), token cancel, `POST /payments/mandates/setup`. 1.1–1.4, 7.3 done; open: 1.5 (expire pending orders), 1.7 (live secrets), 7.1 (Razorpay recurring enablement, webhook setup, live test), 7.4 refunds, 7.5 gateway calls inside transactions.
 
 - 2026-11-12 — Domain `cspmanager.in` verified in Resend; first real email delivered (inbox, from `no-reply@cspmanager.in`). Onboarding email on code assignment; resend timers on every code; central email limits (30 s same kind, 10 per address per hour, optional `EMAIL_DAILY_LIMIT`) with an `EmailLog` table kept 30 days. Production: set `EMAIL_DAILY_LIMIT` to the Resend plan's daily cap (free plan: 100).
