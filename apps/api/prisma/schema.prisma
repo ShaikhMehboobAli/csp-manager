@@ -397,6 +397,37 @@ enum NotificationKind {
   TRIAL_EXTENDED
   // A BC unlinked this CSP (BC ₹799 link).
   BC_UNLINKED
+  // Super admin inbox: an owner asked to revoke an activation.
+  ACTIVATION_REVOKE_REQUESTED
+  // To the owner: its revoke request was approved / rejected.
+  ACTIVATION_REVOKE_APPROVED
+  ACTIVATION_REVOKE_REJECTED
+  // To the owner: the super admin revoked an activation directly.
+  ACTIVATION_REVOKED
+  // Super admin inbox: a BC asked to link a CSP.
+  BC_LINK_REQUESTED
+  // To the BC: its link request was approved / rejected.
+  BC_LINK_APPROVED
+  BC_LINK_REJECTED
+  // To the CSP: it is now linked to a BC.
+  BC_LINKED
+  // To the CSP: a KO started / completed / cancelled a settlement step.
+  CASH_SETTLEMENT_STARTED
+  CASH_SETTLEMENT_COMPLETED
+  CASH_SETTLEMENT_CANCELLED
+  // To the CSP: a KO closed the day short / over (or cash in account differs).
+  CASH_DAY_CLOSE_DIFFERENCE
+  // To the CSP: a KO asked for a cash in hand change.
+  CASH_REQUEST_RAISED
+  // Super admin inbox: a problem report on a receipt.
+  RECEIPT_REPORT_RAISED
+  // To the reporter: the super admin resolved / rejected its report.
+  RECEIPT_REPORT_RESOLVED
+  RECEIPT_REPORT_REJECTED
+  // To the owner: a PC sent no heartbeat for 1 hour.
+  MACHINE_OFFLINE
+  // To the CSP: an agent that worked today hasn't closed the day (reminder time).
+  CASH_DAY_NOT_CLOSED
 }
 
 /// What identifies a person / PC that already used a free trial.
@@ -1131,6 +1162,10 @@ model Machine {
   cashAgentLoginAt     DateTime?
 
   lastHeartbeatAt DateTime?
+
+  // When the owner was told this PC is offline (no heartbeat for 1 hour).
+  // Cleared by the next heartbeat, so every new outage alerts once.
+  offlineAlertAt DateTime?
 
   lastStartupAt DateTime?
 
@@ -2608,6 +2643,22 @@ model CashExchange {
 }
 
 /// An agent's end-of-day count (IST day). Balances don't change.
+/// One "day not closed" reminder per agent per IST day (sent to the CSP).
+model CashDayReminder {
+  id String @id @default(cuid())
+
+  cspAgentId String
+
+  agentId String
+
+  date DateTime @db.Date
+
+  sentAt DateTime @default(now())
+
+  @@unique([agentId, date])
+  @@index([date])
+}
+
 model CashDayClose {
   id String @id @default(cuid())
 
@@ -2881,6 +2932,36 @@ model NotificationPreference {
 }
 
 /// Each time an activation code + a fresh password were emailed (R24).
+enum EmailLogStatus {
+  SENT
+  FAILED
+  // No provider configured (development): logged instead of sent.
+  LOGGED
+}
+
+/// Every email the API tried to send (central rate limit and support). Kept 30 days.
+model EmailLog {
+  id String @id @default(cuid())
+
+  // Lower-case recipient.
+  to String
+
+  // OTP_SIGNUP, OTP_FORGOT_PASSWORD, OTP_EMAIL_CHANGE, OTP_AGENT_EMAIL_VERIFICATION, OTP_CASH_LOGIN, ACTIVATION
+  kind String
+
+  status EmailLogStatus
+
+  // Resend's email id when sent.
+  providerId String?
+
+  error String?
+
+  createdAt DateTime @default(now())
+
+  @@index([to, createdAt])
+  @@index([createdAt])
+}
+
 model ActivationEmail {
   id String @id @default(cuid())
 

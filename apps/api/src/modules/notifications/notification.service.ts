@@ -1,7 +1,7 @@
 import { PrismaDb } from "../../core/database/prisma.types";
 import { NotFoundError } from "../../core/errors/NotFoundError";
 import { Prisma } from "../../generated/prisma/client";
-import { NotificationKind, NotificationType } from "../../generated/prisma/enums";
+import { NotificationKind, NotificationType, UserRole, UserStatus } from "../../generated/prisma/enums";
 
 import PushService, { LOCKED_GROUPS } from "./push.service";
 
@@ -10,28 +10,45 @@ import PushService, { LOCKED_GROUPS } from "./push.service";
  * pending, pre-production checklist 2.14). An agent without a login (KO)
  * has no inbox: nothing is written.
  */
+type NotifyInput = {
+  title: string;
+  message: string;
+  kind: NotificationKind;
+  type?: NotificationType;
+  data?: Prisma.InputJsonValue;
+};
+
 export default class NotificationService {
   constructor(private readonly db: PrismaDb) {}
 
-  async notifyAgent(
-    agentId: string,
-    input: {
-      title: string;
-      message: string;
-      kind: NotificationKind;
-      type?: NotificationType;
-      data?: Prisma.InputJsonValue;
-    },
-  ) {
+  async notifyAgent(agentId: string, input: NotifyInput) {
     const user = await this.db.user.findUnique({ where: { agentId }, select: { id: true } });
 
     if (!user) {
       return null;
     }
 
+    return this.notifyUser(user.id, input);
+  }
+
+  /** Every active super admin's inbox (admin console; push if they use the app). */
+  async notifySuperAdmins(input: NotifyInput) {
+    const admins = await this.db.user.findMany({
+      where: { role: UserRole.SUPER_ADMIN, status: UserStatus.ACTIVE },
+      select: { id: true },
+    });
+
+    for (const admin of admins) {
+      await this.notifyUser(admin.id, input);
+    }
+
+    return admins.length;
+  }
+
+  private async notifyUser(userId: string, input: NotifyInput) {
     const notification = await this.db.notification.create({
       data: {
-        userId: user.id,
+        userId,
         title: input.title,
         message: input.message,
         kind: input.kind,
@@ -40,7 +57,7 @@ export default class NotificationService {
       },
     });
 
-    await new PushService(this.db).deliver(user.id, {
+    await new PushService(this.db).deliver(userId, {
       title: input.title,
       body: input.message,
       kind: input.kind,

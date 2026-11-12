@@ -96,6 +96,13 @@ export default class BcLinkService {
         cspSubscriptionRequired: true,
       });
 
+      await new NotificationService(tx).notifySuperAdmins({
+        title: "Link request",
+        message: `BC ${bcId} asked to link CSP ${input.cspAgentId}${request.isConflict ? " (already linked to another BC)" : ""}.`,
+        kind: NotificationKind.BC_LINK_REQUESTED,
+        data: { requestId: request.id, bcId, cspAgentId: input.cspAgentId, isConflict: request.isConflict },
+      });
+
       return mapRequest(request, user);
     });
   }
@@ -185,6 +192,23 @@ export default class BcLinkService {
         reviewedAt: new Date(),
       });
 
+      const notifications = new NotificationService(tx);
+      const bc = await tx.businessCorrespondent.findUnique({ where: { bcId: request.bcId }, select: { name: true } });
+
+      await notifications.notifyAgent(request.bcId, {
+        title: "Link approved",
+        message: `CSP ${csp.name ?? csp.agentId} (${csp.agentId}) is now linked to you${linkedKoAgentIds.length ? ` with ${linkedKoAgentIds.length} KO(s)` : ""}.`,
+        kind: NotificationKind.BC_LINK_APPROVED,
+        data: { requestId: request.id, cspAgentId: csp.agentId },
+      });
+
+      await notifications.notifyAgent(csp.agentId, {
+        title: "Linked to a BC",
+        message: `${bc?.name ?? request.bcId} can now see your CSP data. Your plan is unchanged.`,
+        kind: NotificationKind.BC_LINKED,
+        data: { bcId: request.bcId, bcName: bc?.name ?? null },
+      });
+
       return { ...mapRequest(updated, user), linkedKoAgentIds };
     });
   }
@@ -270,6 +294,13 @@ export default class BcLinkService {
         reviewRemarks: remarks,
         reviewedByUserId: user.userId,
         reviewedAt: new Date(),
+      });
+
+      await new NotificationService(tx).notifyAgent(request.bcId, {
+        title: "Link rejected",
+        message: `Your request to link CSP ${request.cspAgentId} was rejected.${remarks ? ` Reason: ${remarks}` : ""}`,
+        kind: NotificationKind.BC_LINK_REJECTED,
+        data: { requestId: request.id, cspAgentId: request.cspAgentId },
       });
 
       return mapRequest(updated, user);

@@ -1,4 +1,5 @@
 import ReceiptFieldsSettingsService from "../../settings/receipt-fields-settings.service";
+import DayCloseReminderService from "../../alerts/day-close-reminder.service";
 import { PrismaDb } from "../../../core/database/prisma.types";
 
 import MachineAuthenticationService from "./machine-auth.service";
@@ -58,7 +59,7 @@ export default class MachineHeartbeatService {
     const family = new MachineFamilyService(this.db);
     const cashAgent = await family.cashAgentOf(authenticated);
 
-    const [{ plan, features }, watcher, desktop, cash, receiptFields, accessAgents, diagnostics] = await Promise.all([
+    const [{ plan, features }, watcher, desktop, cash, receiptFields, accessAgents, diagnostics, cashPlan] = await Promise.all([
       new SubscriptionEntitlementService(this.db).getPlanEntitlements(
         authenticated.subscription.planId,
       ),
@@ -70,7 +71,14 @@ export default class MachineHeartbeatService {
       new ReceiptFieldsSettingsService(this.db).allowed(),
       family.agents(authenticated),
       new DiagnosticsService(this.db).forMachine(authenticated.machine.id),
+      new SubscriptionEntitlementService(this.db).canViewCashManagement(authenticated.subscription),
     ]);
+
+    // "Close the day" banner / toast: from 30 min before the CSP's closing
+    // time (18:00 when none is set) until the cash agent closes the day.
+    const dayCloseReminder = cash && cashPlan
+      ? await new DayCloseReminderService(this.db).forDesktop(cashAgent.agentId)
+      : null;
 
     return {
       serverTime: new Date(),
@@ -105,6 +113,7 @@ export default class MachineHeartbeatService {
       receiptFields: { allowed: receiptFields },
       // Log upload asked by support (null = nothing asked).
       diagnostics,
+      dayCloseReminder,
     };
   }
 }

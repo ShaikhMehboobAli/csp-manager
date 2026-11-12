@@ -13,8 +13,28 @@ export const LOCKED_GROUPS: PushGroup[] = ["plan"];
 export function pushGroupOf(kind: NotificationKind): PushGroup {
   switch (kind) {
     case NotificationKind.CASH_ACTIVATION_DIFFERENCE:
+    case NotificationKind.CASH_DAY_CLOSE_DIFFERENCE:
+    case NotificationKind.CASH_REQUEST_RAISED:
+    case NotificationKind.CASH_DAY_NOT_CLOSED:
       return "cash";
+    case NotificationKind.CASH_SETTLEMENT_STARTED:
+    case NotificationKind.CASH_SETTLEMENT_COMPLETED:
+    case NotificationKind.CASH_SETTLEMENT_CANCELLED:
+      return "settlements";
+    case NotificationKind.ACTIVATION_REVOKED:
+    case NotificationKind.MACHINE_OFFLINE:
+      return "machines";
     case NotificationKind.BC_UNLINKED:
+    case NotificationKind.BC_LINKED:
+    case NotificationKind.BC_LINK_REQUESTED:
+    case NotificationKind.BC_LINK_APPROVED:
+    case NotificationKind.BC_LINK_REJECTED:
+    case NotificationKind.ACTIVATION_REVOKE_REQUESTED:
+    case NotificationKind.ACTIVATION_REVOKE_APPROVED:
+    case NotificationKind.ACTIVATION_REVOKE_REJECTED:
+    case NotificationKind.RECEIPT_REPORT_RAISED:
+    case NotificationKind.RECEIPT_REPORT_RESOLVED:
+    case NotificationKind.RECEIPT_REPORT_REJECTED:
       return "requests";
     default:
       // GENERAL, SUBSCRIPTION_*, MANDATE_*, TRIAL_*: always sent.

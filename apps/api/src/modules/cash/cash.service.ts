@@ -1,4 +1,5 @@
 import { PrismaDb } from "../../core/database/prisma.types";
+import { notifyCspOfKo } from "./cash-notify.helper";
 import { BadRequestError } from "../../core/errors/BadRequestError";
 import { ConflictError } from "../../core/errors/ConflictError";
 import { NotFoundError } from "../../core/errors/NotFoundError";
@@ -1459,6 +1460,18 @@ export default class CashService {
         reason: input.reason,
         requestedBy: input.requestedBy,
       },
+    });
+
+    const system = cash.get(input.agentId)!.cashInHand;
+
+    await notifyCspOfKo(this.db, {
+      cspAgentId,
+      agentId: input.agentId,
+      kind: NotificationKind.CASH_REQUEST_RAISED,
+      title: "Cash change request",
+      message: (ko) => `${ko} asks to change cash in hand from ${rupees(system)} to ${rupees(D(input.cashInHand))}: ${input.reason}. Review it in Cash.`,
+      type: NotificationType.WARNING,
+      data: { requestId: request.id, systemCashInHand: system.toFixed(2), requestedCashInHand: D(input.cashInHand).toFixed(2) },
     });
 
     return this.mapRequest(request);

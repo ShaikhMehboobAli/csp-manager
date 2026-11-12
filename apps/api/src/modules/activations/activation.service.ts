@@ -1,4 +1,9 @@
+import prisma from "../../config/prisma";
 import { withTransaction, withReadOnly } from "../../core/database/transaction";
+import DesktopSettingsService from "../settings/desktop-settings.service";
+import { maskEmail } from "../machines/family/agent-email-otp.service";
+import NotificationService from "../notifications/notification.service";
+import { NotificationKind } from "../../generated/prisma/enums";
 import { withVisiblePassword } from "./activation-password-exposure";
 import { PrismaDb } from "../../core/database/prisma.types";
 import ActivationRepository from "./activation.repository";
@@ -230,6 +235,9 @@ export default class ActivationService {
         );
       }
 
+      // Refuse before the password changes, so a limited send keeps the old one.
+      await this.emailService.assertCanSend(recipient, "ACTIVATION");
+
       const credentials = await this.passwordService.generateCredentials();
 
       await repository.updateActivationPassword(activation.id, credentials.hash, credentials.password);
@@ -244,13 +252,15 @@ export default class ActivationService {
         activationCode: activation.activationCode,
         password: credentials.password,
         agentId: activation.assignedAgentId,
+        expiresAt: activation.expiresAt,
       };
     });
 
     await this.emailService.sendActivation(result.recipient, {
       activationCode: result.activationCode,
       password: result.password,
-      agentId: result.agentId,
+      ...(await this.onboardingContext(result.agentId, ownerId)),
+      expiresAt: result.expiresAt,
     });
 
     return {
@@ -281,6 +291,15 @@ export default class ActivationService {
         activation.id,
         user.userId,
       );
+
+      const machineCode = activation.machine?.machineCode ?? null;
+
+      await new NotificationService(tx).notifyAgent(activation.subscription.ownerId, {
+        title: "Activation revoked",
+        message: `Support revoked ${activation.activationCode}${machineCode ? `; the PC ${machineCode} has stopped working` : ""}. Assign the code again to use it on another PC.`,
+        kind: NotificationKind.ACTIVATION_REVOKED,
+        data: { activationId: activation.id, activationCode: activation.activationCode, machineCode },
+      });
 
       return {
         success: true,
@@ -327,7 +346,7 @@ export default class ActivationService {
   }
 
   async assignActivation(data: AssignActivationInput) {
-    return withTransaction(async (tx) => {
+    const assigned = await withTransaction(async (tx) => {
       const resolver = new SubscriptionResolver(tx);
 
       const subscription = await resolver.getEffectiveSubscription(
@@ -437,13 +456,83 @@ export default class ActivationService {
       //   message: "Activation assigned successfully.",
       // };
       return {
-        success: true,
-        message: "Activation assigned successfully.",
-        data: {
-          activationCode: activation.activationCode,
-          activationPassword: credentials.password,
-        },
+        activationId: activation.id,
+        activationCode: activation.activationCode,
+        password: credentials.password,
+        expiresAt: activation.expiresAt,
+        agentId: agent.agentId,
+        agentEmail: agent.email,
       };
     });
+
+    const email = await this.sendOnboardingEmail(assigned, data);
+
+    return {
+      success: true,
+      message: email.sent
+        ? `Activation assigned. The code and password were emailed to ${email.sentTo}.`
+        : "Activation assigned successfully.",
+      data: {
+        activationCode: assigned.activationCode,
+        activationPassword: assigned.password,
+        email,
+      },
+    };
+  }
+
+  /**
+   * Onboarding email right after a code is assigned. Never undoes the
+   * assignment: a missing email or a failed send is reported in `email` and
+   * the owner can use "Email to agent" (POST /activations/:id/send) later.
+   */
+  private async sendOnboardingEmail(
+    assigned: { activationId: string; activationCode: string; password: string; expiresAt: Date; agentId: string; agentEmail: string | null },
+    data: AssignActivationInput,
+  ): Promise<{ sent: true; sentTo: string } | { sent: false; reason: "NO_EMAIL" | "RATE_LIMITED" | "SEND_FAILED"; message: string }> {
+    if (!assigned.agentEmail) {
+      return { sent: false, reason: "NO_EMAIL", message: "This agent has no email. Share the code and password yourself, or add an email and use Email to agent." };
+    }
+
+    try {
+      await this.emailService.sendActivation(assigned.agentEmail, {
+        activationCode: assigned.activationCode,
+        password: assigned.password,
+        ...(await this.onboardingContext(assigned.agentId, data.assignedByOwnerId)),
+        expiresAt: assigned.expiresAt,
+      });
+
+      if (data.assignedByUserId) {
+        await prisma.activationEmail.create({
+          data: { activationId: assigned.activationId, sentTo: assigned.agentEmail, sentByUserId: data.assignedByUserId },
+        });
+      }
+
+      return { sent: true, sentTo: maskEmail(assigned.agentEmail) ?? assigned.agentEmail };
+    } catch (error) {
+      const limited = error instanceof AppError && error.statusCode === 429;
+
+      return {
+        sent: false,
+        reason: limited ? "RATE_LIMITED" : "SEND_FAILED",
+        message: limited ? (error as AppError).message : "We couldn't email the code. Share it yourself or use Email to agent later.",
+      };
+    }
+  }
+
+  /** Names and the installer link for the onboarding email. */
+  private async onboardingContext(agentId: string | null, ownerId: string) {
+    const [agent, ownerAgent, bc, desktop] = await Promise.all([
+      agentId ? prisma.agent.findUnique({ where: { agentId }, select: { name: true } }) : null,
+      prisma.agent.findUnique({ where: { agentId: ownerId }, select: { name: true } }),
+      prisma.businessCorrespondent.findUnique({ where: { bcId: ownerId }, select: { name: true } }),
+      new DesktopSettingsService(prisma).getSettings().catch(() => null),
+    ]);
+
+    return {
+      agentId,
+      agentName: agent?.name ?? null,
+      ownerName: ownerAgent?.name ?? bc?.name ?? null,
+      downloadUrl: desktop?.downloadUrl ?? null,
+    };
   }
 }

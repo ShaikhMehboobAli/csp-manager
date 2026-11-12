@@ -1,4 +1,5 @@
 import { PrismaDb } from "../../core/database/prisma.types";
+import { notifyCspOfKo } from "./cash-notify.helper";
 import { BadRequestError } from "../../core/errors/BadRequestError";
 import { ConflictError } from "../../core/errors/ConflictError";
 import {
@@ -8,7 +9,7 @@ import {
   istDateKey,
 } from "../../core/utils/ist";
 import { Prisma } from "../../generated/prisma/client";
-import { CashActorType, CashLedgerType } from "../../generated/prisma/enums";
+import { CashActorType, CashLedgerType, NotificationKind, NotificationType } from "../../generated/prisma/enums";
 
 import { Drawer, drawerOf, drawerTotal } from "./cash.constants";
 import { D, NOT_SET_UP_MESSAGE, money, rupees } from "./cash.helpers";
@@ -141,6 +142,23 @@ export default class CashDayService {
         remarks: this.differenceText(difference) + this.accountText(accountDifference, " · account "),
       },
     ]);
+
+    if (!difference.isZero() || (accountDifference && !accountDifference.isZero())) {
+      await notifyCspOfKo(this.db, {
+        cspAgentId,
+        agentId: input.agentId,
+        kind: NotificationKind.CASH_DAY_CLOSE_DIFFERENCE,
+        title: "Day closed with a difference",
+        message: (ko) => `${ko} closed the day ${this.differenceText(difference)}${this.accountText(accountDifference, "; cash in account ")}.`,
+        type: NotificationType.WARNING,
+        data: {
+          dayCloseId: close.id,
+          date: istDateKey(now),
+          difference: difference.toFixed(2),
+          accountDifference: accountDifference ? accountDifference.toFixed(2) : null,
+        },
+      });
+    }
 
     // Cash receipts still waiting for their notes: a warning, never a block.
     const pendingCounts = await new CashReceiptCountService(this.db).pendingSummary(input.agentId);

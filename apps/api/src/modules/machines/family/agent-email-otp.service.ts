@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { resendLimitError, resendTimer, resendTooSoonError } from "../../../core/services/otp-timer.helper";
 
 import { env } from "../../../config/env";
 import { PrismaDb } from "../../../core/database/prisma.types";
@@ -48,13 +49,12 @@ export default class AgentEmailOtpService {
     });
 
     if (recent[0] && now - recent[0].createdAt.getTime() < RESEND_SECONDS * 1000) {
-      const wait = Math.ceil((RESEND_SECONDS * 1000 - (now - recent[0].createdAt.getTime())) / 1000);
-
-      throw new BadRequestError(`Please wait ${wait} seconds before asking for a new OTP.`);
+      throw resendTooSoonError(recent[0].createdAt, 400);
     }
 
     if (recent.length >= MAX_PER_HOUR) {
-      throw new BadRequestError("Too many OTPs sent. Try again in an hour.");
+      // The oldest send of the hour decides when a new one is allowed.
+      throw resendLimitError(recent[recent.length - 1].createdAt, 400);
     }
 
     const code = new OtpService().generate();
@@ -70,11 +70,14 @@ export default class AgentEmailOtpService {
       },
     });
 
-    // Email delivery is a stub until an email provider is set up
-    // (pre-production checklist); it logs the code in development.
-    await new EmailService().sendOtp(input.email, code);
+    await new EmailService().sendOtp(
+      input.email,
+      code,
+      input.purpose === "CASH_LOGIN" ? "CASH_LOGIN" : "AGENT_EMAIL_VERIFICATION",
+      OTP_MINUTES,
+    );
 
-    return { sentTo: maskEmail(input.email), expiresInSeconds: OTP_MINUTES * 60 };
+    return { sentTo: maskEmail(input.email), expiresInSeconds: OTP_MINUTES * 60, ...resendTimer(now) };
   }
 
   /** Checks the latest OTP; returns the email it was sent to. */
