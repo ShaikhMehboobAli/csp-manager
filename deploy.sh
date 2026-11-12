@@ -85,7 +85,7 @@ echo "🗄️  Applying database migrations (no seeds)..."
 npx prisma migrate deploy
 
 echo "🔨 Building TypeScript API..."
-npm run build
+NODE_OPTIONS="--max-old-space-size=2048" npm run build
 
 echo "🔄 Starting / Reloading PM2 process..."
 if pm2 describe csp-manager-api > /dev/null 2>&1; then

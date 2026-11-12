@@ -4,7 +4,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
-    "build": "tsc",
+    "build": "NODE_OPTIONS=\"--max-old-space-size=2048\" tsc",
     "start": "node dist/server.js",
     "seed:super-admin": "tsx prisma/seeds/super-admin.seed.ts",
     "db:reset": "tsx prisma/scripts/reset-db.ts",
