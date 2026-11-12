@@ -52,9 +52,9 @@ echo ""
 echo "🔄 [6/6] Reloading application with PM2..."
 cd "$ROOT_DIR"
 if pm2 describe csp-manager-api > /dev/null 2>&1; then
-  pm2 reload ecosystem.config.js --env production
+  pm2 reload ecosystem.config.js --env production --update-env
 else
-  pm2 start ecosystem.config.js --env production
+  pm2 start ecosystem.config.js --env production --update-env
 fi
 
 # Save PM2 process list so it recovers on system reboot

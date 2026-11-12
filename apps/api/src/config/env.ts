@@ -1,6 +1,30 @@
 import dotenv from "dotenv";
+import path from "path";
+import fs from "fs";
 
-dotenv.config();
+// Resolve potential .env file locations (apps/api/.env, project root .env, or process.cwd())
+const localEnvPath = path.resolve(__dirname, "../../.env");
+const rootEnvPath = path.resolve(__dirname, "../../../../.env");
+const cwdEnvPath = path.resolve(process.cwd(), ".env");
+const cwdApiEnvPath = path.resolve(process.cwd(), "apps/api/.env");
+
+// Load repository root .env first (if present)
+if (fs.existsSync(rootEnvPath)) {
+  dotenv.config({ path: rootEnvPath, override: true });
+}
+if (fs.existsSync(cwdEnvPath) && cwdEnvPath !== rootEnvPath) {
+  dotenv.config({ path: cwdEnvPath, override: true });
+}
+if (fs.existsSync(cwdApiEnvPath) && cwdApiEnvPath !== localEnvPath) {
+  dotenv.config({ path: cwdApiEnvPath, override: true });
+}
+// apps/api/.env takes highest precedence
+if (fs.existsSync(localEnvPath)) {
+  dotenv.config({ path: localEnvPath, override: true });
+}
+
+// Fallback to standard dotenv resolution
+dotenv.config({ override: true });
 
 export const env = {
   port: Number(process.env.PORT) || 3000,

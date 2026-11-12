@@ -290,8 +290,8 @@ From the repository root:
 ```bash
 cd /home/cspmanager/apps/csp-manager
 
-# Start the application using PM2 in production mode
-pm2 start ecosystem.config.js --env production
+# Start the application using PM2 in production mode (loads all .env variables)
+pm2 start ecosystem.config.js --env production --update-env
 
 # Check application status
 pm2 status
@@ -445,15 +445,19 @@ pm2 logs csp-manager-api --lines 100
 # Monitor CPU, Memory, and Event Loop in real-time
 pm2 monit
 
-# Reload without dropping connections (zero-downtime)
-pm2 reload ecosystem.config.js --env production
+# Reload without dropping connections (zero-downtime, updates environment variables)
+pm2 reload ecosystem.config.js --env production --update-env
 
-# Restart the application
-pm2 restart csp-manager-api
+# Restart the application with latest .env changes
+pm2 restart csp-manager-api --update-env
 
 # Stop the application
 pm2 stop csp-manager-api
 ```
+
+> [!TIP]
+> **Always use `--update-env` when modifying `.env`**
+> By default, PM2 caches the environment variables in memory from its initial startup. When changing variables such as `PORT` or database URLs in your `.env` file, passing `--update-env` ensures PM2 refreshes its in-memory environment with your new values.
 
 ### Automatic Log Rotation
 

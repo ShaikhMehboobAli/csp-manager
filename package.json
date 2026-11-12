@@ -11,8 +11,8 @@
     "prisma:migrate": "npm --prefix apps/api exec prisma migrate deploy",
     "seed": "npm --prefix apps/api exec prisma db seed",
     "seed:super-admin": "npm --prefix apps/api run seed:super-admin",
-    "pm2:start": "pm2 start ecosystem.config.js --env production",
-    "pm2:reload": "pm2 reload ecosystem.config.js --env production",
+    "pm2:start": "pm2 start ecosystem.config.js --env production --update-env",
+    "pm2:reload": "pm2 reload ecosystem.config.js --env production --update-env",
     "pm2:stop": "pm2 stop csp-manager-api",
     "pm2:logs": "pm2 logs csp-manager-api",
     "deploy": "./deploy.sh"
