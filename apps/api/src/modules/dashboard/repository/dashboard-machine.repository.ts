@@ -4,6 +4,10 @@ import { normalizeDateRange } from "../../../core/utils/date-range.helper";
 import { Prisma } from "../../../generated/prisma/client";
 import { calculateSessionOverlapSeconds } from "../../machines/runtime/machine-runtime.helper";
 import {
+  asReceiptGroups,
+  buildDailyCountWhere,
+} from "../../receipts/repository/receipt-daily-count.repository";
+import {
   buildAgentScope,
   getMachineStatus,
   getTodayRange,
@@ -107,44 +111,28 @@ export default class DashboardMachineRepository {
 
     const { from, to } = normalizeDateRange(range?.start, range?.end);
 
-    const receiptWhere = {
-      machineId: machine.id,
-      transactionAt: {
-        gte: from,
-        lte: to,
+    // Daily counts keep each day's first and last receipt time.
+    const receiptTimes = await this.db.receiptDailyCount.aggregate({
+      where: {
+        ...buildDailyCountWhere({ from, to }),
+        machineId: machine.id,
       },
-    };
-
-    const [firstReceipt, lastReceipt] = await Promise.all([
-      this.db.receipt.findFirst({
-        where: receiptWhere,
-        orderBy: {
-          transactionAt: "asc",
-        },
-        select: {
-          transactionAt: true,
-        },
-      }),
-
-      this.db.receipt.findFirst({
-        where: receiptWhere,
-        orderBy: {
-          transactionAt: "desc",
-        },
-        select: {
-          transactionAt: true,
-        },
-      }),
-    ]);
+      _min: {
+        firstTransactionAt: true,
+      },
+      _max: {
+        lastTransactionAt: true,
+      },
+    });
 
     return {
       machineCode: machine.machineCode,
 
       machineStartedAt: machine.lastStartupAt,
 
-      firstReceiptCapturedAt: firstReceipt?.transactionAt ?? null,
+      firstReceiptCapturedAt: receiptTimes._min.firstTransactionAt ?? null,
 
-      lastReceiptCapturedAt: lastReceipt?.transactionAt ?? null,
+      lastReceiptCapturedAt: receiptTimes._max.lastTransactionAt ?? null,
 
       watcherVersion: machine.watcherVersion,
 
@@ -578,17 +566,13 @@ export default class DashboardMachineRepository {
     //   },
     // };
 
-    const receiptWhere: Prisma.ReceiptWhereInput = {
+    const receiptWhere: Prisma.ReceiptDailyCountWhereInput = {
+      ...buildDailyCountWhere({ from: runtimeFrom, to: runtimeTo }),
+
       agentId: {
         in: machines
           .map((m) => m.agentId)
           .filter((id): id is string => Boolean(id)),
-      },
-
-      transactionAt: {
-        gte: runtimeFrom,
-
-        lte: runtimeTo,
       },
     };
 
@@ -604,19 +588,18 @@ export default class DashboardMachineRepository {
     //   };
     // }
 
-    const transactionSummary = await this.db.receipt.groupBy({
-      by: ["agentId", "status"],
+    const transactionSummary = asReceiptGroups(
+      await this.db.receiptDailyCount.groupBy({
+        by: ["agentId", "status"],
 
-      where: receiptWhere,
+        where: receiptWhere,
 
-      _count: {
-        id: true,
-      },
-
-      _sum: {
-        amount: true,
-      },
-    });
+        _sum: {
+          count: true,
+          amount: true,
+        },
+      }),
+    );
 
     console.log("transactionSummary");
 

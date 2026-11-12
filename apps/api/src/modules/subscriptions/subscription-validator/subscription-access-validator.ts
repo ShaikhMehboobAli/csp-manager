@@ -3,13 +3,27 @@ import { ForbiddenError } from "../../../core/errors/ForbiddenError";
 import {
   SubscriptionStatus,
   SubscriptionType,
+  UserRole,
 } from "../../../generated/prisma/enums";
+import { getCurrentUser } from "../../../core/context/request-context";
 import { Subscription } from "../../machines/runtime/machine-auth.dto";
 
 // import { Subscription } from "../../machines/runtime/machine-auth.dto";
 
 export default class SubscriptionAccessValidator {
   static validate(subscription: Subscription | null | undefined) {
+    // SUPER_ADMIN has no subscription and isn't gated by one. Only the
+    // admin's own (absent) subscription is skipped: someone else's
+    // subscription checked during an admin request is still validated.
+    const user = getCurrentUser();
+
+    if (
+      user?.role === UserRole.SUPER_ADMIN &&
+      (!subscription || subscription.ownerId === user.agentId)
+    ) {
+      return;
+    }
+
     console.log(
       "Validating subscription access for subscription:",
       subscription,

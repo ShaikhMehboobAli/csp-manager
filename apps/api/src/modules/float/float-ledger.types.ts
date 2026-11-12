@@ -31,7 +31,8 @@ export interface RecordLedgerInput {
 
   ledgerType: FloatLedgerType;
 
-  receiptId?: string;
+  // Receipt.id (the receipt's receiptId is only unique per agent).
+  receiptRecordId?: string;
 
   transactionCategory?: TransactionCategory;
 

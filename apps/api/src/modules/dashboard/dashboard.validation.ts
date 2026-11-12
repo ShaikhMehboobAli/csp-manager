@@ -16,6 +16,12 @@ export const dashboardSummarySchema = z
 
     search: z.string().trim().optional(),
     agentId: z.string().optional(),
+
+    // agentId = a CSP: false = the CSP's own numbers only (default: + its KOs).
+    includeKos: z
+      .enum(["true", "false"], { error: "includeKos must be true or false." })
+      .optional()
+      .transform((value) => value !== "false"),
   })
   .refine((data) => !data.from || !data.to || data.from <= data.to, {
     message: "'from' date must be before 'to' date.",

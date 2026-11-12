@@ -1,3 +1,4 @@
+import { replaceKoSchema } from "../validations/agent.validation";
 import { Request, Response } from "express";
 import { AgentService } from "../service/agent.service";
 import { CreateCSPInput, CreateKOInput } from "../types/service.types";
@@ -20,7 +21,18 @@ export const createCSP = async (
     req.user!.agentId,
     req.user!.userId,
     req.body,
+    req.user!.role,
   );
+
+  if (result.linkRequest) {
+    return res.status(202).json({
+      success: true,
+      message: result.linkRequest.isConflict
+        ? "This CSP is linked to another BC. A link request was sent to the admin for review."
+        : "This CSP already exists. A link request was sent to the admin for approval.",
+      data: result,
+    });
+  }
 
   return res.status(201).json({
     success: true,
@@ -103,5 +115,19 @@ export const deleteAgent = async (req: Request, res: Response) => {
   return res.status(200).json({
     success: true,
     message: "Agent deleted successfully.",
+  });
+};
+
+export const replaceKO = async (req: Request<{ agentId: string }>, res: Response) => {
+  const result = await agentService.replaceKO(
+    req.params.agentId,
+    replaceKoSchema.parse(req.body),
+    req.user!,
+  );
+
+  return res.status(201).json({
+    success: true,
+    message: "KO replaced. The machine and cash management moved to the new KO.",
+    data: result,
   });
 };

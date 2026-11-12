@@ -65,7 +65,7 @@ export default class MachineRuntimeValidator {
   }
 
   private static validateActivation(authenticated: AuthenticatedMachine) {
-    const { activation } = authenticated;
+    const { activation, subscription } = authenticated;
 
     if (activation.status !== ActivationStatus.ACTIVE) {
       throw new ForbiddenError("Activation is inactive.");
@@ -73,7 +73,14 @@ export default class MachineRuntimeValidator {
 
     const now = new Date();
 
-    if (activation.expiresAt < now) {
+    // Activations expire with the subscription's end date; they keep working
+    // through the subscription's grace period.
+    const stopsAt =
+      subscription.graceEndsAt && subscription.graceEndsAt > activation.expiresAt
+        ? subscription.graceEndsAt
+        : activation.expiresAt;
+
+    if (stopsAt < now) {
       throw new ForbiddenError("Activation has expired.");
     }
   }

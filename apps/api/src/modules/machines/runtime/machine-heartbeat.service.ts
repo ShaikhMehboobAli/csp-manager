@@ -1,3 +1,5 @@
+import ReceiptFieldsSettingsService from "../../settings/receipt-fields-settings.service";
+import DayCloseReminderService from "../../alerts/day-close-reminder.service";
 import { PrismaDb } from "../../../core/database/prisma.types";
 
 import MachineAuthenticationService from "./machine-auth.service";
@@ -9,6 +11,11 @@ import MachineSessionService from "./machine-session.service";
 import MachineRuntimeValidator from "./machine-runtime-validator";
 import { HEARTBEAT_TIMEOUT_SECONDS } from "./machine-runtime.constants";
 import SubscriptionEntitlementService from "../../subscriptions/subscription-entitlement.service";
+import DesktopSettingsService from "../../settings/desktop-settings.service";
+import { resolveReceiptWatcher } from "./receipt-watcher-policy";
+import CashService from "../../cash/cash.service";
+import DiagnosticsService from "../diagnostics/diagnostics.service";
+import MachineFamilyService from "../family/machine-family.service";
 
 export default class MachineHeartbeatService {
   private readonly authService: MachineAuthenticationService;
@@ -49,9 +56,29 @@ export default class MachineHeartbeatService {
       lastTransactionAt: input.lastTransactionAt,
     });
 
-    const { plan, features } = await new SubscriptionEntitlementService(
-      this.db,
-    ).getPlanEntitlements(authenticated.subscription.planId);
+    const family = new MachineFamilyService(this.db);
+    const cashAgent = await family.cashAgentOf(authenticated);
+
+    const [{ plan, features }, watcher, desktop, cash, receiptFields, accessAgents, diagnostics, cashPlan] = await Promise.all([
+      new SubscriptionEntitlementService(this.db).getPlanEntitlements(
+        authenticated.subscription.planId,
+      ),
+      resolveReceiptWatcher(this.db, authenticated),
+      new DesktopSettingsService(this.db).resolveForMachine(
+        authenticated.machine.desktopControls,
+      ),
+      new CashService(this.db).getMachineCash(cashAgent.agentId),
+      new ReceiptFieldsSettingsService(this.db).allowed(),
+      family.agents(authenticated),
+      new DiagnosticsService(this.db).forMachine(authenticated.machine.id),
+      new SubscriptionEntitlementService(this.db).canViewCashManagement(authenticated.subscription),
+    ]);
+
+    // "Close the day" banner / toast: from 30 min before the CSP's closing
+    // time (18:00 when none is set) until the cash agent closes the day.
+    const dayCloseReminder = cash && cashPlan
+      ? await new DayCloseReminderService(this.db).forDesktop(cashAgent.agentId)
+      : null;
 
     return {
       serverTime: new Date(),
@@ -61,12 +88,32 @@ export default class MachineHeartbeatService {
       receiptUploadEnabled: RuntimeConfig.receiptUploadEnabled,
       subscriptionStatus: authenticated.subscription.status,
       latestWatcherVersion:
-        RuntimeConfig.latestWatcherVersion ||
-        authenticated.machine.watcherVersion,
+        desktop.latestWatcherVersion || authenticated.machine.watcherVersion,
+      minimumVersion: desktop.minimumVersion,
+      downloadUrl: desktop.downloadUrl,
       planCode: plan.code,
+      ownerType: plan.ownerType,
+      ...watcher,
+      desktopControls: desktop.desktopControls,
       subscriptionEndDate: authenticated.subscription.endDate,
+      subscriptionType: authenticated.subscription.subscriptionType,
+      isTrial: authenticated.subscription.subscriptionType === "TRIAL",
       graceEndsAt: authenticated.subscription.graceEndsAt,
       features: features.map((feature) => feature.code),
+      cash,
+      // Who may use this PC (save in machineConfig): the owner CSP and its
+      // KOs. `accessAgent` is the agentId list; the cash login dropdown
+      // shows `accessAgents`.
+      accessAgent: accessAgents.map((agent) => agent.agentId),
+      accessAgents: accessAgents.map(({ email: _email, ...agent }) => agent),
+      // Whose cash is shown now (kiosk / email OTP login, else the PC's agent).
+      cashAgentId: cashAgent.agentId,
+      cashLoginMethod: cashAgent.method,
+      // Optional receipt fields the desktop may send (save in machineConfig).
+      receiptFields: { allowed: receiptFields },
+      // Log upload asked by support (null = nothing asked).
+      diagnostics,
+      dayCloseReminder,
     };
   }
 }

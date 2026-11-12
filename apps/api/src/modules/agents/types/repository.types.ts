@@ -12,6 +12,7 @@ export interface CreateAgentRepositoryInput {
 
   cashLimit?: Prisma.Decimal | number;
   openingCash?: Prisma.Decimal | number;
+  openingCashInAccount?: Prisma.Decimal | number;
 
   bcId?: string;
   parentAgentId?: string;
@@ -36,12 +37,13 @@ export interface LinkAgentToBCRepositoryInput {
   updatedBy?: string;
   cashLimit?: Prisma.Decimal | number;
   openingCash?: Prisma.Decimal | number;
+  openingCashInAccount?: Prisma.Decimal | number;
 }
 
 export interface LinkKOToCSPRepositoryInput {
   agentId: string;
 
-  bcId: string;
+  bcId: string | null;
 
   parentAgentId: string;
 
@@ -50,6 +52,7 @@ export interface LinkKOToCSPRepositoryInput {
   cashLimit?: Prisma.Decimal | number;
 
   openingCash?: Prisma.Decimal | number;
+  openingCashInAccount?: Prisma.Decimal | number;
 
   updatedBy?: string;
 }

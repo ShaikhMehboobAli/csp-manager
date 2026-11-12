@@ -41,3 +41,7 @@ Thumbs.db
 # Temporary
 tmp/
 temp/
+# Firebase service-account keys (never commit)
+firebase-service-account*.json
+*-firebase-adminsdk-*.json
+secrets/

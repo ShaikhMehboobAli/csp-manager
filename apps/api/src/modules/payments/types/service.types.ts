@@ -10,11 +10,16 @@ export interface CreatePaymentOrderInput {
 
   billingCycle: BillingCycle;
 
+  machineCount?: number;
+
   ownerType: SubscriptionOwnerType;
 
   ownerId: string;
 
   bcId?: string;
+
+  // From the Idempotency-Key header.
+  idempotencyKey?: string;
 }
 
 export interface VerifyPaymentInput {

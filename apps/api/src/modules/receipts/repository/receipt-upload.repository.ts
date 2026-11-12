@@ -22,10 +22,14 @@ export default class ReceiptRepository {
     });
   }
 
-  async findByReceiptId(receiptId: string) {
+  // receiptId is unique per agent.
+  async findByReceiptId(agentId: string, receiptId: string) {
     return this.db.receipt.findUnique({
       where: {
-        receiptId,
+        agentId_receiptId: {
+          agentId,
+          receiptId,
+        },
       },
     });
   }
@@ -43,9 +47,10 @@ export default class ReceiptRepository {
     });
   }
 
-  async findExistingReceiptIds(receiptIds: string[]) {
+  async findExistingReceiptIds(agentId: string, receiptIds: string[]) {
     const receipts = await this.db.receipt.findMany({
       where: {
+        agentId,
         receiptId: {
           in: receiptIds,
         },
@@ -65,6 +70,54 @@ export default class ReceiptRepository {
     });
 
     return result.count === 1;
+  }
+
+  // Inserts the receipts that don't exist yet and returns only those.
+  async createManyIfAbsent(data: Prisma.ReceiptCreateManyInput[]) {
+    if (data.length === 0) {
+      return [];
+    }
+
+    return this.db.receipt.createManyAndReturn({
+      data,
+      skipDuplicates: true,
+      select: {
+        id: true,
+        receiptId: true,
+        // Fields the daily counts need.
+        agentId: true,
+        machineId: true,
+        receiptType: true,
+        transactionCategory: true,
+        transactionType: true,
+        status: true,
+        transactionAt: true,
+        amount: true,
+        commissionAmount: true,
+      },
+    });
+  }
+
+  // Same, returning the full rows (legacy watcher response).
+  async createManyAndReturnIfAbsent(data: Prisma.ReceiptCreateManyInput[]) {
+    if (data.length === 0) {
+      return [];
+    }
+
+    return this.db.receipt.createManyAndReturn({
+      data,
+      skipDuplicates: true,
+    });
+  }
+
+  async createCashDenominations(
+    data: Prisma.ReceiptCashDenominationCreateManyInput[],
+  ) {
+    if (data.length === 0) {
+      return;
+    }
+
+    await this.db.receiptCashDenomination.createMany({ data });
   }
 
   async createCashDenomination(
@@ -108,20 +161,21 @@ export default class ReceiptRepository {
     });
   }
 
+  // From the daily counts, which outlive the receipts (kept for a year).
   async getCumulativeCounts(agentId: string) {
     const [byReceiptType, byTransactionCategory, byTransactionType] =
       await Promise.all([
-        this.db.receipt.groupBy({
+        this.db.receiptDailyCount.groupBy({
           by: ["receiptType"],
           where: { agentId },
           _sum: { count: true },
         }),
-        this.db.receipt.groupBy({
+        this.db.receiptDailyCount.groupBy({
           by: ["transactionCategory"],
           where: { agentId },
           _sum: { count: true },
         }),
-        this.db.receipt.groupBy({
+        this.db.receiptDailyCount.groupBy({
           by: ["transactionType"],
           where: { agentId },
           _sum: { count: true },
