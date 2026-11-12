@@ -7,6 +7,7 @@ import { UserRole } from "../../generated/prisma/enums";
 
 import * as DesktopSettingsController from "./desktop-settings.controller";
 import {
+  updateBillingSettingsSchema,
   updateDesktopSettingsSchema,
   updateMachineDesktopControlsSchema,
   updateReceiptFieldsSchema,
@@ -55,6 +56,15 @@ router.patch(
   "/receipt-fields",
   validate(updateReceiptFieldsSchema),
   DesktopSettingsController.updateReceiptFields,
+);
+
+// Grace period after a subscription ends and the GST rate on plan prices.
+router.get("/billing-settings", DesktopSettingsController.getBillingSettings);
+
+router.patch(
+  "/billing-settings",
+  validate(updateBillingSettingsSchema),
+  DesktopSettingsController.updateBillingSettings,
 );
 
 export default router;

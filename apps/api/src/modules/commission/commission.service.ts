@@ -16,6 +16,61 @@ type Service = Prisma.CommissionServiceGetPayload<object>;
 type Rate = Prisma.CommissionRateGetPayload<object>;
 
 const D = (value: Prisma.Decimal | number | string) => new Prisma.Decimal(value);
+
+/** One amount band of a SLAB rate: `from` inclusive, `to` exclusive (null = no upper limit). */
+export type CommissionSlab = {
+  from: number;
+  to: number | null;
+  type: "FLAT" | "PERCENT";
+  amount?: number;
+  percent?: number;
+};
+
+const MAX_SLABS = 20;
+
+const slabsOf = (rate: Pick<Rate, "slabs">) => (rate.slabs ?? []) as CommissionSlab[];
+
+/** The band an amount falls in. */
+export function slabFor(slabs: CommissionSlab[], amount: Prisma.Decimal) {
+  return slabs.find((slab) => amount.gte(slab.from) && (slab.to === null || amount.lt(slab.to))) ?? null;
+}
+
+const slabLabel = (slab: CommissionSlab) =>
+  `₹${slab.from}${slab.to === null ? "+" : `–${slab.to}`}: ${
+    slab.type === "FLAT" ? `₹${slab.amount ?? 0}` : `${slab.percent ?? 0}%`
+  }`;
+
+/** Checks bands are well formed: ascending, not overlapping, only the last open-ended. */
+export function checkSlabs(slabs: CommissionSlab[] | undefined) {
+  if (!slabs?.length) {
+    throw new BadRequestError("slabs are required for a SLAB rate.");
+  }
+
+  if (slabs.length > MAX_SLABS) {
+    throw new BadRequestError(`A SLAB rate can have at most ${MAX_SLABS} slabs.`);
+  }
+
+  slabs.forEach((slab, index) => {
+    const name = `Slab ${index + 1}`;
+    const next = slabs[index + 1];
+
+    if (slab.type === "FLAT" && slab.amount === undefined) {
+      throw new BadRequestError(`${name}: amount is required for a FLAT slab.`);
+    }
+
+    if (slab.type === "PERCENT" && slab.percent === undefined) {
+      throw new BadRequestError(`${name}: percent is required for a PERCENT slab.`);
+    }
+
+    if (slab.to !== null && slab.to <= slab.from) {
+      throw new BadRequestError(`${name}: "to" must be more than "from".`);
+    }
+
+    if (next && (slab.to === null || next.from < slab.to)) {
+      throw new BadRequestError(`${name} overlaps slab ${index + 2}: sort them by amount, without overlaps.`);
+    }
+  });
+}
 const money = (value: Prisma.Decimal) => Number(value.toFixed(2));
 
 /** The service a receipt belongs to: its own receipt type first, else the category's. */
@@ -31,7 +86,9 @@ export function serviceOf(
   );
 }
 
-export function rateLabel(rate: Pick<Rate, "type" | "amount" | "percent" | "minAmount" | "maxAmount"> | null) {
+export function rateLabel(
+  rate: Pick<Rate, "type" | "amount" | "percent" | "minAmount" | "maxAmount" | "slabs"> | null,
+) {
   if (!rate || rate.type === CommissionRateType.INHERIT) {
     return null;
   }
@@ -44,13 +101,18 @@ export function rateLabel(rate: Pick<Rate, "type" | "amount" | "percent" | "minA
     rate.minAmount !== null ? `min ₹${Number(rate.minAmount)}` : null,
     rate.maxAmount !== null ? `max ₹${Number(rate.maxAmount)}` : null,
   ].filter(Boolean);
+  const suffix = limits.length ? ` (${limits.join(", ")})` : "";
 
-  return `${Number(rate.percent ?? 0)}%${limits.length ? ` (${limits.join(", ")})` : ""}`;
+  if (rate.type === CommissionRateType.SLAB) {
+    return `${slabsOf(rate).map(slabLabel).join("; ")}${suffix}`;
+  }
+
+  return `${Number(rate.percent ?? 0)}%${suffix}`;
 }
 
 /**
- * Commission: the super admin sets a rate per service (FLAT ₹ or PERCENT of
- * the amount), for everyone (DEFAULT), a BC or one CSP. **Only the CSP
+ * Commission: the super admin sets a rate per service (FLAT ₹, PERCENT of
+ * the amount, or SLAB: amount bands, each FLAT or PERCENT), for everyone (DEFAULT), a BC or one CSP. **Only the CSP
  * earns**: every successful receipt of the CSP or of its KOs earns for the
  * CSP (KOs are paid a salary by their CSP). The rate live at the receipt's
  * time is frozen on the receipt when it's uploaded and added to the daily
@@ -185,6 +247,7 @@ export default class CommissionService {
         count: entry.count,
         rateType: rate?.rateType ?? null,
         rate: rate?.rate ?? null,
+        slabs: rate?.slabs ?? null,
         rateLabel: rate?.rateLabel ?? null,
         amount: money(entry.amount),
       };
@@ -287,7 +350,13 @@ export default class CommissionService {
         receiptType: service.receiptType,
         group: service.group,
         rateType: rate?.type ?? null,
-        rate: rate ? (rate.type === CommissionRateType.FLAT ? Number(rate.amount ?? 0) : Number(rate.percent ?? 0)) : null,
+        rate:
+          !rate || rate.type === CommissionRateType.SLAB
+            ? null
+            : rate.type === CommissionRateType.FLAT
+              ? Number(rate.amount ?? 0)
+              : Number(rate.percent ?? 0),
+        slabs: rate?.type === CommissionRateType.SLAB ? slabsOf(rate) : null,
         minAmount: rate?.minAmount !== null && rate?.minAmount !== undefined ? Number(rate.minAmount) : null,
         maxAmount: rate?.maxAmount !== null && rate?.maxAmount !== undefined ? Number(rate.maxAmount) : null,
         rateLabel: rateLabel(rate),
@@ -369,6 +438,7 @@ export default class CommissionService {
     percent?: number;
     minAmount?: number;
     maxAmount?: number;
+    slabs?: CommissionSlab[];
     effectiveFrom?: Date;
     reason?: string;
     createdBy: string;
@@ -409,6 +479,10 @@ export default class CommissionService {
       throw new BadRequestError("percent is required for a PERCENT rate.");
     }
 
+    if (input.type === CommissionRateType.SLAB) {
+      checkSlabs(input.slabs);
+    }
+
     if (input.minAmount !== undefined && input.maxAmount !== undefined && input.minAmount > input.maxAmount) {
       throw new BadRequestError("minAmount can't be more than maxAmount.");
     }
@@ -420,6 +494,9 @@ export default class CommissionService {
       throw new BadRequestError("effectiveFrom can't be in the past: saved receipts keep the rate they were saved with.");
     }
 
+    // Per-receipt min / max apply to PERCENT and SLAB rates.
+    const hasLimits = input.type === CommissionRateType.PERCENT || input.type === CommissionRateType.SLAB;
+
     const rate = await this.db.commissionRate.create({
       data: {
         serviceId: service.id,
@@ -428,8 +505,9 @@ export default class CommissionService {
         type: input.type,
         amount: input.type === CommissionRateType.FLAT ? input.amount : null,
         percent: input.type === CommissionRateType.PERCENT ? input.percent : null,
-        minAmount: input.type === CommissionRateType.PERCENT ? input.minAmount ?? null : null,
-        maxAmount: input.type === CommissionRateType.PERCENT ? input.maxAmount ?? null : null,
+        minAmount: hasLimits ? input.minAmount ?? null : null,
+        maxAmount: hasLimits ? input.maxAmount ?? null : null,
+        slabs: input.type === CommissionRateType.SLAB ? input.slabs : Prisma.DbNull,
         effectiveFrom,
         reason: input.reason,
         createdBy: input.createdBy,
@@ -505,12 +583,55 @@ export default class CommissionService {
 
     if (rate.type === CommissionRateType.FLAT) return D(rate.amount ?? 0);
 
-    let value = D(amount ?? 0).times(D(rate.percent ?? 0)).dividedBy(100);
+    let value: Prisma.Decimal;
+
+    if (rate.type === CommissionRateType.SLAB) {
+      // The band the receipt amount falls in; none (a gap) earns nothing.
+      const slab = slabFor(slabsOf(rate), D(amount ?? 0));
+
+      if (!slab) return D(0);
+
+      value =
+        slab.type === "FLAT"
+          ? D(slab.amount ?? 0)
+          : D(amount ?? 0).times(D(slab.percent ?? 0)).dividedBy(100);
+    } else {
+      value = D(amount ?? 0).times(D(rate.percent ?? 0)).dividedBy(100);
+    }
 
     if (rate.minAmount !== null && value.lessThan(rate.minAmount)) value = D(rate.minAmount);
     if (rate.maxAmount !== null && value.greaterThan(rate.maxAmount)) value = D(rate.maxAmount);
 
     return value.toDecimalPlaces(2);
+  }
+
+  /**
+   * Today's and this month's (1st → today, IST) commission of the agents,
+   * from the daily counts; `null` = every agent (super admin, whole system).
+   */
+  async todayAndMonth(agentIds: string[] | null) {
+    const now = new Date();
+    const today = rangeOf("TODAY", undefined, now);
+    const month = rangeOf("MONTH", undefined, now);
+    const totals = (range: { fromDate: Date; toDate: Date }) =>
+      this.db.receiptDailyCount.aggregate({
+        where: {
+          ...(agentIds ? { agentId: { in: agentIds } } : {}),
+          status: ReceiptStatus.SUCCESS,
+          date: { gte: range.fromDate, lte: range.toDate },
+        },
+        _sum: { count: true, commissionAmount: true },
+      });
+
+    const [todayTotals, monthTotals] = await Promise.all([totals(today), totals(month)]);
+    const map = (result: Awaited<ReturnType<typeof totals>>, range: { fromKey: string; toKey: string }) => ({
+      from: range.fromKey,
+      to: range.toKey,
+      amount: money(D(result._sum.commissionAmount ?? 0)),
+      successCount: result._sum.count ?? 0,
+    });
+
+    return { today: map(todayTotals, today), month: map(monthTotals, month) };
   }
 
   private async totalBetween(agentIds: string[], fromDate: Date, toDate: Date) {
@@ -532,6 +653,7 @@ export default class CommissionService {
       percent: rate.percent === null ? null : Number(rate.percent),
       minAmount: rate.minAmount === null ? null : Number(rate.minAmount),
       maxAmount: rate.maxAmount === null ? null : Number(rate.maxAmount),
+      slabs: rate.type === CommissionRateType.SLAB ? slabsOf(rate) : null,
       rateLabel: rateLabel(rate),
       effectiveFrom: rate.effectiveFrom,
       reason: rate.reason,

@@ -132,6 +132,45 @@ enum SubscriptionEventType {
   UPGRADE
   RENEWAL
   CANCELLATION
+  // A mandate charge failed (one row per attempt).
+  RENEWAL_FAILED
+  // Renewal failed after every retry; the subscription stopped at once.
+  LAPSED
+  // Free trial started by the owner / extended by the super admin.
+  TRIAL_STARTED
+  TRIAL_EXTENDED
+}
+
+/// What a payment pays for.
+enum PaymentPurpose {
+  // New subscription (first one, or after the last one ended / was cancelled).
+  PURCHASE
+  // Higher plan and/or more machines on the running subscription (difference only).
+  UPGRADE
+  // Monthly mandate charge (auto renewal).
+  RENEWAL
+}
+
+/// Recurring UPI mandate (autopay) that renews a subscription every month.
+enum MandateStatus {
+  // Created; waiting for the customer to approve it in the UPI app.
+  PENDING
+  ACTIVE
+  // Cancelled by the CSP in our app (subscription cancelled).
+  CANCELLED
+  // Removed by the customer in the UPI app / bank, or rejected by the gateway.
+  REVOKED
+  // Ran its full term (25 years) or the gateway closed it.
+  COMPLETED
+  // The plan's price changed: cancelled and replaced by a new mandate at the
+  // new price.
+  REPLACED
+}
+
+enum MandateProvider {
+  RAZORPAY
+  // Development stand-in: charges succeed/fail per DEV_MANDATE_RESULT.
+  MANUAL
 }
 
 enum SubscriptionType {
@@ -341,6 +380,94 @@ enum PaymentProvider {
   MANUAL
 }
 
+enum NotificationKind {
+  GENERAL
+  CASH_ACTIVATION_DIFFERENCE
+  SUBSCRIPTION_RENEWED
+  SUBSCRIPTION_RENEWAL_FAILED
+  SUBSCRIPTION_LAPSED
+  SUBSCRIPTION_CANCELLED
+  MANDATE_REVOKED
+  // The plan price changed; a new mandate at the new price replaced the old one.
+  MANDATE_REPLACED
+  TRIAL_STARTED
+  // About a day before the free trial ends.
+  TRIAL_ENDING
+  // The super admin extended the trial (days and / or machines).
+  TRIAL_EXTENDED
+  // A BC unlinked this CSP (BC ₹799 link).
+  BC_UNLINKED
+  // Super admin inbox: an owner asked to revoke an activation.
+  ACTIVATION_REVOKE_REQUESTED
+  // To the owner: its revoke request was approved / rejected.
+  ACTIVATION_REVOKE_APPROVED
+  ACTIVATION_REVOKE_REJECTED
+  // To the owner: the super admin revoked an activation directly.
+  ACTIVATION_REVOKED
+  // Super admin inbox: a BC asked to link a CSP.
+  BC_LINK_REQUESTED
+  // To the BC: its link request was approved / rejected.
+  BC_LINK_APPROVED
+  BC_LINK_REJECTED
+  // To the CSP: it is now linked to a BC.
+  BC_LINKED
+  // To the CSP: a KO started / completed / cancelled a settlement step.
+  CASH_SETTLEMENT_STARTED
+  CASH_SETTLEMENT_COMPLETED
+  CASH_SETTLEMENT_CANCELLED
+  // To the CSP: a KO closed the day short / over (or cash in account differs).
+  CASH_DAY_CLOSE_DIFFERENCE
+  // To the CSP: a KO asked for a cash in hand change.
+  CASH_REQUEST_RAISED
+  // Super admin inbox: a problem report on a receipt.
+  RECEIPT_REPORT_RAISED
+  // To the reporter: the super admin resolved / rejected its report.
+  RECEIPT_REPORT_RESOLVED
+  RECEIPT_REPORT_REJECTED
+  // To the owner: a PC sent no heartbeat for 1 hour.
+  MACHINE_OFFLINE
+  // To the CSP: an agent that worked today hasn't closed the day (reminder time).
+  CASH_DAY_NOT_CLOSED
+}
+
+/// What identifies a person / PC that already used a free trial.
+enum TrialIdentityKind {
+  // The SBI kiosk agent ID (the account's agentId, or a KO that activated a
+  // trial PC).
+  AGENT_ID
+  PHONE
+  EMAIL
+  // Machine.fingerprint of a PC activated under a trial.
+  MACHINE_FINGERPRINT
+}
+
+/// Free trial registry: one row per identity that took part in a trial. Kept
+/// when accounts, subscriptions or machines are deleted (no foreign keys), so
+/// a new account can't get a second trial with the same PC / agent ID /
+/// phone / email.
+model TrialUsage {
+  id String @id @default(cuid())
+
+  kind TrialIdentityKind
+
+  /// Normalized: agent ID upper case, email lower case, phone last 10 digits.
+  value String
+
+  /// The trial subscription and its owner when the row was written.
+  subscriptionId String
+  ownerType      SubscriptionOwnerType
+  ownerId        String
+
+  /// The agent that brought this identity in (owner, or the KO activating).
+  agentId String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([kind, value])
+  @@index([ownerId])
+  @@index([subscriptionId])
+}
+
 enum NotificationType {
   INFO
   SUCCESS
@@ -393,6 +520,11 @@ model User {
 
   passwordChangedAt DateTime?
 
+  // Why the super admin blocked / suspended the account (shown at login).
+  statusReason String?
+
+  statusChangedAt DateTime?
+
   agent Agent @relation(fields: [agentId], references: [agentId])
 
   sessions UserSession[]
@@ -432,6 +564,9 @@ model UserSession {
   createdAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Push token of the phone this session is on (sent with login / refresh).
+  pushDevices NotificationDevice[]
 
   @@index([userId])
   @@index([expiresAt])
@@ -535,6 +670,16 @@ model Agent {
   email   String?
   address String?
 
+  /// When `email` was verified by OTP (KOs verify at machine activation or
+  /// in the desktop cash panel; CSP / BC owners in the app profile). Cleared
+  /// when the email changes.
+  emailVerifiedAt DateTime?
+
+  /// The User ID this agent types on the SBI kiosk login page, when it
+  /// differs from `agentId` (set by the CSP). Shared PCs match the typed id
+  /// against it to know who logged in.
+  sbiUserId String? @unique
+
   status AgentStatus @default(ACTIVE)
 
   selfRegistered Boolean @default(false)
@@ -571,12 +716,14 @@ model Agent {
   receiptDailyCounts ReceiptDailyCount[]
   cashPool           CashPool?
   agentCash          AgentCash?
-  cashLedgerEntries  CashLedger[]        @relation("CashLedgerAgent")
+  cashLedgerEntries  CashLedger[]           @relation("CashLedgerAgent")
   cashRequests       CashRequest[]
   cashSettlements    CashSettlement[]
   cashDues           CashDue[]
   cashDayCloses      CashDayClose[]
   cashTasks          CashTask[]
+  cashAdjustments    CashDrawerAdjustment[]
+  emailOtps          AgentEmailOtp[]
 
   users User?
 
@@ -692,6 +839,34 @@ model Subscription {
 
   subscriptionNumber String @unique
 
+  /// Price per machine (base, without GST) of the current plan, used to
+  /// price an upgrade's difference. Null on rows created before upgrades.
+  pricePerMachine Decimal? @db.Decimal(10, 2)
+
+  /// Start of the current monthly period (purchase, or the last renewal).
+  /// Upgrades are allowed only in the first 12 days of it.
+  currentPeriodStart DateTime?
+
+  /// Renews by mandate at endDate unless cancelled.
+  autoRenew Boolean @default(true)
+
+  /// Free trial: when the "trial ends soon" notification was sent.
+  trialReminderSentAt DateTime?
+
+  /// Cancelled by the CSP: no refund, works until endDate, never renews.
+  cancelledAt  DateTime?
+  cancelReason String?
+  cancelledBy  String?
+
+  /// Failed mandate charges for the renewal due at endDate (0–3).
+  renewalAttempts      Int       @default(0)
+  nextRenewalAttemptAt DateTime?
+  lastRenewalFailure   String?
+  /// Set when renewal failed after every retry (stopped at once).
+  lapsedAt             DateTime?
+
+  mandates SubscriptionMandate[]
+
   planId String
 
   amountPaid Decimal @db.Decimal(10, 2)
@@ -737,6 +912,58 @@ model Subscription {
 ///////////////////////////
 //Subscription History Model
 ///////////////////////////
+
+/// UPI autopay mandate for a subscription: charges the monthly amount on the
+/// subscription's end date/time, for up to 25 years.
+model SubscriptionMandate {
+  id String @id @default(cuid())
+
+  subscriptionId String
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  ownerId String
+
+  provider MandateProvider
+
+  /// Gateway ids (Razorpay subscription / token / customer).
+  providerMandateId  String? @unique
+  providerCustomerId String?
+
+  status MandateStatus @default(PENDING)
+
+  /// Amount charged every month (incl. GST).
+  amount Decimal @db.Decimal(12, 2)
+
+  /// Upgrade changed the monthly amount; the gateway mandate must be
+  /// updated / re-approved before the next charge (Razorpay: update the
+  /// subscription or create a new mandate).
+  amountChangePending Boolean @default(false)
+
+  frequency BillingCycle @default(MONTHLY)
+
+  startAt DateTime
+
+  /// startAt + 25 years.
+  endAt DateTime
+
+  /// Approval link for the customer (gateway), when there is one.
+  authUrl String?
+
+  activatedAt  DateTime?
+  cancelledAt  DateTime?
+  revokedAt    DateTime?
+  revokeReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  payments Payment[]
+
+  @@index([subscriptionId])
+  @@index([ownerId])
+  @@index([status])
+}
 
 model SubscriptionHistory {
   id String @id @default(cuid())
@@ -927,7 +1154,18 @@ model Machine {
 
   currentAgentId String?
 
+  /// Who is logged in to cash management on this PC: any agent of the
+  /// owner CSP's family (the CSP or one of its KOs). Set by the SBI kiosk
+  /// login (activity start) or an email OTP login; null = currentAgentId.
+  cashAgentId          String?
+  cashAgentLoginMethod CashLoginMethod?
+  cashAgentLoginAt     DateTime?
+
   lastHeartbeatAt DateTime?
+
+  // When the owner was told this PC is offline (no heartbeat for 1 hour).
+  // Cleared by the next heartbeat, so every new outage alerts once.
+  offlineAlertAt DateTime?
 
   lastStartupAt DateTime?
 
@@ -1182,6 +1420,19 @@ model Receipt {
   commissionAmount Decimal? @db.Decimal(12, 2)
   commissionRateId String?
 
+  /// S3 key of the slip image (when the super admin allows the slip field);
+  /// deleted with the receipt by retention.
+  slipKey               String?
+  slipUploadedAt        DateTime?
+  /// A cash receipt applied without its notes (e.g. a cash withdrawal whose
+  /// count wasn't saved): the balances moved, the drawer waits for the
+  /// agent's "Fill count" (RECEIPT_COUNT ledger row).
+  denominationPending   Boolean        @default(false)
+  denominationCountedAt DateTime?
+  /// Where the desktop got it: the Transaction Controller's automation or a
+  /// receipt done by hand on the SBI kiosk. Null = not sent.
+  source                ReceiptSource?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1202,6 +1453,7 @@ model Receipt {
   cashLedgerEntries CashLedger[]
 
   @@unique([agentId, receiptId])
+  @@index([agentId, denominationPending])
   @@index([machineId])
   @@index([machineSessionId])
   @@index([agentId])
@@ -1465,6 +1717,9 @@ model Payment {
 
   taxAmount Decimal @default(0) @db.Decimal(12, 2)
 
+  // GST % applied at checkout (super admin setting at the time of the order).
+  taxPercent Decimal @default(0) @db.Decimal(5, 2)
+
   totalAmount Decimal @db.Decimal(12, 2)
 
   paymentMethod PaymentMethod
@@ -1506,7 +1761,19 @@ model Payment {
   // payment instead of opening a second one.
   idempotencyKey String?
 
+  purpose PaymentPurpose @default(PURCHASE)
+
+  /// UPGRADE: the plan and machine count before the upgrade.
+  previousPlanId       String?
+  previousMachineCount Int?
+
+  /// RENEWAL: the mandate charged and the attempt (1–3).
+  mandateId     String?
+  mandate       SubscriptionMandate? @relation(fields: [mandateId], references: [id], onDelete: SetNull)
+  attemptNumber Int?
+
   @@unique([ownerId, idempotencyKey])
+  @@index([mandateId])
   @@index([subscriptionId])
   @@index([status])
   @@index([paymentMethod])
@@ -1528,6 +1795,11 @@ model Notification {
   message String
 
   type NotificationType @default(INFO)
+
+  kind NotificationKind @default(GENERAL)
+
+  /// Extra data for the app (e.g. { agentId, difference, source }).
+  data Json?
 
   isRead Boolean @default(false)
 
@@ -1612,6 +1884,7 @@ enum RunningNumberType {
   CSP_ACTIVITY_SESSION
   BC_LINK_REQUEST
   ACTIVATION_REVOKE_REQUEST
+  DIAGNOSTICS_REQUEST
 }
 
 model RunningNumber {
@@ -1694,6 +1967,8 @@ enum BcLinkRequestStatus {
   APPROVED
   REJECTED
   CANCELLED
+  // Was approved; the BC unlinked the CSP afterwards.
+  UNLINKED
 }
 
 // A BC asks to link an already-subscribed CSP; SUPER_ADMIN approves/rejects.
@@ -1728,6 +2003,9 @@ model BcLinkRequest {
   reviewRemarks    String?
   reviewedByUserId String?
   reviewedAt       DateTime?
+  unlinkedAt       DateTime?
+  unlinkedByUserId String?
+  unlinkReason     String?
 
   createdByUserId String
 
@@ -1845,6 +2123,125 @@ enum CashLedgerType {
   SETTLEMENT_FROM_BANK
   // An open settlement step was cancelled; money went back to where it came from.
   SETTLEMENT_CANCELLED
+  // CSP increased / decreased an agent's cash in hand or the cash in account
+  // (the cash limit moves with it).
+  INCREASE
+  DECREASE
+  // The agent counted the notes for a CSP change (drawer only).
+  DRAWER_ADJUSTED
+  // KO removed (deleted): its cash in hand left the pool.
+  AGENT_REMOVED
+  // KO replaced: its cash in hand and drawer moved to the new KO.
+  AGENT_TRANSFERRED
+  // Desktop one-step move between cash in hand and cash in account.
+  TRANSFER
+  // The agent filled the notes of a cash receipt uploaded without them
+  // (drawer only; the balances moved at upload).
+  RECEIPT_COUNT
+}
+
+/// Where a receipt came from on the desktop.
+enum ReceiptSource {
+  AUTOMATION
+  MANUAL
+}
+
+enum CashLoginMethod {
+  // SBI kiosk login with fingerprint (desktop activity start).
+  KIOSK
+  // Email OTP to the agent's verified email.
+  EMAIL_OTP
+}
+
+enum AgentOtpPurpose {
+  // Verify a (KO's) email at machine activation or in the cash panel.
+  EMAIL_VERIFICATION
+  // Log in to cash management on a PC of the family.
+  CASH_LOGIN
+}
+
+/// Email OTPs for agents (KOs have no User, so Otp can't be used).
+model AgentEmailOtp {
+  id String @id @default(cuid())
+
+  agentId String
+
+  email String
+
+  purpose AgentOtpPurpose
+
+  codeHash String
+
+  /// Machine the OTP was asked from (CASH_LOGIN / desktop verification).
+  machineId String?
+
+  expiresAt DateTime
+
+  attempts Int @default(0)
+
+  consumedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  agent Agent @relation(fields: [agentId], references: [agentId], onDelete: Cascade)
+
+  @@index([agentId, purpose, createdAt])
+}
+
+enum CashAdjustmentSource {
+  // The CSP moved cash in hand between agents while creating a KO.
+  KO_CREATION
+  // The CSP edited the agent's cash in hand in the app.
+  CSP_EDIT
+  // The CSP increased / decreased the agent's cash in hand in the app.
+  CSP_INCREASE
+  CSP_DECREASE
+}
+
+enum CashAdjustmentStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+}
+
+/// The CSP changed an agent's cash in hand from the app: the agent must
+/// count the notes given / taken on the desktop (mandatory "Adjust" request)
+/// so the drawer matches the new cash in hand.
+model CashDrawerAdjustment {
+  id String @id @default(cuid())
+
+  cspAgentId String
+
+  agentId String
+
+  source CashAdjustmentSource
+
+  status CashAdjustmentStatus @default(PENDING)
+
+  cashInHandBefore Decimal @db.Decimal(14, 2)
+  cashInHandAfter  Decimal @db.Decimal(14, 2)
+
+  /// after − before (+ = the CSP gave cash, − = the CSP took cash).
+  amount Decimal @db.Decimal(14, 2)
+
+  drawerBefore Json
+  drawerAfter  Json?
+
+  remarks String?
+
+  requestedBy String
+
+  completedAt DateTime?
+  /// machineCode that completed it.
+  completedBy String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  agent Agent @relation(fields: [agentId], references: [agentId])
+
+  @@index([agentId, status])
+  @@index([cspAgentId, status])
 }
 
 enum CashSettlementDirection {
@@ -2246,6 +2643,22 @@ model CashExchange {
 }
 
 /// An agent's end-of-day count (IST day). Balances don't change.
+/// One "day not closed" reminder per agent per IST day (sent to the CSP).
+model CashDayReminder {
+  id String @id @default(cuid())
+
+  cspAgentId String
+
+  agentId String
+
+  date DateTime @db.Date
+
+  sentAt DateTime @default(now())
+
+  @@unique([agentId, date])
+  @@index([date])
+}
+
 model CashDayClose {
   id String @id @default(cuid())
 
@@ -2264,6 +2677,12 @@ model CashDayClose {
 
   /// counted − system (negative = short).
   difference Decimal @db.Decimal(14, 2)
+
+  /// Cash in account the agent read on SBI at close (optional), the system's
+  /// at that moment and counted − system. Shared by the CSP and its KOs.
+  systemCashInAccount  Decimal? @db.Decimal(14, 2)
+  countedCashInAccount Decimal? @db.Decimal(14, 2)
+  accountDifference    Decimal? @db.Decimal(14, 2)
 
   machineCode String
 
@@ -2341,6 +2760,9 @@ enum CommissionRateType {
   PERCENT
   // BC / CSP override removed from this date: the next level applies
   INHERIT
+  // Amount bands (slabs), each FLAT or PERCENT; the band the receipt
+  // amount falls in applies
+  SLAB
 }
 
 enum CommissionScope {
@@ -2399,6 +2821,10 @@ model CommissionRate {
   minAmount Decimal? @db.Decimal(12, 2)
   maxAmount Decimal? @db.Decimal(12, 2)
 
+  /// SLAB: [{ from, to (null = no upper limit), type: FLAT | PERCENT,
+  /// amount?, percent? }] sorted by `from`; `from` inclusive, `to` exclusive.
+  slabs Json?
+
   effectiveFrom DateTime
 
   reason String?
@@ -2411,4 +2837,209 @@ model CommissionRate {
 
   @@index([serviceId, scope, scopeId, effectiveFrom])
   @@index([scope, scopeId])
+}
+
+enum ReceiptReportStatus {
+  OPEN
+  RESOLVED
+  REJECTED
+}
+
+/// "Report a problem" on a receipt, raised from the app. Keeps a copy of the
+/// receipt so the report survives receipt retention.
+model ReceiptReport {
+  id String @id @default(cuid())
+
+  /// Receipt row id (not a relation: the receipt can be deleted by retention).
+  receiptRowId String
+
+  receiptId String
+
+  /// Owner (CSP agentId) of the machine the receipt came from.
+  ownerAgentId String
+
+  reportedBy String
+
+  reason String
+
+  details String?
+
+  status ReceiptReportStatus @default(OPEN)
+
+  receiptSnapshot Json
+
+  resolution String?
+
+  resolvedBy String?
+
+  resolvedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([ownerAgentId, createdAt])
+  @@index([receiptRowId])
+}
+
+///////////////////////////
+// App: push devices and notification preferences (R23)
+///////////////////////////
+
+/// A phone that receives push notifications for a login. The token is the
+/// FCM registration token (one row per token; re-registering updates it).
+model NotificationDevice {
+  id String @id @default(cuid())
+
+  token String @unique
+
+  userId String
+
+  platform DevicePlatform
+
+  appVersion String?
+
+  lastSeenAt DateTime @default(now())
+
+  createdAt DateTime @default(now())
+
+  // The login session this phone's token belongs to. Logout, a revoked or
+  // expired session stops pushes; a deleted session deletes the token.
+  sessionId String?
+
+  session UserSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([userId])
+}
+
+enum DevicePlatform {
+  android
+  ios
+}
+
+/// Which push groups a user wants (the in-app list keeps everything).
+/// "plan" (subscription, mandate, trial) is always on. No row = all on.
+model NotificationPreference {
+  userId String @id
+
+  cash        Boolean @default(true)
+  settlements Boolean @default(true)
+  machines    Boolean @default(true)
+  requests    Boolean @default(true)
+
+  updatedAt DateTime @updatedAt
+}
+
+/// Each time an activation code + a fresh password were emailed (R24).
+enum EmailLogStatus {
+  SENT
+  FAILED
+  // No provider configured (development): logged instead of sent.
+  LOGGED
+}
+
+/// Every email the API tried to send (central rate limit and support). Kept 30 days.
+model EmailLog {
+  id String @id @default(cuid())
+
+  // Lower-case recipient.
+  to String
+
+  // OTP_SIGNUP, OTP_FORGOT_PASSWORD, OTP_EMAIL_CHANGE, OTP_AGENT_EMAIL_VERIFICATION, OTP_CASH_LOGIN, ACTIVATION
+  kind String
+
+  status EmailLogStatus
+
+  // Resend's email id when sent.
+  providerId String?
+
+  error String?
+
+  createdAt DateTime @default(now())
+
+  @@index([to, createdAt])
+  @@index([createdAt])
+}
+
+model ActivationEmail {
+  id String @id @default(cuid())
+
+  activationId String
+
+  sentTo String
+
+  sentByUserId String
+
+  createdAt DateTime @default(now())
+
+  @@index([activationId, createdAt])
+}
+
+///////////////////////////
+// Desktop diagnostics (log upload on request)
+///////////////////////////
+
+enum DiagnosticsStatus {
+  OPEN
+  RECEIVED
+  CANCELLED
+}
+
+/// The super admin or the CSP asks a PC for its desktop log; the heartbeat
+/// carries the request until the last part arrives. Kept 14 days.
+model DiagnosticsRequest {
+  id String @id @default(cuid())
+
+  requestNumber String @unique
+
+  machineId String
+
+  machineCode String
+
+  fromDate String
+  toDate   String
+
+  status DiagnosticsStatus @default(OPEN)
+
+  requestedByUserId String
+
+  requestedByRole UserRole
+
+  note String?
+
+  partsExpected Int?
+
+  receivedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  parts DiagnosticsPart[]
+
+  @@index([machineId, status])
+  @@index([createdAt])
+}
+
+model DiagnosticsPart {
+  id String @id @default(cuid())
+
+  requestId String
+
+  request DiagnosticsRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  part Int
+
+  parts Int
+
+  fileName String
+
+  appVersion String?
+
+  size Int
+
+  content String
+
+  createdAt DateTime @default(now())
+
+  @@unique([requestId, part])
 }

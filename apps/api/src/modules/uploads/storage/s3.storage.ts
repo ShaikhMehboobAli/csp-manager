@@ -1,5 +1,6 @@
 import {
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
   //   PutObjectCommand,
@@ -88,6 +89,18 @@ export default class S3StorageService implements StorageService {
     });
 
     await this.client.send(command);
+  }
+
+  /** Deletes up to 1000 objects per call; missing keys are fine. */
+  async deleteObjects(keys: string[]): Promise<void> {
+    for (let i = 0; i < keys.length; i += 1000) {
+      await this.client.send(
+        new DeleteObjectsCommand({
+          Bucket: this.bucketName,
+          Delete: { Objects: keys.slice(i, i + 1000).map((Key) => ({ Key })), Quiet: true },
+        }),
+      );
+    }
   }
 
   async objectExists(key: string): Promise<boolean> {

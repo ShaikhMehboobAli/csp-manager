@@ -47,6 +47,8 @@ export default class PaymentRepository {
         billingCycle,
         machineCount,
         status: PaymentStatus.PENDING,
+        // Mandate renewals are charged by the job, never reused as an order.
+        purpose: { not: "RENEWAL" },
       },
       orderBy: {
         createdAt: "desc",
@@ -110,7 +112,8 @@ export default class PaymentRepository {
     paymentId: string,
     subscriptionId: string,
     gatewayTransactionId: string,
-    transactionReference?: string,
+    transactionReference: string | undefined,
+    invoiceNumber: string,
   ) {
     return this.db.payment.update({
       where: {
@@ -118,6 +121,8 @@ export default class PaymentRepository {
       },
       data: {
         subscriptionId,
+
+        invoiceNumber,
 
         gatewayTransactionId,
 

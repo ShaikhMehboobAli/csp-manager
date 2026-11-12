@@ -22,16 +22,28 @@ export const commissionRatesSchema = z.object({
 
 const money = z.number({ error: "Must be a number." }).finite().min(0, "Can't be negative.");
 
+const slabSchema = z
+  .object({
+    from: money,
+    to: money.nullable().default(null),
+    type: z.enum(["FLAT", "PERCENT"]),
+    amount: money.optional(),
+    percent: z.number().finite().min(0).max(100, "percent can't be more than 100.").optional(),
+  })
+  .strict();
+
 export const setRateSchema = z
   .object({
     serviceCode: z.string().trim().min(1, "serviceCode is required."),
     scope: z.enum(["DEFAULT", "BC", "CSP"]),
     scopeId: z.string().trim().optional(),
-    type: z.enum(["FLAT", "PERCENT", "INHERIT"]),
+    type: z.enum(["FLAT", "PERCENT", "SLAB", "INHERIT"]),
     amount: money.optional(),
     percent: z.number().finite().min(0).max(100, "percent can't be more than 100.").optional(),
     minAmount: money.optional(),
     maxAmount: money.optional(),
+    // SLAB: amount bands sorted by `from` (`to` exclusive, null = no upper limit).
+    slabs: z.array(slabSchema).max(20, "At most 20 slabs.").optional(),
     effectiveFrom: z.coerce.date().optional(),
     reason: z.string().trim().max(500).optional(),
   })

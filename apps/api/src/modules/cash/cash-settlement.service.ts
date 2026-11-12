@@ -1,4 +1,6 @@
 import { PrismaDb } from "../../core/database/prisma.types";
+import { NotificationKind } from "../../generated/prisma/enums";
+import { notifyCspOfKo } from "./cash-notify.helper";
 import { BadRequestError } from "../../core/errors/BadRequestError";
 import { ConflictError } from "../../core/errors/ConflictError";
 import { NotFoundError } from "../../core/errors/NotFoundError";
@@ -25,6 +27,7 @@ import {
   moveDrawer,
   rupees,
 } from "./cash.helpers";
+import CashReceiptCountService from "./cash-receipt-count.service";
 import CashRepository, { LockedPool } from "./cash.repository";
 
 type Settlement = Prisma.CashSettlementGetPayload<object>;
@@ -99,7 +102,11 @@ export default class CashSettlementService {
     }
 
     if (input.direction === CashSettlementDirection.BANK_TO_HAND) {
-      return this.createFromLeftInBank({ ...input, cspAgentId, pool });
+      const single = await this.createFromLeftInBank({ ...input, cspAgentId, pool });
+
+      await this.notifyCsp(cspAgentId, input.agentId, "STARTED", single.id, input.direction, D(input.amount));
+
+      return single;
     }
 
     const cash = await this.repository.lockAgentCash([input.agentId]);
@@ -190,7 +197,38 @@ export default class CashSettlementService {
 
     await this.repository.refreshFloatMirror(cspAgentId);
 
+    await this.notifyCsp(cspAgentId, input.agentId, "STARTED", settlement.id, input.direction, amount);
+
     return this.map(settlement);
+  }
+
+  /** The CSP hears about its KOs' settlements (not its own). */
+  private notifyCsp(
+    cspAgentId: string,
+    agentId: string,
+    event: "STARTED" | "COMPLETED" | "CANCELLED",
+    settlementId: string,
+    direction: CashSettlementDirection,
+    amount: Prisma.Decimal,
+    settled?: Prisma.Decimal,
+  ) {
+    const what = STEP_LABEL[direction][direction === CashSettlementDirection.BANK_TO_HAND ? "FROM_BANK" : "TO_BANK"];
+    const route = direction === CashSettlementDirection.ACCOUNT_TO_HAND ? "Cash in account → cash in hand"
+      : direction === CashSettlementDirection.HAND_TO_ACCOUNT ? "Cash in hand → cash in account" : what;
+    const left = settled && !settled.equals(amount) ? ` ${rupees(amount.minus(settled))} is left in bank.` : "";
+
+    const text = {
+      STARTED: { kind: NotificationKind.CASH_SETTLEMENT_STARTED, title: "Settlement started", message: (ko: string) => `${ko} started a settlement of ${rupees(amount)}: ${route}.` },
+      COMPLETED: { kind: NotificationKind.CASH_SETTLEMENT_COMPLETED, title: "Settlement completed", message: (ko: string) => `${ko} completed a settlement of ${rupees(settled ?? amount)}: ${route}.${left}` },
+      CANCELLED: { kind: NotificationKind.CASH_SETTLEMENT_CANCELLED, title: "Settlement cancelled", message: (ko: string) => `${ko} cancelled a settlement of ${rupees(amount)}: ${route}. The money is back where it came from.` },
+    }[event];
+
+    return notifyCspOfKo(this.db, {
+      cspAgentId,
+      agentId,
+      ...text,
+      data: { settlementId, direction, amount: amount.toFixed(2), settledAmount: settled ? settled.toFixed(2) : null },
+    });
   }
 
   /**
@@ -380,6 +418,8 @@ export default class CashSettlementService {
 
     await this.repository.refreshFloatMirror(cspAgentId);
 
+    await this.notifyCsp(cspAgentId, settlement.agentId, "COMPLETED", updated.parentId ?? updated.id, settlement.direction, amount, settled);
+
     return { approved: await this.mapOne(updated), next: null };
   }
 
@@ -453,6 +493,8 @@ export default class CashSettlementService {
 
     await this.repository.refreshFloatMirror(cspAgentId);
 
+    await this.notifyCsp(cspAgentId, settlement.agentId, "CANCELLED", updated.parentId ?? updated.id, settlement.direction, amount);
+
     return this.mapOne(updated);
   }
 
@@ -481,14 +523,14 @@ export default class CashSettlementService {
     const isToday = istDateKey(date) === istDateKey(now);
     const today = { gte: startOfIstDay(date), lte: endOfIstDay(date) };
 
-    const [pool, row, ledger, open, settledToday, lastRequest, dayClose, dues] = await Promise.all([
+    const [pool, row, ledger, open, settledToday, lastRequest, dayClose, dues, pendingCounts] = await Promise.all([
       this.repository.findPool(cspAgentId),
       this.db.agentCash.findUnique({ where: { agentId } }),
       this.db.cashLedger.findMany({
         where: { agentId, createdAt: today },
         orderBy: { createdAt: "desc" },
         take: 500,
-        include: { receipt: { select: { receiptId: true } } },
+        include: { receipt: { select: { receiptId: true, denominationPending: true, source: true } } },
       }),
       isToday
         ? this.db.cashSettlement.findMany({
@@ -505,6 +547,7 @@ export default class CashSettlementService {
         where: { agentId_date: { agentId, date: istCalendarDate(date) } },
       }),
       new CashDeskService(this.db).dueTotals(agentId),
+      new CashReceiptCountService(this.db).pendingSummary(agentId),
     ]);
 
     const [settledSteps, openSteps] = await Promise.all([this.mapAll(settledToday), this.mapAll(open)]);
@@ -588,6 +631,9 @@ export default class CashSettlementService {
       drawer,
       drawerTotal: drawerTotal(drawer),
       drawerMatchesCashInHand: drawerTotal(drawer) === money(hand),
+      // Cash receipts waiting for their notes: why the drawer differs.
+      pendingCountAmount: pendingCounts.amount,
+      pendingCounts,
       today: {
         totals: Object.fromEntries(
           Object.entries(totals).map(([key, value]) => [key, money(value)]),
@@ -606,6 +652,10 @@ export default class CashSettlementService {
           balanceCashInAccount: num(entry.balanceCashInAccount),
           drawerChange: entry.drawerChange,
           receiptId: entry.receipt?.receiptId ?? null,
+          // RECEIPT rows: the notes still need counting ("Fill count").
+          denominationPending: entry.type === CashLedgerType.RECEIPT ? entry.receipt?.denominationPending ?? false : false,
+          // AUTOMATION | MANUAL | null (not sent / not a receipt).
+          source: entry.receipt?.source ?? null,
           settlementId: entry.settlementId,
           remarks: entry.remarks,
           createdAt: entry.createdAt,

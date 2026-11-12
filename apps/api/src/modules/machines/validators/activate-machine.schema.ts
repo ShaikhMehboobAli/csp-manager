@@ -17,6 +17,12 @@ export const activateMachineSchema = z.object({
 
   cashDenomination: drawerSchema.optional(),
 
+  // Required when the counted cash in hand differs from what the CSP gave:
+  // CASH_IN_ACCOUNT (the difference came from / went to cash in account) or
+  // OTHER (the CSP brought cash in / took it out: the cash limit moves; the
+  // CSP is notified).
+  differenceSource: z.enum(["CASH_IN_ACCOUNT", "OTHER"]).optional(),
+
   machine: z.object({
     fingerprint: z.string().trim().min(1),
 
@@ -35,4 +41,22 @@ export const activateMachineSchema = z.object({
     // on this PC. When sent, every later request must be signed with it.
     devicePublicKey: z.string().trim().min(1).max(2000).optional(),
   }),
+});
+
+const activationCredentials = {
+  agentId: z.string().trim().min(1),
+  activationCode: z.string().trim().min(1),
+  activationPassword: z.string().trim().min(1),
+};
+
+export const activationPreviewSchema = z.object(activationCredentials);
+
+export const activationEmailOtpSchema = z.object({
+  ...activationCredentials,
+  email: z.string().trim().email("Invalid email address.").optional(),
+});
+
+export const activationEmailVerifySchema = z.object({
+  ...activationCredentials,
+  otp: z.string().trim().regex(/^\d{6}$/, "Enter the 6-digit OTP."),
 });

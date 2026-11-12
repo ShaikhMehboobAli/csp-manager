@@ -21,6 +21,9 @@ const MESSAGE_CODES: [RegExp, string][] = [
   [/^Invalid token\.|^Invalid authorization header\./, "TOKEN_INVALID"],
   [/^Authorization token is required\./, "TOKEN_REQUIRED"],
   [/^Invalid refresh token\.|^Refresh token has expired\./, "REFRESH_TOKEN_INVALID"],
+  [/^Session ended\. Please log in again\./, "SESSION_ENDED"],
+  [/^Current password is incorrect\./, "CURRENT_PASSWORD_INCORRECT"],
+  [/^New password must be different/, "PASSWORD_UNCHANGED"],
   // Subscription
   [/^No subscription found\./, "SUBSCRIPTION_NONE"],
   [/^Your subscription has expired\./, "SUBSCRIPTION_EXPIRED"],
@@ -110,6 +113,7 @@ export function skipReasonCode(reason: string) {
   if (reason === "Receipt already exists.") return "RECEIPT_ALREADY_EXISTS";
   if (reason === "Duplicate receipt in request.") return "DUPLICATE_IN_REQUEST";
   if (reason.startsWith("Receipt is older than")) return "OLDER_THAN_RETENTION";
+  if (reason === "Failed transaction: not recorded.") return "FAILED_TRANSACTION";
 
   return "INVALID_RECEIPT";
 }

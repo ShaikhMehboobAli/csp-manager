@@ -1,4 +1,6 @@
 import prisma from "../../config/prisma";
+import { resendLimitError, resendTimer, resendTooSoonError } from "../../core/services/otp-timer.helper";
+import { Logger } from "../../core/utils/logger";
 
 import AuthRepository from "./auth.repository";
 
@@ -27,6 +29,13 @@ import JwtService, { REFRESH_TOKEN_DAYS } from "../../core/services/jwt.service"
 import { UnauthorizedError } from "../../core/errors/UnauthorizedError";
 import { createHash } from "node:crypto";
 import { LoginDto } from "./validations/login.validation";
+import type { PushDeviceInput } from "./validations/push-device.validation";
+import type {
+  ChangePasswordDto,
+  ForgotPasswordDto,
+  ResetPasswordDto,
+} from "./validations/password.validation";
+import { forgetUserAccess } from "../../core/services/user-access.service";
 import { AccountType } from "./types/auth.types";
 import { BadRequestError } from "../../core/errors/BadRequestError";
 import CashService from "../cash/cash.service";
@@ -41,6 +50,13 @@ type SessionClient = { ipAddress: string | null; userAgent: string | null };
 const RESEND_WAIT_MS = 60 * 1000;
 const RESEND_MAX = 5;
 const RESEND_WINDOW_MS = 60 * 60 * 1000;
+const OTP_MAX_ATTEMPTS = 5;
+
+const FORGOT_PASSWORD_MESSAGE =
+  "If this agent ID has an account, an OTP has been sent to its registered email.";
+
+const reasonOf = (user: { statusReason: string | null }) =>
+  user.statusReason ? ` Reason: ${user.statusReason}` : "";
 
 /** Only a hash of the refresh token is stored. */
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -114,6 +130,7 @@ export default class AuthService {
         message: "Signup successful. OTP sent for verification.",
         data: {
           userId: user.id,
+          ...resendTimer(),
         },
       };
     });
@@ -136,16 +153,16 @@ export default class AuthService {
 
       await this.createAgentIfNeeded(repository, data);
 
-      // Validation requires these for CSP signups.
+      // Validation requires both for CSP signups. The CSP limit is their
+      // sum (the CSP holds all the cash in hand until it adds KOs).
       const cash = {
         openingCash: data.cashInHand!,
         openingCashInAccount: data.cashInAccount!,
-        cashLimit: data.cspLimit!,
+        cashLimit: data.cashInHand! + data.cashInAccount!,
       };
 
       const openingFloat = await new CashService(tx).openPool({
         cspAgentId: data.agentId,
-        cashLimit: cash.cashLimit,
         cashInAccount: cash.openingCashInAccount,
         cashInHand: cash.openingCash,
         actor: { type: "SYSTEM", id: null },
@@ -171,6 +188,7 @@ export default class AuthService {
         data: {
           userId: user.id,
           openingFloat,
+          ...resendTimer(),
         },
       };
     });
@@ -557,66 +575,22 @@ export default class AuthService {
   }
 
   private async sendSignupOtp(email: string, otpCode: string) {
-    await this.emailService.sendOtp(email, otpCode);
+    await this.emailService.sendOtp(email, otpCode, "SIGNUP");
   }
 
   async verifyOtp(data: VerifyOtpDto) {
+    const user = await this.repository.findUserByAgentId(data.agentId);
+
+    if (!user) {
+      throw new NotFoundError("User not found.");
+    }
+
+    const otp = await this.checkOtp(user.id, OtpPurpose.SIGNUP, data.otp);
+
     return withTransaction(async (tx) => {
       const repository = new AuthRepository(tx);
 
-      // 1. Find User
-      const user = await repository.findUserByAgentId(data.agentId);
-
-      if (!user) {
-        throw new NotFoundError("User not found.");
-      }
-
-      // 2. Find Latest OTP
-      const otp = await repository.findLatestSignupOtp(user.id);
-
-      if (!otp) {
-        throw new NotFoundError("OTP not found. Please request a new OTP.");
-      }
-
-      // 3. Check Expiry
-      const now = new Date();
-
-      if (otp.expiresAt < now) {
-        await repository.deleteOtp(otp.id);
-
-        throw new ConflictError("OTP has expired. Please request a new OTP.");
-      }
-
-      // 4. Check Attempts
-      if (otp.attempts >= 5) {
-        await repository.deleteOtp(otp.id);
-
-        throw new ConflictError(
-          "Maximum OTP attempts exceeded. Please request a new OTP.",
-        );
-      }
-
-      // 5. Validate OTP
-      if (otp.otpCode !== data.otp) {
-        const attempts = otp.attempts + 1;
-
-        if (attempts >= 5) {
-          await repository.deleteOtp(otp.id);
-
-          throw new ConflictError(
-            "Maximum OTP attempts exceeded. Please request a new OTP.",
-          );
-        }
-
-        await repository.updateOtpAttempts(otp.id, attempts);
-
-        throw new ConflictError("Invalid OTP.");
-      }
-
-      // 6. Activate User
       await repository.activateUser(user.id);
-
-      // 7. Delete OTP
       await repository.deleteOtp(otp.id);
 
       return {
@@ -624,6 +598,41 @@ export default class AuthService {
         message: "OTP verified successfully.",
       };
     });
+  }
+
+  /**
+   * The user's latest OTP for `purpose` when `code` matches it. A wrong code
+   * counts an attempt (5 at most); expired or used-up OTPs are deleted. Runs
+   * outside any transaction so those writes stick when it throws.
+   */
+  private async checkOtp(userId: string, purpose: OtpPurpose, code: string) {
+    const otp = await this.repository.findLatestOtp(userId, purpose);
+
+    if (!otp) {
+      throw new NotFoundError("OTP not found. Please request a new OTP.");
+    }
+
+    if (otp.expiresAt < new Date()) {
+      await this.repository.deleteOtps(userId, purpose);
+
+      throw new ConflictError("OTP has expired. Please request a new OTP.");
+    }
+
+    if (otp.otpCode !== code) {
+      const attempts = otp.attempts + 1;
+
+      if (attempts >= OTP_MAX_ATTEMPTS) {
+        await this.repository.deleteOtps(userId, purpose);
+
+        throw new ConflictError("Maximum OTP attempts exceeded. Please request a new OTP.");
+      }
+
+      await this.repository.updateOtpAttempts(otp.id, attempts);
+
+      throw new ConflictError("Invalid OTP.");
+    }
+
+    return otp;
   }
 
   async login(data: LoginDto, client: SessionClient = { ipAddress: null, userAgent: null }) {
@@ -646,11 +655,11 @@ export default class AuthService {
     }
 
     if (user.status === UserStatus.BLOCKED) {
-      throw new ForbiddenError("Your account has been blocked.");
+      throw new ForbiddenError(`Your account has been blocked.${reasonOf(user)}`);
     }
 
     if (user.status === UserStatus.SUSPENDED) {
-      throw new ForbiddenError("Your account has been suspended.");
+      throw new ForbiddenError(`Your account has been suspended.${reasonOf(user)}`);
     }
 
     const accessToken = this.jwtService.generateAccessToken({
@@ -665,29 +674,12 @@ export default class AuthService {
       await repository.updateLastLogin(user.id);
       await repository.deleteOldSessions(user.id);
 
-      // One session per login (per device); the refresh token names it.
-      const session = await repository.createSession({
-        userId: user.id,
-        refreshTokenHash: "",
-        expiresAt: refreshExpiry(),
-        ...client,
-      });
-
-      const refreshToken = this.jwtService.generateRefreshToken({
-        userId: user.id,
-        agentId: user.agentId,
-        role: user.role,
-        sid: session.id,
-      });
-
-      await repository.rotateSession(session.id, hashToken(refreshToken), refreshExpiry());
-
       return {
         success: true,
         message: "Login successful.",
         data: {
           accessToken,
-          refreshToken,
+          refreshToken: await this.startSession(repository, user, client, data),
           user: {
             id: user.id,
             agentId: user.agentId,
@@ -699,12 +691,42 @@ export default class AuthService {
     });
   }
 
+  /** One session per login (per device); its refresh token names it. */
+  private async startSession(
+    repository: AuthRepository,
+    user: { id: string; agentId: string; role: UserRole },
+    client: SessionClient,
+    device: PushDeviceInput = {},
+  ) {
+    const session = await repository.createSession({
+      userId: user.id,
+      refreshTokenHash: "",
+      expiresAt: refreshExpiry(),
+      ...client,
+    });
+
+    const refreshToken = this.jwtService.generateRefreshToken({
+      userId: user.id,
+      agentId: user.agentId,
+      role: user.role,
+      sid: session.id,
+    });
+
+    await repository.rotateSession(session.id, hashToken(refreshToken), refreshExpiry());
+
+    if (device.pushToken && device.platform) {
+      await repository.savePushDevice(user.id, session.id, { pushToken: device.pushToken, platform: device.platform, appVersion: device.appVersion });
+    }
+
+    return refreshToken;
+  }
+
   /**
    * New access token + a new refresh token (rotation). The old refresh token
    * stops working; using it again means it was copied, so the whole session
    * is revoked (the user logs in again).
    */
-  async refresh(refreshToken: string, client: SessionClient) {
+  async refresh(refreshToken: string, client: SessionClient, device: PushDeviceInput = {}) {
     let payload;
 
     try {
@@ -720,7 +742,7 @@ export default class AuthService {
     let revoke: string | null = null;
 
     try {
-      return await this.rotate(refreshToken, payload, client, (sessionId) => {
+      return await this.rotate(refreshToken, payload, client, device, (sessionId) => {
         revoke = sessionId;
       });
     } finally {
@@ -734,6 +756,7 @@ export default class AuthService {
     refreshToken: string,
     payload: { userId: string; sid: string },
     client: SessionClient,
+    device: PushDeviceInput,
     revokeLater: (sessionId: string) => void,
   ) {
     return withTransaction(async (tx) => {
@@ -759,13 +782,13 @@ export default class AuthService {
       if (user.status === UserStatus.BLOCKED) {
         revokeLater(session.id);
 
-        throw new ForbiddenError("Your account has been blocked.");
+        throw new ForbiddenError(`Your account has been blocked.${reasonOf(user)}`);
       }
 
       if (user.status === UserStatus.SUSPENDED) {
         revokeLater(session.id);
 
-        throw new ForbiddenError("Your account has been suspended.");
+        throw new ForbiddenError(`Your account has been suspended.${reasonOf(user)}`);
       }
 
       const claims = { userId: user.id, agentId: user.agentId, role: user.role };
@@ -776,6 +799,10 @@ export default class AuthService {
 
       if (client.ipAddress || client.userAgent) {
         await tx.userSession.update({ where: { id: session.id }, data: client });
+      }
+
+      if (device.pushToken && device.platform) {
+        await repository.savePushDevice(user.id, session.id, { pushToken: device.pushToken, platform: device.platform, appVersion: device.appVersion });
       }
 
       return {
@@ -802,6 +829,7 @@ export default class AuthService {
 
     if (sid) {
       await this.repository.revokeSession(sid);
+      await this.repository.deletePushDevicesOfSession(sid);
     }
 
     return { success: true, message: "Logged out." };
@@ -831,11 +859,11 @@ export default class AuthService {
         const wait = Math.ceil((last.createdAt.getTime() + RESEND_WAIT_MS - now) / 1000);
 
         if (wait > 0) {
-          throw new ConflictError(`Please wait ${wait} second${wait === 1 ? "" : "s"} before asking for a new OTP.`);
+          throw resendTooSoonError(last.createdAt);
         }
 
         if (last.resendCount >= RESEND_MAX && now - last.createdAt.getTime() < RESEND_WINDOW_MS) {
-          throw new ConflictError("Too many OTPs sent. Please try again in an hour.");
+          throw resendLimitError(last.createdAt);
         }
       }
 
@@ -861,8 +889,127 @@ export default class AuthService {
       return {
         success: true,
         message: "OTP sent again.",
-        data: { expiresAt, resendAvailableAt: new Date(now + RESEND_WAIT_MS) },
+        data: { expiresAt, ...resendTimer(now) },
       };
     });
+  }
+
+  /**
+   * Emails a password reset OTP. The answer is the same whether or not the
+   * agent ID has an account (and when a send is skipped by the limits: one
+   * per minute, 5 in an hour), so it doesn't reveal which IDs exist.
+   */
+  async forgotPassword(data: ForgotPasswordDto) {
+    const now = Date.now();
+    const answer = {
+      success: true,
+      message: FORGOT_PASSWORD_MESSAGE,
+      data: resendTimer(now),
+    };
+
+    const user = await this.repository.findUserByAgentId(data.agentId);
+
+    if (!user || user.status !== UserStatus.ACTIVE) {
+      return answer;
+    }
+
+    const last = await this.repository.findLatestOtp(user.id, OtpPurpose.FORGOT_PASSWORD);
+    const age = last ? now - last.createdAt.getTime() : Infinity;
+
+    if (age < RESEND_WAIT_MS || (last && last.resendCount >= RESEND_MAX && age < RESEND_WINDOW_MS)) {
+      return answer;
+    }
+
+    const otpCode = this.otpService.generate();
+
+    await withTransaction(async (tx) => {
+      const repository = new AuthRepository(tx);
+
+      await repository.deleteOtps(user.id, OtpPurpose.FORGOT_PASSWORD);
+      await repository.createOtp({
+        userId: user.id,
+        otpCode,
+        purpose: OtpPurpose.FORGOT_PASSWORD,
+        email: user.email,
+        expiresAt: this.otpService.getExpiry(),
+        resendCount: last && age < RESEND_WINDOW_MS ? last.resendCount + 1 : 0,
+      });
+    });
+
+    // Same answer even if the email fails: an error here would reveal that
+    // the account exists. The user can ask again after the resend wait.
+    await this.emailService.sendOtp(user.email, otpCode, "FORGOT_PASSWORD").catch((error: Error) => {
+      Logger.error(`[Auth] Forgot-password email failed for user ${user.id}: ${error.message}`);
+    });
+
+    return answer;
+  }
+
+  /** New password with the emailed OTP; signs the user out everywhere. */
+  async resetPassword(data: ResetPasswordDto) {
+    const user = await this.repository.findUserByAgentId(data.agentId);
+
+    if (!user || user.status !== UserStatus.ACTIVE) {
+      throw new NotFoundError("OTP not found. Please request a new OTP.");
+    }
+
+    await this.checkOtp(user.id, OtpPurpose.FORGOT_PASSWORD, data.otp);
+
+    const passwordHash = await this.bcryptService.hash(data.password);
+
+    await withTransaction(async (tx) => {
+      const repository = new AuthRepository(tx);
+
+      await repository.updatePassword(user.id, passwordHash);
+      await repository.deleteOtps(user.id, OtpPurpose.FORGOT_PASSWORD);
+      await repository.revokeUserSessions(user.id);
+    });
+
+    forgetUserAccess(user.id);
+
+    return { success: true, message: "Password reset. Please log in with your new password." };
+  }
+
+  /**
+   * Logged-in password change. Every session ends (other devices log in
+   * again); this device gets new tokens in the answer.
+   */
+  async changePassword(userId: string, data: ChangePasswordDto, client: SessionClient) {
+    const user = await this.repository.findUserById(userId);
+
+    if (!user) {
+      throw new UnauthorizedError("Invalid token.");
+    }
+
+    if (!(await this.bcryptService.compare(data.currentPassword, user.passwordHash))) {
+      throw new BadRequestError("Current password is incorrect.");
+    }
+
+    if (data.password === data.currentPassword) {
+      throw new BadRequestError("New password must be different from the current one.");
+    }
+
+    const passwordHash = await this.bcryptService.hash(data.password);
+
+    // Access tokens issued before the change stop working (see user-access).
+    await withTransaction(async (tx) => {
+      const repository = new AuthRepository(tx);
+
+      await repository.updatePassword(user.id, passwordHash);
+      await repository.revokeUserSessions(user.id);
+    });
+
+    forgetUserAccess(user.id);
+
+    const claims = { userId: user.id, agentId: user.agentId, role: user.role };
+
+    return {
+      success: true,
+      message: "Password changed. Other devices have been signed out.",
+      data: {
+        accessToken: this.jwtService.generateAccessToken(claims),
+        refreshToken: await this.startSession(this.repository, user, client, data),
+      },
+    };
   }
 }
