@@ -20,6 +20,7 @@ function limiter(
     ...(keyGenerator && { keyGenerator }),
     message: {
       success: false,
+      code: "RATE_LIMITED",
       message: "Too many requests. Please try again later.",
     },
   });

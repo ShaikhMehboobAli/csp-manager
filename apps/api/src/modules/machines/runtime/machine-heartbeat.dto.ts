@@ -1,3 +1,4 @@
+import type CashService from "../../cash/cash.service";
 import { SubscriptionOwnerType } from "../../../generated/prisma/enums";
 import { DesktopControls } from "../../settings/desktop-settings.service";
 import { ReceiptWatcherReason } from "./receipt-watcher-policy";
@@ -50,8 +51,36 @@ export interface HeartbeatResponse {
 
   subscriptionEndDate: Date;
 
+  // PAID | TRIAL | PROMOTIONAL | LIFETIME; on TRIAL show "Free trial — ends <subscriptionEndDate>".
+  subscriptionType: string;
+  isTrial: boolean;
+  /** Log upload asked by support; null = nothing asked. */
+  diagnostics: { uploadRequested: boolean; requestId: string; fromDate: string; toDate: string } | null;
+  dayCloseReminder: { closeTime: string; remindAt: Date; overdue: boolean; message: string } | null;
+
   graceEndsAt: Date | null;
 
   // Feature codes included in the current plan, e.g. "RECEIPT_SYNC".
   features: string[];
+
+  // The machine agent's cash, read-only; the desktop caches it and checks it
+  // before a cash transaction. Null when the agent isn't part of a CSP.
+  cash: Awaited<ReturnType<CashService["getMachineCash"]>>;
+
+  // Agents allowed on this PC (owner CSP + its KOs), for machineConfig.
+  accessAgent: string[];
+  accessAgents: {
+    agentId: string;
+    name: string;
+    type: string;
+    emailMasked: string | null;
+    emailVerified: boolean;
+  }[];
+
+  // Whose cash `cash` is, and how they logged in (null = the PC's agent).
+  cashAgentId: string | null;
+  cashLoginMethod: "KIOSK" | "EMAIL_OTP" | null;
+
+  // Optional receipt fields the super admin allows the desktop to send.
+  receiptFields: { allowed: string[] };
 }

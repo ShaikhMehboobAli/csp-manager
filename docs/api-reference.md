@@ -1,7 +1,7 @@
 # API reference — endpoints added or changed
 
 **Audience:** backend owner (Postman collection), mobile and admin web teams.
-**Last updated:** 2026-10-30
+**Last updated:** 2026-11-01
 
 Base URL: `{{baseUrl}}` = `http://localhost:3000/api/v1` (dev). Auth: `Bearer {{accessToken}}` for JWT routes; desktop routes authenticate with `machineCode` / `apiKey` / `fingerprint` in the body (no JWT).
 `NEW` = added, `CHANGED` = contract or behaviour changed, `REFERENCE` = unchanged but needed for the flows.
@@ -104,7 +104,7 @@ Response adds receiptWatcherAllowed, receiptWatcherReason, desktopControls, late
 }
 ```
 
-New values PASSBOOK / PASSBOOK_PRINTING. receiptId unique per agent. Each receipt is validated on its own: an invalid one (the third here) comes back in skippedReceipts with `Invalid receipt (field): message` and the rest are saved.
+New values PASSBOOK / PASSBOOK_PRINTING. receiptId unique per agent. Each receipt is validated on its own: an invalid one (the third here) comes back in skippedReceipts with `Invalid receipt (field): message` and the rest are saved. Receipts older than the retention period (default 60 days, super admin sets 15–365) are skipped with `Receipt is older than the receipt retention period.` (don't retry). `totalCount` covers the last 12 months.
 
 ### Upload receipts (legacy watcher) — `CHANGED`
 

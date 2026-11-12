@@ -65,3 +65,20 @@ export function istDateKey(date: Date) {
 export function istMonthKey(date: Date) {
   return istDateKey(date).slice(0, 7);
 }
+
+/**
+ * The IST calendar day as a date-only value (UTC midnight), for @db.Date
+ * columns.
+ */
+export function istCalendarDate(date: Date) {
+  return new Date(`${istDateKey(date)}T00:00:00.000Z`);
+}
+
+/** Start of the IST day stored in a @db.Date column. */
+export function fromIstCalendarDate(date: Date) {
+  return istInstant(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    date.getUTCDate(),
+  );
+}

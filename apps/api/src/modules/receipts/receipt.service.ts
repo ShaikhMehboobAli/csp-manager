@@ -1,5 +1,7 @@
+import { skipReasonCode } from "../../core/errors/error-codes";
 import { createCodeGeneratorService } from "../../core/services/service.factory";
 import prisma from "../../config/prisma";
+import { PrismaDb } from "../../core/database/prisma.types";
 
 import ReceiptRepository from "./repository/receipt-upload.repository";
 
@@ -13,6 +15,14 @@ import {
   UploadReceiptRequest,
 } from "./receipt.dto";
 import { withTransaction, withReadOnly } from "../../core/database/transaction";
+import ReceiptFieldsSettingsService from "../settings/receipt-fields-settings.service";
+import CommissionService, { rateLabel } from "../commission/commission.service";
+import MachineFamilyService from "../machines/family/machine-family.service";
+
+/** upload-counts skip reason for a receipt SBI shows as failed / pending. */
+export const FAILED_RECEIPT_REASON = "Failed transaction: not recorded.";
+import ReceiptDailyCountRepository from "./repository/receipt-daily-count.repository";
+import { receiptUploadCutoff } from "./receipt-retention.service";
 
 import {
   ActivationStatus,
@@ -20,7 +30,8 @@ import {
   ReceiptStatus,
   SubscriptionStatus,
 } from "../../generated/prisma/enums";
-import FloatLedgerService from "../float/float-ledger.service";
+import CashService, { ReceiptCashResult } from "../cash/cash.service";
+import { isEmptyDenomination } from "../cash/cash-receipt-count.service";
 import ReceiptListRepository from "./repository/receipt-list.repository";
 import { mapReceiptDetail, mapReceiptList } from "./receipt.mapper";
 import ReceiptDetailRepository from "./repository/receipt-detail.repository";
@@ -31,12 +42,20 @@ import { BadRequestError } from "../../core/errors/BadRequestError";
 import MachineRuntimeValidator from "../machines/runtime/machine-runtime-validator";
 import SubscriptionResolver from "../subscriptions/subscription-validator/subscription-resolver.service";
 import SubscriptionAccessValidator from "../subscriptions/subscription-validator/subscription-access-validator";
-import {
-  DesktopFeature,
-} from "../subscriptions/subscription-entitlement.service";
+import { DesktopFeature } from "../subscriptions/subscription-entitlement.service";
 import SubscriptionEntitlementService from "../subscriptions/subscription-entitlement.service";
 import { resolveReceiptWatcher } from "../machines/runtime/receipt-watcher-policy";
 import { MinimalReceipt, parseMinimalReceipt } from "./receipt.validation";
+
+const RECEIPT_TOO_OLD_REASON =
+  "Receipt is older than the receipt retention period.";
+
+
+/** Adds the stable `code` of a skip reason (e.g. RECEIPT_ALREADY_EXISTS). */
+const withReasonCode = <T extends { reason: string }>(item: T) => ({
+  ...item,
+  code: skipReasonCode(item.reason),
+});
 
 export default class ReceiptService {
   async upload(request: UploadReceiptRequest) {
@@ -49,7 +68,6 @@ export default class ReceiptService {
 
       const heartbeatRepository = new MachineHeartbeatRepository(tx);
 
-      const floatLedgerService = new FloatLedgerService(tx);
 
       const codeGenerator = createCodeGeneratorService(tx);
 
@@ -126,7 +144,18 @@ export default class ReceiptService {
 
       const toCreate: typeof request.receipts = [];
 
+      const retentionCutoff = await receiptUploadCutoff(tx);
+
       for (const receipt of request.receipts) {
+        if (receipt.transactionAt < retentionCutoff) {
+          skippedReceipts.push({
+            receiptId: receipt.receiptId,
+            reason: RECEIPT_TOO_OLD_REASON,
+          });
+
+          continue;
+        }
+
         if (processedReceiptIds.has(receipt.receiptId)) {
           skippedReceipts.push({
             receiptId: receipt.receiptId,
@@ -141,9 +170,31 @@ export default class ReceiptService {
         toCreate.push(receipt);
       }
 
+      // Commission the CSP earns on each (rate frozen now).
+      const commissions = await new CommissionService(tx).computeForReceipts(agentId, toCreate);
+
       // One insert for the batch; existing (agentId, receiptId) are skipped.
+      const allowedFields = await new ReceiptFieldsSettingsService().allowed();
+
       const created = await repository.createManyAndReturnIfAbsent(
-        toCreate.map((receipt) => ({
+        toCreate.map((receipt, index) => ({
+          ...commissions[index],
+          ...ReceiptFieldsSettingsService.strip(
+            {
+              stan: receipt.stan,
+              rrn: receipt.rrn,
+              terminalId: receipt.terminalId,
+              customerName: receipt.customerName,
+              customerAccount: receipt.customerAccount,
+              location: receipt.location,
+              bankName: receipt.bankName,
+              balanceAfter: receipt.balanceAfter,
+              bankTransactionId: receipt.bankTransactionId,
+              bankResponseCode: receipt.bankResponseCode,
+              bankResponseMessage: receipt.bankResponseMessage,
+            },
+            allowedFields,
+          ),
           receiptId: receipt.receiptId,
           machineId: authenticated.machine.id,
           machineSessionId: session.machineSessionId,
@@ -155,22 +206,16 @@ export default class ReceiptService {
           transactionAt: receipt.transactionAt,
           amount: receipt.amount,
           charges: receipt.charges,
-          stan: receipt.stan,
-          rrn: receipt.rrn,
-          terminalId: receipt.terminalId,
-          customerName: receipt.customerName,
-          customerAccount: receipt.customerAccount,
-          location: receipt.location,
         })),
       );
+
+      await new ReceiptDailyCountRepository(tx).record(created);
 
       const createdById = new Map(
         created.map((receipt) => [receipt.receiptId, receipt]),
       );
 
-      const ledgerReceipts: Parameters<
-        FloatLedgerService["recordReceiptBatch"]
-      >[1] = [];
+      const cashReceipts: Parameters<CashService["applyReceipts"]>[1] = [];
 
       for (const receipt of toCreate) {
         const savedReceipt = createdById.get(receipt.receiptId);
@@ -184,28 +229,29 @@ export default class ReceiptService {
           continue;
         }
 
-        const ledgerCreated = savedReceipt.status === ReceiptStatus.SUCCESS;
-
-        if (ledgerCreated) {
-          ledgerReceipts.push({
+        // Only successful transactions move cash.
+        if (savedReceipt.status === ReceiptStatus.SUCCESS) {
+          cashReceipts.push({
             receiptRecordId: savedReceipt.id,
             transactionCategory: savedReceipt.transactionCategory,
-            amount: Number(savedReceipt.amount),
+            amount: savedReceipt.amount,
           });
         }
 
-        uploadedReceipts.push({
-          receipt: savedReceipt,
-
-          ledgerCreated,
-        });
+        uploadedReceipts.push({ receipt: savedReceipt });
       }
 
-      await floatLedgerService.recordReceiptBatch(
+      const cash = await new CashService(tx).applyReceipts(
         agentId,
-        ledgerReceipts,
-        "Receipt uploaded from ReceiptWatcher",
+        cashReceipts,
+        { type: "MACHINE", id: authenticated.machine.machineCode },
       );
+
+      const withCash = uploadedReceipts.map((item) => ({
+        ...item,
+        ledgerCreated: cash.get(item.receipt.id)?.status === "APPLIED",
+        cash: cash.get(item.receipt.id) ?? null,
+      }));
 
       // Update Machine
       await heartbeatRepository.updateLastTransactionAt(
@@ -220,8 +266,8 @@ export default class ReceiptService {
           total: request.receipts.length,
           uploaded: uploadedReceipts.length,
           skipped: skippedReceipts.length,
-          uploadedReceipts,
-          skippedReceipts,
+          uploadedReceipts: withCash,
+          skippedReceipts: skippedReceipts.map(withReasonCode),
         },
       };
     });
@@ -237,7 +283,6 @@ export default class ReceiptService {
       const authenticationService = new MachineAuthenticationService(tx);
       const sessionRepository = new MachineSessionRepository(tx);
       const heartbeatRepository = new MachineHeartbeatRepository(tx);
-      const floatLedgerService = new FloatLedgerService(tx);
 
       const authenticated = await authenticationService.authenticate({
         machineCode: request.machineCode,
@@ -254,10 +299,10 @@ export default class ReceiptService {
         [DesktopFeature.AUTOMATION, DesktopFeature.RECEIPT_SYNC],
       );
 
+      // The agent logged in to SBI: the PC's own agent or any other agent of
+      // the owner CSP's family (shared PCs). Its receipts and cash are its own.
       if (authenticated.machine.currentAgentId !== request.agentId) {
-        throw new ForbiddenError(
-          "The supplied agent does not match this machine's assignment.",
-        );
+        await new MachineFamilyService(tx).requireMember(authenticated, request.agentId);
       }
 
       const assignedAgent = await repository.findAssignedAgent(request.agentId);
@@ -274,13 +319,19 @@ export default class ReceiptService {
         throw new BadRequestError("No active machine session found.");
       }
 
-      const acceptedReceipts: Array<{ receiptId: string; count: 1 }> = [];
+      const acceptedReceipts: Array<{
+        receiptId: string;
+        count: 1;
+        cash?: ReceiptCashResult;
+      }> = [];
       const skippedReceipts: Array<{
         receiptId: string | null;
         reason: string;
       }> = [];
       const processedReceiptIds = new Set<string>();
-      const valid: MinimalReceipt[] = [];
+      const valid: (MinimalReceipt & { transactionAt: Date })[] = [];
+      const receivedAt = new Date();
+      const retentionCutoff = await receiptUploadCutoff(tx, receivedAt);
 
       for (const raw of request.receipts) {
         const parsed = parseMinimalReceipt(raw);
@@ -293,6 +344,16 @@ export default class ReceiptService {
           continue;
         }
 
+        // A transaction SBI shows as failed (or still pending) on the receipt
+        // page never reaches the counts, commission or cash ledger.
+        if (parsed.receipt.status && parsed.receipt.status !== ReceiptStatus.SUCCESS) {
+          skippedReceipts.push({
+            receiptId: parsed.receipt.receiptId,
+            reason: FAILED_RECEIPT_REASON,
+          });
+          continue;
+        }
+
         if (processedReceiptIds.has(parsed.receipt.receiptId)) {
           skippedReceipts.push({
             receiptId: parsed.receipt.receiptId,
@@ -301,16 +362,52 @@ export default class ReceiptService {
           continue;
         }
 
+        // Dashboards and reports filter by transactionAt, so fall back to
+        // receive time; the desktop uploads right after bank confirmation.
+        const transactionAt = parsed.receipt.transactionAt ?? receivedAt;
+
+        if (transactionAt < retentionCutoff) {
+          skippedReceipts.push({
+            receiptId: parsed.receipt.receiptId,
+            reason: RECEIPT_TOO_OLD_REASON,
+          });
+          continue;
+        }
+
         processedReceiptIds.add(parsed.receipt.receiptId);
-        valid.push(parsed.receipt);
+        valid.push({ ...parsed.receipt, transactionAt });
       }
 
       // One insert for the whole batch. PostgreSQL enforces (agentId,
       // receiptId) uniqueness; skipDuplicates leaves existing receipts out
       // of the result (so concurrent retries stay idempotent) without putting
       // the transaction in an error state.
+      const commissions = await new CommissionService(tx).computeForReceipts(
+        request.agentId,
+        valid.map((receipt) => ({ ...receipt, status: ReceiptStatus.SUCCESS })),
+      );
+
+      const allowedFields = await new ReceiptFieldsSettingsService().allowed();
+
       const created = await repository.createManyIfAbsent(
-        valid.map((receipt) => ({
+        valid.map((receipt, index) => ({
+          ...commissions[index],
+          ...ReceiptFieldsSettingsService.strip(
+            {
+              rrn: receipt.rrn,
+              location: receipt.location,
+              stan: receipt.stan,
+              terminalId: receipt.terminalId,
+              customerName: receipt.customerName,
+              customerAccount: receipt.customerAccount,
+              bankName: receipt.bankName,
+              balanceAfter: receipt.balanceAfter,
+              bankTransactionId: receipt.bankTransactionId,
+              bankResponseCode: receipt.bankResponseCode,
+              bankResponseMessage: receipt.bankResponseMessage,
+            },
+            allowedFields,
+          ),
           receiptId: receipt.receiptId,
           machineId: authenticated.machine.id,
           machineSessionId: session.machineSessionId,
@@ -319,15 +416,14 @@ export default class ReceiptService {
           transactionCategory: receipt.transactionCategory,
           transactionType: receipt.transactionType,
           status: ReceiptStatus.SUCCESS,
-          // Dashboards and reports filter by transactionAt, so fall back to
-          // receive time; the desktop uploads right after bank confirmation.
-          transactionAt: receipt.transactionAt ?? new Date(),
+          transactionAt: receipt.transactionAt,
           amount: receipt.amount,
-          rrn: receipt.rrn,
-          location: receipt.location,
           count: receipt.count,
+          source: receipt.source ?? null,
         })),
       );
+
+      await new ReceiptDailyCountRepository(tx).record(created);
 
       const createdIds = new Map(
         created.map((receipt) => [receipt.receiptId, receipt.id]),
@@ -351,24 +447,55 @@ export default class ReceiptService {
         acceptedReceipts.push({ receiptId: receipt.receiptId, count: 1 });
       }
 
+      // An empty denomination ({} or all zero) counts as "no notes".
       await repository.createCashDenominations(
         saved.flatMap(({ receipt, id }) =>
-          receipt.cashDenomination
-            ? [{ receiptRecordId: id, ...receipt.cashDenomination }]
+          !isEmptyDenomination(receipt.cashDenomination)
+            ? [{ receiptRecordId: id, ...receipt.cashDenomination! }]
             : [],
         ),
       );
 
       // In request order, so running balances follow the upload order.
-      await floatLedgerService.recordReceiptBatch(
+      const cash = await new CashService(tx).applyReceipts(
         request.agentId,
         saved.map(({ receipt, id }) => ({
           receiptRecordId: id,
           transactionCategory: receipt.transactionCategory,
           amount: receipt.amount,
+          cashDenomination: isEmptyDenomination(receipt.cashDenomination) ? null : receipt.cashDenomination,
         })),
-        "Minimal receipt uploaded from CSP Manager",
+        { type: "MACHINE", id: authenticated.machine.machineCode },
       );
+
+      // A cash receipt applied without its notes: the balances moved, the
+      // drawer waits for the agent's count ("Count needed"). Only on a plan
+      // with cash management.
+      const countsNeeded =
+        (await entitlementService.canViewCashManagement(authenticated.subscription))
+          ? saved.filter(
+              ({ receipt, id }) =>
+                cash.get(id)?.status === "APPLIED" && isEmptyDenomination(receipt.cashDenomination),
+            )
+          : [];
+
+      if (countsNeeded.length > 0) {
+        await tx.receipt.updateMany({
+          where: { id: { in: countsNeeded.map(({ id }) => id) } },
+          data: { denominationPending: true },
+        });
+      }
+
+      const pendingIds = new Set(countsNeeded.map(({ id }) => id));
+
+      // Cash receipts say whether they changed the balances.
+      for (const [index, { id }] of saved.entries()) {
+        const result = cash.get(id);
+
+        if (result) {
+          acceptedReceipts[index].cash = pendingIds.has(id) ? { status: "APPLIED", denomination: "PENDING" } : result;
+        }
+      }
 
       if (acceptedReceipts.length > 0) {
         await heartbeatRepository.updateLastTransactionAt(
@@ -398,7 +525,7 @@ export default class ReceiptService {
         skipped: result.skippedReceipts.length,
         totalCount,
         acceptedReceipts: result.acceptedReceipts,
-        skippedReceipts: result.skippedReceipts,
+        skippedReceipts: result.skippedReceipts.map(withReasonCode),
       },
     };
   }
@@ -435,38 +562,41 @@ export default class ReceiptService {
     agentIds: string[],
     currentAgentId: string,
   ) {
-    return withReadOnly(async (tx) => {
-      // check for subscription and access validation
+    return withReadOnly(async (tx) => (await this.loadReceipt(tx, receiptId, agentIds, currentAgentId)).detail);
+  }
 
-      // const resolver = new SubscriptionResolver(tx);
+  /**
+   * A receipt the caller can see (after the subscription check), as the raw
+   * row and the detail the app shows. Shared by the detail, slip, PDF and
+   * report-a-problem endpoints.
+   */
+  async loadReceipt(tx: PrismaDb, receiptId: string, agentIds: string[], currentAgentId: string) {
+    const subscription = await new SubscriptionResolver(
+      tx,
+    ).getEffectiveSubscription(currentAgentId);
 
-      // const subscription = await resolver.resolveForAgent(
-      //   filter.currentAgentId,
-      // );
+    SubscriptionAccessValidator.validate(subscription);
 
-      // SubscriptionAccessValidator.validate(subscription);
+    const repository = new ReceiptDetailRepository(tx);
 
-      const repository = new ReceiptDetailRepository(tx);
+    const receipt = await repository.getReceipt(receiptId, agentIds);
 
-      const receipt = await repository.getReceipt(receiptId, agentIds);
+    if (!receipt) {
+      throw new NotFoundError("Receipt not found.");
+    }
 
-      if (!receipt) {
-        throw new NotFoundError("Receipt not found.");
-      }
+    const canViewCash = await new SubscriptionEntitlementService(
+      tx,
+    ).canViewCashManagement(subscription);
 
-      const subscription = await new SubscriptionResolver(
-        tx,
-      ).getEffectiveSubscription(currentAgentId);
+    const rate = receipt.commissionRateId
+      ? await tx.commissionRate.findUnique({ where: { id: receipt.commissionRateId } })
+      : null;
 
-      const canViewCash = await new SubscriptionEntitlementService(
-        tx,
-      ).canViewCashManagement(subscription);
+    const detail = mapReceiptDetail({ ...receipt, commissionRateLabel: rateLabel(rate) });
 
-      const detail = mapReceiptDetail(receipt);
-
-      // Cash denomination is part of CASH_MANAGEMENT on CSP plans.
-      return canViewCash ? detail : { ...detail, cashDenomination: null };
-    });
+    // Cash denomination is part of CASH_MANAGEMENT on CSP plans.
+    return { receipt, detail: canViewCash ? detail : { ...detail, cashDenomination: null } };
   }
 
   async getStats(filter: ReceiptFilter) {

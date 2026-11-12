@@ -1,8 +1,13 @@
 import { PrismaDb } from "../../../core/database/prisma.types";
 import { normalizeDateRange } from "../../../core/utils/date-range.helper";
 
-import { DashboardFilter } from "../dashboard.types";
-import DashboardCommonRepository from "./dashboard-common.repository";
+import { fromIstCalendarDate } from "../../../core/utils/ist";
+import {
+  asReceiptGroups,
+  buildDailyCountWhere,
+} from "../../receipts/repository/receipt-daily-count.repository";
+
+import { DashboardAnalyticsFilter, DashboardFilter } from "../dashboard.types";
 
 export default class DashboardAnalyticsRepository {
   constructor(private readonly db: PrismaDb) {}
@@ -44,10 +49,39 @@ export default class DashboardAnalyticsRepository {
     };
   }
 
+  private buildCountWhere(filter: DashboardFilter) {
+    const { from, to } = normalizeDateRange(filter?.from, filter?.to);
+
+    return buildDailyCountWhere({
+      agentIds: filter.agentIds,
+      machineId: filter.machineId,
+      receiptType: filter.receiptType,
+      transactionCategory: filter.transactionCategory,
+      from,
+      to,
+    });
+  }
+
   /**
-   * Transaction Trend
+   * Transaction Trend. Day and longer buckets come from the daily counts;
+   * hourly buckets need receipt times, so they cover the retention period.
    */
-  async getTransactionTrend(filter: DashboardFilter) {
+  async getTransactionTrend(filter: DashboardAnalyticsFilter) {
+    if (filter.groupBy !== "hour") {
+      const days = await this.db.receiptDailyCount.groupBy({
+        by: ["date"],
+        where: this.buildCountWhere(filter),
+        _sum: { count: true, amount: true },
+        orderBy: { date: "asc" },
+      });
+
+      return days.map((day) => ({
+        transactionAt: fromIstCalendarDate(day.date),
+        amount: day._sum.amount,
+        count: day._sum.count ?? 0,
+      }));
+    }
+
     return this.db.receipt.findMany({
       where: this.buildWhere(filter),
 
@@ -63,7 +97,22 @@ export default class DashboardAnalyticsRepository {
     });
   }
 
-  async getSuccessFailureTrend(filter: DashboardFilter) {
+  async getSuccessFailureTrend(filter: DashboardAnalyticsFilter) {
+    if (filter.groupBy !== "hour") {
+      const days = await this.db.receiptDailyCount.groupBy({
+        by: ["date", "status"],
+        where: this.buildCountWhere(filter),
+        _sum: { count: true },
+        orderBy: { date: "asc" },
+      });
+
+      return days.map((day) => ({
+        transactionAt: fromIstCalendarDate(day.date),
+        status: day.status,
+        count: day._sum.count ?? 0,
+      }));
+    }
+
     return this.db.receipt.findMany({
       where: this.buildWhere(filter),
 
@@ -80,16 +129,13 @@ export default class DashboardAnalyticsRepository {
   }
 
   async getServiceTrend(filter: DashboardFilter) {
-    return this.db.receipt.groupBy({
+    const rows = await this.db.receiptDailyCount.groupBy({
       by: ["transactionCategory"],
 
-      where: this.buildWhere(filter),
-
-      _count: {
-        id: true,
-      },
+      where: this.buildCountWhere(filter),
 
       _sum: {
+        count: true,
         amount: true,
       },
 
@@ -97,8 +143,11 @@ export default class DashboardAnalyticsRepository {
         transactionCategory: "asc",
       },
     });
+
+    return asReceiptGroups(rows);
   }
 
+  // Needs receipt times, so it covers the retention period only.
   async getHourlyDistribution(filter: DashboardFilter) {
     return this.db.receipt.findMany({
       where: this.buildWhere(filter),

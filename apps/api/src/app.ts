@@ -19,6 +19,16 @@ if (env.trustProxy) {
 }
 
 // Middleware
+// Desktop log upload: parts up to 2 MB (gzip allowed, Content-Encoding: gzip).
+app.use(
+  "/api/v1/machines/runtime/diagnostics",
+  express.json({
+    limit: "2200kb",
+    verify: (req, _res, buf) => {
+      (req as express.Request).rawBody = buf;
+    },
+  }),
+);
 app.use(
   express.json({
     limit: "100kb",

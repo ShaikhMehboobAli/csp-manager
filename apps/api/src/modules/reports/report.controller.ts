@@ -9,6 +9,18 @@ import ReportService from "./report.service";
 import { reportSummarySchema } from "./report.validation";
 import { resolveDateRange } from "./helper/report.helper";
 
+/**
+ * `agentId` (or `cspAgentId`) narrows the scope: a CSP means its row with all
+ * its KOs, a KO only that KO.
+ */
+async function selectReportAgents(
+  scopeService: AgentScopeService,
+  agentId: string | undefined,
+  scope: string[],
+) {
+  return agentId ? scopeService.expandSelection(agentId, scope) : scope;
+}
+
 export default class ReportController {
   private readonly service = new ReportService();
 
@@ -24,11 +36,16 @@ export default class ReportController {
     return withReadOnly(async (tx) => {
       const scopeService = new AgentScopeService(tx);
 
-      const agentIds = await scopeService.getAgentScope(req.user!);
-      scopeService.ensureAgentAccessible(query.agentId, agentIds);
+      const agentIds = await selectReportAgents(
+        scopeService,
+        query.agentId ?? query.cspAgentId,
+        await scopeService.getAgentScope(req.user!),
+      );
 
       const result = await this.service.getSummary({
         ...query,
+
+        agentId: undefined,
 
         currentAgentId: req.user!.agentId,
 
@@ -57,11 +74,16 @@ export default class ReportController {
     return withReadOnly(async (tx) => {
       const scopeService = new AgentScopeService(tx);
 
-      const agentIds = await scopeService.getAgentScope(req.user!);
-      scopeService.ensureAgentAccessible(query.agentId, agentIds);
+      const agentIds = await selectReportAgents(
+        scopeService,
+        query.agentId ?? query.cspAgentId,
+        await scopeService.getAgentScope(req.user!),
+      );
 
       const workbook = await this.service.exportReport({
         ...query,
+
+        agentId: undefined,
 
         currentAgentId: req.user!.agentId,
 

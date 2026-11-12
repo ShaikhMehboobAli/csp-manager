@@ -7,8 +7,11 @@ import { UserRole } from "../../generated/prisma/enums";
 
 import * as DesktopSettingsController from "./desktop-settings.controller";
 import {
+  updateBillingSettingsSchema,
   updateDesktopSettingsSchema,
   updateMachineDesktopControlsSchema,
+  updateReceiptFieldsSchema,
+  updateReceiptRetentionSchema,
 } from "./desktop-settings.validation";
 
 const router = Router();
@@ -33,6 +36,35 @@ router.patch(
   "/machines/:machineCode/desktop-controls",
   validate(updateMachineDesktopControlsSchema),
   DesktopSettingsController.updateMachineDesktopControls,
+);
+
+router.get(
+  "/receipt-retention",
+  DesktopSettingsController.getReceiptRetention,
+);
+
+router.patch(
+  "/receipt-retention",
+  validate(updateReceiptRetentionSchema),
+  DesktopSettingsController.updateReceiptRetention,
+);
+
+// Which optional receipt fields the desktop may send (never Aadhaar).
+router.get("/receipt-fields", DesktopSettingsController.getReceiptFields);
+
+router.patch(
+  "/receipt-fields",
+  validate(updateReceiptFieldsSchema),
+  DesktopSettingsController.updateReceiptFields,
+);
+
+// Grace period after a subscription ends and the GST rate on plan prices.
+router.get("/billing-settings", DesktopSettingsController.getBillingSettings);
+
+router.patch(
+  "/billing-settings",
+  validate(updateBillingSettingsSchema),
+  DesktopSettingsController.updateBillingSettings,
 );
 
 export default router;

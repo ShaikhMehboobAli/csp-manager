@@ -3,6 +3,14 @@ import { Prisma } from "../../../generated/prisma/client";
 export interface ActivateMachineInput {
   agentId: string;
 
+  cashInHand?: number;
+
+  cashDenomination?: Partial<Record<string, number>>;
+
+  // Counted cash in hand ≠ what the CSP gave: where the difference came
+  // from / went to.
+  differenceSource?: "CASH_IN_ACCOUNT" | "OTHER";
+
   activationCode: string;
 
   activationPassword: string;

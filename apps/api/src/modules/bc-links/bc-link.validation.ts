@@ -33,3 +33,7 @@ export const listLinkRequestsSchema = z.object({
 
 export type CreateLinkRequestInput = z.infer<typeof createLinkRequestSchema>;
 export type ListLinkRequestsQuery = z.infer<typeof listLinkRequestsSchema>;
+
+export const unlinkCspSchema = z
+  .object({ reason: z.string().trim().max(500).optional() })
+  .default({});
