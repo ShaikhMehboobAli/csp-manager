@@ -1,11 +1,282 @@
 # API reference — endpoints added or changed
 
 **Audience:** backend owner (Postman collection), mobile and admin web teams.
-**Last updated:** 2026-10-25
+**Last updated:** 2026-11-01
 
 Base URL: `{{baseUrl}}` = `http://localhost:3000/api/v1` (dev). Auth: `Bearer {{accessToken}}` for JWT routes; desktop routes authenticate with `machineCode` / `apiKey` / `fingerprint` in the body (no JWT).
 `NEW` = added, `CHANGED` = contract or behaviour changed, `REFERENCE` = unchanged but needed for the flows.
 Full behaviour, errors and UI logic: `docs/mobile-app-kt.md`, `docs/admin-web-kt.md`, `docs/desktop-integration-changes.md`.
+
+## Added or changed on 2026-10-30
+
+Desktop requirements (watcher rule, re-activation/revoke, receipt values, desktop controls, versions), rate limits and payment idempotency. Postman: `csp-manager-apis-2026-10-30.postman_collection.json`.
+
+**Removed:** `POST /receipt`, `POST /api/events`, `POST /api/auth/activate`, `GET /api/config/sync` (now 404).
+
+**Rate limits (429 `Too many requests. Please try again later.`):** all `/api/v1` 600/min per IP · `/auth/*` 20 per 15 min per IP · `/machines/activate` 20 per 15 min per IP · machine runtime + receipt uploads 120/min per machine · `create-order` + `verify` 10/min per user.
+
+**Desktop authentication (all `machines/runtime/*` and `receipts/upload*`):** body credentials as before, **or** headers `X-Machine-Code`, `X-Machine-Fingerprint` plus either `Authorization: Machine <apiKey>` or a device-key signature (`X-Timestamp`, `X-Nonce`, `X-Signature`). A PC activated with `machine.devicePublicKey` must sign every request. Spec: desktop doc item #19. Signed requests can't be built by hand in Postman (use the body/apiKey form for PCs without a device key).
+
+### Activate / re-activate machine — `CHANGED`
+
+`POST {{baseUrl}}/machines/activate` · auth: none (machine credentials in body)
+
+```json
+{
+  "agentId": "{{agentId}}",
+  "activationCode": "K7M2-QX9P-RT4W-HB3N",
+  "activationPassword": "<from assign>",
+  "machine": {
+    "fingerprint": "{{fingerprint}}",
+    "machineName": "Front desk PC",
+    "watcherVersion": "1.0.0",
+    "osName": "Windows"
+  }
+}
+```
+
+Optional `machine.devicePublicKey` (ECDSA P-256 SPKI, base64 DER or PEM) switches the PC to signed requests. Same code + same fingerprint + correct password + same agent on an already-activated PC (e.g. after a format) now re-activates: 201, same machineCode, new apiKey (old key stops working). Same code on a different fingerprint: 400 `Activation has already been used on another machine. Ask the owner to revoke it first.` Rate limit: 20 per 15 min per IP.
+
+### Machine heartbeat — `CHANGED`
+
+`POST {{baseUrl}}/machines/runtime/heartbeat` · auth: none (machine credentials in body)
+
+```json
+{
+  "machineCode": "{{machineCode}}",
+  "apiKey": "{{apiKey}}",
+  "fingerprint": "{{fingerprint}}",
+  "watcherVersion": "1.0.0"
+}
+```
+
+Response adds ownerType, receiptWatcherAllowed, receiptWatcherReason (BC_PLAN | CSP_SUBSCRIPTION | CSP_PLAN), desktopControls { services (12 codes), receiptCashDenominationConfirm }, minimumVersion, downloadUrl; latestWatcherVersion now comes from the super admin settings (env fallback). Rate limit: 120/min per machine (runtime + uploads combined).
+
+### Entitlements — `CHANGED`
+
+`POST {{baseUrl}}/machines/runtime/entitlements` · auth: none (machine credentials in body)
+
+```json
+{
+  "machineCode": "{{machineCode}}",
+  "apiKey": "{{apiKey}}",
+  "fingerprint": "{{fingerprint}}"
+}
+```
+
+Response adds receiptWatcherAllowed, receiptWatcherReason, desktopControls, latestWatcherVersion, minimumVersion, downloadUrl, portalUrl (null for now).
+
+### Upload receipt counts — `CHANGED`
+
+`POST {{baseUrl}}/receipts/upload-counts` · auth: none (machine credentials in body)
+
+```json
+{
+  "machineCode": "{{machineCode}}",
+  "apiKey": "{{apiKey}}",
+  "fingerprint": "{{fingerprint}}",
+  "agentId": "{{agentId}}",
+  "receipts": [
+    {
+      "receiptId": "PASSBOOK-20261027122633123-A1B2C3",
+      "receiptType": "PASSBOOK",
+      "transactionCategory": "PASSBOOK_PRINTING",
+      "transactionType": "Passbook Printing",
+      "transactionAt": "2026-10-27T06:56:33.123Z",
+      "count": 1
+    },
+    {
+      "receiptId": "HAN990104627102026",
+      "receiptType": "PMSBY",
+      "transactionCategory": "SOCIAL_SECURITY",
+      "transactionType": "PMSBY",
+      "transactionAt": "2026-10-27T06:56:12.345Z",
+      "count": 1
+    },
+    {
+      "receiptId": "R-NO-AMOUNT",
+      "receiptType": "AEPS",
+      "transactionCategory": "CASH_DEPOSIT",
+      "transactionType": "Cash Deposit",
+      "count": 1
+    }
+  ]
+}
+```
+
+New values PASSBOOK / PASSBOOK_PRINTING. receiptId unique per agent. Each receipt is validated on its own: an invalid one (the third here) comes back in skippedReceipts with `Invalid receipt (field): message` and the rest are saved. Receipts older than the retention period (default 60 days, super admin sets 15–365) are skipped with `Receipt is older than the receipt retention period.` (don't retry). `totalCount` covers the last 12 months.
+
+### Upload receipts (legacy watcher) — `CHANGED`
+
+`POST {{baseUrl}}/receipts/upload` · auth: none (machine credentials in body)
+
+```json
+{
+  "machineCode": "{{machineCode}}",
+  "apiKey": "{{apiKey}}",
+  "fingerprint": "{{fingerprint}}",
+  "receipts": [
+    {
+      "receiptId": "R-1",
+      "receiptType": "AEPS",
+      "transactionCategory": "CASH_DEPOSIT",
+      "transactionType": "Cash Deposit",
+      "status": "SUCCESS",
+      "transactionAt": "2026-10-25T10:00:00.000Z",
+      "amount": 500
+    }
+  ]
+}
+```
+
+403 `Receipt watcher is not allowed for this machine. Receipts are counted by CSP Manager.` unless receiptWatcherAllowed. 1–20 receipts. receiptId unique per agent.
+
+### Create order (idempotent) — `CHANGED`
+
+`POST {{baseUrl}}/payments/create-order` · auth: Bearer token · header: `Idempotency-Key: <uuid>`
+
+```json
+{
+  "planId": "{{planId}}",
+  "billingCycle": "MONTHLY",
+  "machineCount": 2
+}
+```
+
+Optional header Idempotency-Key (8–128 of A–Z a–z 0–9 - _ : .). Same key → same payment (even after success); same key with a different plan/cycle/count → 409. Concurrent orders per owner are serialised. Rate limit: 10/min per user (create-order + verify). In Postman, {{$guid}} makes a new key per send; fix it to a constant to test retries.
+
+### Verify payment — `CHANGED`
+
+`POST {{baseUrl}}/payments/verify` · auth: Bearer token
+
+```json
+{
+  "paymentId": "{{paymentId}}",
+  "gatewayTransactionId": "TEST-123"
+}
+```
+
+Row-locked. A retry with the same `gatewayTransactionId` after success returns 200 `Payment already verified.` with the same `subscriptionId`. A different `gatewayTransactionId` on a paid payment → 400; one already used by another payment → 409.
+
+### Request revoke (owner) — `NEW`
+
+`POST {{baseUrl}}/activations/{{activationId}}/revoke-requests` · auth: Bearer token
+
+```json
+{
+  "reason": "PC replaced"
+}
+```
+
+CSP_ADMIN / BC_ADMIN. 201, request PENDING; the activation keeps working until approved. 409 if one is already pending; 400 if the activation isn't in use or assigned.
+
+
+### List revoke requests — `NEW`
+
+`GET {{baseUrl}}/activations/revoke-requests?status=PENDING&page=1&limit=20` · auth: Bearer token
+
+Owner: own requests. SUPER_ADMIN: all (optional ownerId, activationId filters).
+
+
+### Revoke request detail — `NEW`
+
+`GET {{baseUrl}}/activations/revoke-requests/{{revokeRequestId}}` · auth: Bearer token
+
+Owner (own) or SUPER_ADMIN.
+
+
+### Cancel revoke request (owner) — `NEW`
+
+`POST {{baseUrl}}/activations/revoke-requests/{{revokeRequestId}}/cancel` · auth: Bearer token
+
+Only while PENDING (409 otherwise).
+
+
+### Approve revoke request (Super Admin) — `NEW`
+
+`POST {{baseUrl}}/activations/revoke-requests/{{revokeRequestId}}/approve` · auth: Bearer token
+
+```json
+{
+  "remarks": "Approved"
+}
+```
+
+Revokes now: PC stops working, code back to NOT_ACTIVATED + unassigned, same expiresAt. Response adds revoked { activationId, activationCode, status, expiresAt, releasedMachineCode }.
+
+
+### Reject revoke request (Super Admin) — `NEW`
+
+`POST {{baseUrl}}/activations/revoke-requests/{{revokeRequestId}}/reject` · auth: Bearer token
+
+```json
+{
+  "remarks": "Use the same PC; re-activate it"
+}
+```
+
+REJECTED; activation unchanged. remarks shown to the owner as reviewRemarks.
+
+
+### Revoke activation directly (Super Admin) — `NEW`
+
+`POST {{baseUrl}}/activations/{{activationId}}/revoke` · auth: Bearer token
+
+SUPER_ADMIN only (owners use revoke-requests). Also closes an open request for it as APPROVED.
+
+### Get desktop settings — `NEW`
+
+`GET {{baseUrl}}/admin/desktop-settings` · auth: Bearer token
+
+SUPER_ADMIN only.
+
+### Update desktop settings — `NEW`
+
+`PATCH {{baseUrl}}/admin/desktop-settings` · auth: Bearer token
+
+```json
+{
+  "services": {
+    "CASH_WITHDRAWAL": false
+  },
+  "receiptCashDenominationConfirm": true,
+  "minimumVersion": "1.0.0",
+  "latestWatcherVersion": "1.0.0",
+  "downloadUrl": null,
+  "portalUrl": null
+}
+```
+
+SUPER_ADMIN only. All fields optional; omitted fields keep their value; null clears a version/URL. Service codes: BALANCE_ENQUIRY, MINI_STATEMENT, CASH_WITHDRAWAL, CASH_DEPOSIT, MONEY_TRANSFER, PASSBOOK_PRINTING, FUND_TRANSFER, TRANSACTION_HISTORY, KYC_UPDATION, ACCOUNT_OPENING, AADHAAR_SEEDING, AEPS_REGISTRATION.
+
+### Get machine desktop controls — `NEW`
+
+`GET {{baseUrl}}/admin/machines/{{machineCode}}/desktop-controls` · auth: Bearer token
+
+SUPER_ADMIN only. Returns { machineCode, override, effective }.
+
+### Update machine desktop controls — `NEW`
+
+`PATCH {{baseUrl}}/admin/machines/{{machineCode}}/desktop-controls` · auth: Bearer token
+
+```json
+{
+  "desktopControls": {
+    "services": {
+      "PASSBOOK_PRINTING": false
+    },
+    "receiptCashDenominationConfirm": false
+  }
+}
+```
+
+SUPER_ADMIN only. `{ "desktopControls": null }` removes the override. A service is off when the global switch or the machine override turns it off.
+
+### Report summary — `CHANGED`
+
+`GET {{baseUrl}}/reports/summary?period=CURRENT_MONTH` · auth: Bearer token
+
+Rows add passbookPrint, socialSecurity, pmjjby, pmsby, apy, otherSocialSecurity. The Excel export adds the matching columns.
 
 ## Auth
 

@@ -1,5 +1,7 @@
 import { PrismaDb } from "../../../core/database/prisma.types";
 
+import { asReceiptGroups } from "../../receipts/repository/receipt-daily-count.repository";
+
 import DashboardCommonRepository from "./dashboard-common.repository";
 
 import { DashboardFilter } from "../dashboard.types";
@@ -15,16 +17,13 @@ export default class DashboardServiceRepository extends DashboardCommonRepositor
    * Service Summary
    */
   async getServiceSummary(filter: DashboardFilter) {
-    return this.db.receipt.groupBy({
+    const rows = await this.db.receiptDailyCount.groupBy({
       by: ["transactionCategory", "receiptType", "status"],
 
-      where: this.buildReceiptWhere(filter),
-
-      _count: {
-        id: true,
-      },
+      where: this.buildCountWhere(filter),
 
       _sum: {
+        count: true,
         amount: true,
       },
 
@@ -32,25 +31,29 @@ export default class DashboardServiceRepository extends DashboardCommonRepositor
         transactionCategory: "asc",
       },
     });
+
+    return asReceiptGroups(rows);
   }
 
   /**
    * Overall Status Summary
    */
   async getStatusSummary(filter: DashboardFilter) {
-    return this.db.receipt.groupBy({
+    const rows = await this.db.receiptDailyCount.groupBy({
       by: ["status"],
 
-      where: this.buildReceiptWhere(filter),
+      where: this.buildCountWhere(filter),
 
-      _count: {
-        id: true,
+      _sum: {
+        count: true,
       },
     });
+
+    return asReceiptGroups(rows);
   }
 
   /**
-   * Recent Transactions
+   * Recent Transactions (receipts, so within the retention period)
    */
   async getRecentTransactions(filter: DashboardFilter) {
     return this.db.receipt.findMany({
@@ -90,27 +93,26 @@ export default class DashboardServiceRepository extends DashboardCommonRepositor
    * Top Services
    */
   async getTopServices(filter: DashboardFilter) {
-    return this.db.receipt.groupBy({
+    const rows = await this.db.receiptDailyCount.groupBy({
       by: ["transactionCategory"],
 
-      where: this.buildReceiptWhere(filter),
-
-      _count: {
-        id: true,
-      },
+      where: this.buildCountWhere(filter),
 
       _sum: {
+        count: true,
         amount: true,
       },
 
       orderBy: {
-        _count: {
-          id: "desc",
+        _sum: {
+          count: "desc",
         },
       },
 
       take: DASHBOARD_RECENT_TRANSACTION_LIMIT,
     });
+
+    return asReceiptGroups(rows);
   }
 
   //   async getMachineSummary(machineId: string) {

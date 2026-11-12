@@ -33,6 +33,26 @@ router.get(
   SubscriptionController.getCurrentSubscription,
 );
 
+// What the CSP's plan opens (app screens, desktop), renewal / mandate,
+// upgrade window and cancel state. BC / admin: not gated.
+router.get("/access", authMiddleware, SubscriptionController.getAccess);
+
+// Price of a purchase or an upgrade (difference only) before create-order.
+router.post(
+  "/quote",
+  authMiddleware,
+  authorize(UserRole.CSP_ADMIN),
+  SubscriptionController.quoteOrder,
+);
+
+// Cancel: no refund, usable until the end date, the UPI mandate is cancelled.
+router.post(
+  "/current/cancel",
+  authMiddleware,
+  authorize(UserRole.CSP_ADMIN),
+  SubscriptionController.cancelSubscription,
+);
+
 router.get(
   "/history",
   authMiddleware,

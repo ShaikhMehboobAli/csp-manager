@@ -1,4 +1,6 @@
 import { PrismaDb } from "../../../core/database/prisma.types";
+import { fromIstCalendarDate } from "../../../core/utils/ist";
+import { buildDailyCountWhere } from "../../receipts/repository/receipt-daily-count.repository";
 
 export class DashboardCspDetailRepository {
   constructor(private readonly db: PrismaDb) {}
@@ -13,7 +15,8 @@ export class DashboardCspDetailRepository {
       where: {
         agentId: cspAgentId,
         type: "CSP",
-        bcId: bcAgentId,
+        // Access is enforced by the caller's agent scope (BC: its CSPs,
+        // CSP: itself, SUPER_ADMIN: all), so no bcId filter here.
         isDeleted: false,
       },
       select: {
@@ -50,22 +53,17 @@ export class DashboardCspDetailRepository {
       },
     });
 
-    const [receipts, manualMetricValues] = await Promise.all([
-      this.db.receipt.findMany({
+    const [dailyCounts, manualMetricValues] = await Promise.all([
+      this.db.receiptDailyCount.groupBy({
+        by: ["date", "agentId", "receiptType", "transactionCategory"],
         where: {
+          ...buildDailyCountWhere({ from, to }),
           agentId: {
             in: hierarchyAgentIds,
           },
-          transactionAt: {
-            gte: from,
-            lte: to,
-          },
         },
-        select: {
-          agentId: true,
-          receiptType: true,
-          transactionCategory: true,
-          transactionAt: true,
+        _sum: {
+          count: true,
         },
       }),
 
@@ -90,6 +88,15 @@ export class DashboardCspDetailRepository {
         },
       }),
     ]);
+
+    // One row per IST day and receipt kind; `count` receipts each.
+    const receipts = dailyCounts.map((row) => ({
+      agentId: row.agentId,
+      receiptType: row.receiptType,
+      transactionCategory: row.transactionCategory,
+      transactionAt: fromIstCalendarDate(row.date),
+      count: row._sum.count ?? 0,
+    }));
 
     return {
       csp,
