@@ -99,11 +99,20 @@ npx prisma migrate deploy
 echo "🔨 Building TypeScript API..."
 NODE_OPTIONS="--max-old-space-size=2048" npm run build
 
-echo "🔄 Starting / Reloading PM2 process..."
-if pm2 describe csp-manager-api > /dev/null 2>&1; then
-  pm2 reload ecosystem.config.js --env production --update-env
+# Resolve PM2 executable (system path, local node_modules, or npx fallback)
+if command -v pm2 > /dev/null 2>&1; then
+  PM2_CMD="pm2"
+elif [ -x "$API_DIR/node_modules/.bin/pm2" ]; then
+  PM2_CMD="$API_DIR/node_modules/.bin/pm2"
 else
-  pm2 start ecosystem.config.js --env production --update-env
+  PM2_CMD="npx pm2"
+fi
+
+echo "🔄 Starting / Reloading PM2 process via $PM2_CMD..."
+if $PM2_CMD describe csp-manager-api > /dev/null 2>&1; then
+  $PM2_CMD reload ecosystem.config.js --env production --update-env
+else
+  $PM2_CMD start ecosystem.config.js --env production --update-env
 fi
 
 # 5. Deploy Frontend (apps/web) - Skipped until added
@@ -115,10 +124,10 @@ if [ -d "$WEB_DIR" ] && [ -f "$WEB_DIR/package.json" ]; then
   npm install
   npm run build
   if [ -f "$WEB_DIR/ecosystem.config.js" ]; then
-    if pm2 describe csp-manager-web > /dev/null 2>&1; then
-      pm2 reload ecosystem.config.js --env production --update-env
+    if $PM2_CMD describe csp-manager-web > /dev/null 2>&1; then
+      $PM2_CMD reload ecosystem.config.js --env production --update-env
     else
-      pm2 start ecosystem.config.js --env production --update-env
+      $PM2_CMD start ecosystem.config.js --env production --update-env
     fi
   fi
 else
@@ -128,10 +137,10 @@ fi
 # 6. Save PM2 state
 echo ""
 echo "💾 [4/4] Saving PM2 state..."
-pm2 save
+$PM2_CMD save
 
 echo ""
 echo "=========================================="
 echo "✅ Deployment completed successfully!"
 echo "=========================================="
-pm2 status csp-manager-api
+$PM2_CMD status csp-manager-api
