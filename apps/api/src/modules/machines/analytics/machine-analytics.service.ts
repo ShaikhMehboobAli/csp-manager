@@ -1,4 +1,4 @@
-import { withTransaction } from "../../../core/database/transaction";
+import { withReadOnly } from "../../../core/database/transaction";
 import { NotFoundError } from "../../../core/errors/NotFoundError";
 import { CurrentUser } from "../../../core/types/auth.types";
 
@@ -22,7 +22,7 @@ export default class MachineAnalyticsService {
     >,
     user: CurrentUser,
   ) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       // Validate subscription
       const resolver = new SubscriptionResolver(tx);
 

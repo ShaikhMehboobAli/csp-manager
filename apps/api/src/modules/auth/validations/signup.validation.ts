@@ -5,6 +5,7 @@ import {
   addressValidator,
   agentIdValidator,
   emailValidator,
+  moneyValidator,
   nameValidator,
   passwordValidator,
   phoneValidator,
@@ -27,10 +28,35 @@ export const signupSchema = z
     password: passwordValidator,
 
     confirmPassword: passwordValidator,
+
+    // CSP only (required): the opening cash in hand and cash in account.
+    // The CSP limit is their sum; `cspLimit` is accepted from older apps and
+    // ignored.
+    cashInHand: moneyValidator("Cash in hand"),
+
+    cashInAccount: moneyValidator("Cash in account"),
+
+    cspLimit: moneyValidator("CSP limit"),
   })
   .refine((data) => data.password === data.confirmPassword, {
     message: "Passwords do not match.",
     path: ["confirmPassword"],
+  })
+  .superRefine((data, ctx) => {
+    if (data.accountType !== "CSP") {
+      return;
+    }
+
+    const required = [
+      ["cashInHand", "Cash in hand is required."],
+      ["cashInAccount", "Cash in account is required."],
+    ] as const;
+
+    for (const [field, message] of required) {
+      if (data[field] === undefined) {
+        ctx.addIssue({ code: "custom", path: [field], message });
+      }
+    }
   });
 
 export type SignupDto = z.infer<typeof signupSchema>;

@@ -1,3 +1,5 @@
+import { addDays, istDateKey, startOfIstDay } from "../../../core/utils/ist";
+
 export interface DailySessionChunk {
   date: string;
   seconds: number;
@@ -12,11 +14,8 @@ export function splitSessionAcrossDays(
   let current = new Date(startedAt);
 
   while (current < endedAt) {
-    // Beginning of next day (UTC)
-    const nextDay = new Date(current);
-
-    nextDay.setUTCDate(nextDay.getUTCDate() + 1);
-    nextDay.setUTCHours(0, 0, 0, 0);
+    // Beginning of the next IST day
+    const nextDay = addDays(startOfIstDay(current), 1);
 
     const intervalEnd = nextDay < endedAt ? nextDay : endedAt;
 
@@ -25,7 +24,7 @@ export function splitSessionAcrossDays(
     );
 
     chunks.push({
-      date: current.toISOString().split("T")[0],
+      date: istDateKey(current),
       seconds,
     });
 

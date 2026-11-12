@@ -1,6 +1,6 @@
 import { PrismaDb } from "../../core/database/prisma.types";
 
-import { withTransaction } from "../../core/database/transaction";
+import { withReadOnly } from "../../core/database/transaction";
 
 import ReportSummaryRepository from "./repository/report-summary.repository";
 
@@ -10,10 +10,21 @@ import { mapReportSummary } from "./report.mapper";
 import { generateReportWorkbook } from "./helper/report-export.helper";
 import SubscriptionResolver from "../subscriptions/subscription-validator/subscription-resolver.service";
 import SubscriptionAccessValidator from "../subscriptions/subscription-validator/subscription-access-validator";
+import SubscriptionEntitlementService from "../subscriptions/subscription-entitlement.service";
+import { ReportSummaryRow } from "./repository/report-summary.repository";
+
+// Opening/closing balance are float figures, hidden without CASH_MANAGEMENT.
+function hideBalances(rows: ReportSummaryRow[]): ReportSummaryRow[] {
+  return rows.map((row) => ({
+    ...row,
+    openingBalance: null,
+    closingBalance: null,
+  }));
+}
 
 export default class ReportService {
   async getSummary(filter: ReportFilter) {
-    return withTransaction(async (tx: PrismaDb) => {
+    return withReadOnly(async (tx: PrismaDb) => {
       // check for subscription and access validation
 
       const resolver = new SubscriptionResolver(tx);
@@ -28,12 +39,16 @@ export default class ReportService {
 
       const rows = await repository.getSummary(filter);
 
-      return mapReportSummary(rows);
+      const canViewFloat = await new SubscriptionEntitlementService(
+        tx,
+      ).canViewCashManagement(subscription);
+
+      return mapReportSummary(canViewFloat ? rows : hideBalances(rows));
     });
   }
 
   async exportReport(filter: ReportFilter) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       // check for subscription and access validation
 
       const resolver = new SubscriptionResolver(tx);
@@ -48,7 +63,11 @@ export default class ReportService {
 
       const rows = await repository.getSummary(filter);
 
-      return generateReportWorkbook(rows);
+      const canViewFloat = await new SubscriptionEntitlementService(
+        tx,
+      ).canViewCashManagement(subscription);
+
+      return generateReportWorkbook(canViewFloat ? rows : hideBalances(rows));
     });
   }
 }

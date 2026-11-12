@@ -29,6 +29,21 @@ export const features = [
     description: "Mobile application tracking features.",
     category: FeatureCategory.DASHBOARD,
   },
+  {
+    code: "CSP_LINKING",
+    name: "CSP Linking",
+    description:
+      "Link already-subscribed CSPs to the BC (admin-approved) to share their data.",
+    category: FeatureCategory.USER,
+  },
+] as const;
+
+// Legacy BC plans (machine activations) are not feature-gated.
+const LEGACY_BC_FEATURES = [
+  "DESKTOP_AUTOMATION",
+  "RECEIPT_SYNC",
+  "CASH_MANAGEMENT",
+  "MOBILE_TRACKING",
 ] as const;
 
 export const plans = [
@@ -46,7 +61,7 @@ export const plans = [
         price: 199,
       },
     ],
-    featureCodes: [],
+    featureCodes: LEGACY_BC_FEATURES,
   },
 
   {
@@ -63,7 +78,39 @@ export const plans = [
         price: 399,
       },
     ],
-    featureCodes: [],
+    featureCodes: LEGACY_BC_FEATURES,
+  },
+
+  /**
+   * BC ₹799: no machine activations. The BC links already-subscribed CSPs
+   * (SUPER_ADMIN approves) and sees their data while their plan is active.
+   * Seed prices are initial values only; SUPER_ADMIN owns them afterwards.
+   */
+  {
+    code: "BC_CSP_LINK",
+    name: "BC CSP Link",
+    ownerType: PlanOwnerType.BC,
+    level: 3,
+    machineLimit: 0,
+
+    pricing: [
+      {
+        billingCycle: BillingCycle.MONTHLY,
+        durationDays: 30,
+        price: 799,
+      },
+      {
+        billingCycle: BillingCycle.HALF_YEARLY,
+        durationDays: 180,
+        price: 799 * 6,
+      },
+      {
+        billingCycle: BillingCycle.YEARLY,
+        durationDays: 365,
+        price: 799 * 12,
+      },
+    ],
+    featureCodes: ["CSP_LINKING", "CASH_MANAGEMENT"],
   },
 
   {
@@ -83,26 +130,10 @@ export const plans = [
     featureCodes: ["DESKTOP_AUTOMATION", "RECEIPT_SYNC"],
   },
 
-  {
-    code: "CSP_AUTOMATION_CASH_MANAGEMENT",
-    name: "CSP Automation + Cash Management",
-    ownerType: PlanOwnerType.CSP,
-    level: 2,
-    machineLimit: 1,
-
-    pricing: [
-      {
-        billingCycle: BillingCycle.MONTHLY,
-        durationDays: 30,
-        price: 450,
-      },
-    ],
-    featureCodes: [
-      "DESKTOP_AUTOMATION",
-      "RECEIPT_SYNC",
-      "CASH_MANAGEMENT",
-    ],
-  },
+  // CSP_AUTOMATION_CASH_MANAGEMENT (₹450) was removed on 2026-11-07: CSP
+  // plans are ₹250 (automation only) and ₹550 (complete, incl. cash
+  // management and the app). The seed deactivates it; running
+  // subscriptions on it keep working until they end and can upgrade.
 
   {
     code: "CSP_COMPLETE",

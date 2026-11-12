@@ -407,8 +407,17 @@ function mapCspAsChild(
 }
 
 function mapFloat(float: any): FloatSummary | null {
+  // No float row yet: zeros, like dashboard and machine detail. A null
+  // float means "hidden by plan" (no CASH_MANAGEMENT).
   if (!float) {
-    return null;
+    return {
+      openingFloat: 0,
+      currentCashInHand: 0,
+      currentCashInAccount: 0,
+      currentTotalFloat: 0,
+      lastReceiptAt: null,
+      lastReceiptUpdatedAt: null,
+    };
   }
 
   return {

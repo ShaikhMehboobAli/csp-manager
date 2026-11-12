@@ -1,4 +1,5 @@
 import CspVisitRepository from "./csp-visit.repository";
+import { istInstant, istParts } from "../../core/utils/ist";
 import { CreateCspVisitInput } from "./csp-visit.dto";
 import CodeGeneratorService from "../../core/services/code-generator.service";
 import RunningNumberRepository from "../../core/repositories/running-number.repository";
@@ -62,31 +63,12 @@ export default class CspVisitService {
       throw new BadRequestError("Invalid CSP agent.");
     }
 
-    const visitDate = new Date(input.visitDate);
+    // One visit per CSP per IST calendar month.
+    const { year, month } = istParts(new Date(input.visitDate));
 
-    const monthStart = new Date(
-      Date.UTC(
-        visitDate.getUTCFullYear(),
-        visitDate.getUTCMonth(),
-        1,
-        0,
-        0,
-        0,
-        0,
-      ),
-    );
+    const monthStart = istInstant(year, month, 1);
 
-    const monthEnd = new Date(
-      Date.UTC(
-        visitDate.getUTCFullYear(),
-        visitDate.getUTCMonth() + 1,
-        0,
-        23,
-        59,
-        59,
-        999,
-      ),
-    );
+    const monthEnd = istInstant(year, month + 1, 0, 23, 59, 59, 999);
 
     const existingVisit = await this.visitRepository.findByCspAndDateRange(
       input.cspAgentId,

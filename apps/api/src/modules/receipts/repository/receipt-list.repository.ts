@@ -1,4 +1,6 @@
 import { PrismaDb } from "../../../core/database/prisma.types";
+import { normalizeDateRange } from "../../../core/utils/date-range.helper";
+import { buildDailyCountWhere } from "./receipt-daily-count.repository";
 
 import ReceiptCommonRepository from "./receipt-common.repository";
 
@@ -35,6 +37,10 @@ export default class ReceiptListRepository extends ReceiptCommonRepository {
 
         select: {
           receiptId: true,
+
+          source: true,
+
+          denominationPending: true,
 
           receiptType: true,
 
@@ -84,6 +90,12 @@ export default class ReceiptListRepository extends ReceiptCommonRepository {
    * Receipt Statistics
    */
   async getStats(filter: ReceiptFilter) {
+    // A text search needs the receipts (retention period only); otherwise
+    // the daily counts give the same totals for up to a year.
+    if (!filter.search) {
+      return this.getStatsFromDailyCounts(filter);
+    }
+
     const where = this.buildReceiptWhere(filter);
 
     const [total, success, failed, totalAmount] = await Promise.all([
@@ -116,6 +128,7 @@ export default class ReceiptListRepository extends ReceiptCommonRepository {
 
         _sum: {
           amount: true,
+          commissionAmount: true,
         },
       }),
     ]);
@@ -128,6 +141,53 @@ export default class ReceiptListRepository extends ReceiptCommonRepository {
       failed,
 
       totalAmount: Number(totalAmount._sum.amount ?? 0),
+
+      // What the CSP earned on these receipts.
+      commissionAmount: Number(totalAmount._sum.commissionAmount ?? 0),
+    };
+  }
+
+  private async getStatsFromDailyCounts(filter: ReceiptFilter) {
+    const { from, to } = normalizeDateRange(filter.from, filter.to);
+
+    const byStatus = await this.db.receiptDailyCount.groupBy({
+      by: ["status"],
+
+      where: buildDailyCountWhere({
+        agentId: filter.agentId,
+        agentIds: filter.agentIds,
+        machineId: filter.machineId,
+        receiptType: filter.receiptType,
+        receiptTypes: filter.receiptTypes,
+        transactionCategory: filter.transactionCategory,
+        transactionCategories: filter.transactionCategories,
+        status: filter.status,
+        from: filter.from && from,
+        to: filter.to && to,
+      }),
+
+      _sum: {
+        count: true,
+
+        amount: true,
+
+        commissionAmount: true,
+      },
+    });
+
+    const of = (status: string) =>
+      byStatus.find((row) => row.status === status)?._sum;
+
+    return {
+      total: byStatus.reduce((total, row) => total + (row._sum.count ?? 0), 0),
+
+      success: of("SUCCESS")?.count ?? 0,
+
+      failed: of("FAILED")?.count ?? 0,
+
+      totalAmount: Number(of("SUCCESS")?.amount ?? 0),
+
+      commissionAmount: Number(of("SUCCESS")?.commissionAmount ?? 0),
     };
   }
 

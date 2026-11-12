@@ -13,6 +13,7 @@ import {
   mapMachineSummary,
   mapRecentTransactions,
   mapServiceSummary,
+  mapServicesByCategory,
   mapServiceTrend,
   mapStatusSummary,
   mapSuccessFailureTrend,
@@ -28,7 +29,39 @@ import SubscriptionResolver from "../subscriptions/subscription-validator/subscr
 import SubscriptionAccessValidator from "../subscriptions/subscription-validator/subscription-access-validator";
 import { getDashboardDateRange } from "../../core/utils/dashboard-date-range";
 import DashboardCspSummaryRepository from "./repository/dashboard-csp-summary.repository";
+import SubscriptionEntitlementService from "../subscriptions/subscription-entitlement.service";
+
+/**
+ * Nulls the per-machine float figures in machine monitoring.
+ */
+function hideMonitoringFloat<T>(summary: T): T {
+  if (
+    !summary ||
+    typeof summary !== "object" ||
+    !("monitoring" in summary) ||
+    !Array.isArray(summary.monitoring)
+  ) {
+    return summary;
+  }
+
+  return {
+    ...summary,
+    monitoring: summary.monitoring.map((item: Record<string, unknown>) => ({
+      ...item,
+      openingFloat: null,
+      currentCashInHand: null,
+      currentCashInAccount: null,
+      currentTotalFloat: null,
+      lastReceiptAt: null,
+      lastReceiptUpdatedAt: null,
+    })),
+  };
+}
 import { DashboardCspDetailRepository } from "./repository/dashboard-csp-detail.repository";
+import { addDays, istDateKey, istMonthKey } from "../../core/utils/ist";
+import CommissionService from "../commission/commission.service";
+import CashService from "../cash/cash.service";
+import { DRAWER_KEYS, drawerTotal, emptyDrawer } from "../cash/cash.constants";
 
 export default class DashboardService {
   private readonly overviewRepository: DashboardOverviewRepository;
@@ -78,23 +111,28 @@ export default class DashboardService {
       to,
     };
 
-    const currentAgent = await this.db.agent.findUnique({
-      where: {
-        agentId: dashboardFilter.currentAgentId,
-      },
-      select: {
-        type: true,
-      },
-    });
+    const [currentAgent, subscription] = await Promise.all([
+      this.db.agent.findUnique({
+        where: {
+          agentId: dashboardFilter.currentAgentId,
+        },
+        select: {
+          type: true,
+        },
+      }),
+
+      this.subscriptionResolver.getEffectiveSubscription(
+        dashboardFilter.currentAgentId,
+      ),
+    ]);
 
     const isBc = currentAgent?.type === "BC";
 
-    const subscription =
-      await this.subscriptionResolver.getEffectiveSubscription(
-        dashboardFilter.currentAgentId,
-      );
-
     SubscriptionAccessValidator.validate(subscription);
+
+    const canViewFloat = await new SubscriptionEntitlementService(
+      this.db,
+    ).canViewCashManagement(subscription);
     // if (filter.agentIds.length === 0) {
     //   throw new BadRequestError("No accessible agents found.");
     // }
@@ -132,13 +170,16 @@ export default class DashboardService {
         : this.machineRepository.getMachineMonitoring(dashboardFilter),
 
       this.activationRepository.getActivationSummary(dashboardFilter),
-      this.subscriptionResolver.getEffectiveSubscription(filter.currentAgentId),
+
+      // Already resolved above for the access check.
+      subscription,
 
       isBc
         ? this.cspSummaryRepository.getCspSummary(
             dashboardFilter.currentAgentId,
             dashboardFilter.from!,
             dashboardFilter.to!,
+            dashboardFilter.agentIds,
           )
         : null,
       //   this.machineRepository.getCspMachineSummary(filter),
@@ -166,17 +207,31 @@ export default class DashboardService {
       overview: calculateOverview(overview),
 
       // float: mapFloatSummary(floatSummary),
+      // Float figures are null for CSP plans without CASH_MANAGEMENT.
       ...(isSingleAgentView
         ? {
-            float: mapFloatSummary(floatSummary),
+            float: canViewFloat ? mapFloatSummary(floatSummary) : null,
 
             machine: mapMachineSummary(machineSummary),
           }
         : {
-            machineMonitoring: machineSummary,
+            machineMonitoring: canViewFloat
+              ? machineSummary
+              : hideMonitoringFloat(machineSummary),
           }),
 
       services: mapServiceSummary(serviceSummary),
+
+      servicesByCategory: mapServicesByCategory(serviceSummary),
+
+      // Shared limit / cash in account per CSP, every agent's cash in hand and
+      // drawer; null for CSP plans without CASH_MANAGEMENT.
+      cash: canViewFloat ? await this.getCashSummary(dashboardFilter.agentIds, isBc) : null,
+
+      // Commission the CSPs in view earn: today and this month (1st → today, IST).
+      commission: await new CommissionService(this.db).todayAndMonth(
+        dashboardFilter.agentIds.length ? dashboardFilter.agentIds : null,
+      ),
 
       statusSummary: mapStatusSummary(statusSummary),
 
@@ -214,6 +269,64 @@ export default class DashboardService {
             cspSummary,
           }
         : {}),
+    };
+  }
+
+  /**
+   * Cash for the agents in view, grouped by their CSP's pool. A BC sees the
+   * cash limit and its distribution only (no other cash / extra dues).
+   */
+  private async getCashSummary(agentIds: string[], isBc = false) {
+    // The super admin's whole-system view has no agent list; pick an agent.
+    if (agentIds.length === 0) {
+      return null;
+    }
+
+    const agents = await this.db.agent.findMany({
+      where: { agentId: { in: agentIds }, type: { in: ["CSP", "KO"] } },
+      select: { agentId: true, type: true, parentAgentId: true },
+    });
+
+    const cspIds = [
+      ...new Set(
+        agents
+          .map((agent) => (agent.type === "CSP" ? agent.agentId : agent.parentAgentId))
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+
+    const views = await new CashService(this.db).getViews(cspIds, agentIds);
+    const pools = isBc
+      ? views.map(({ cashOther: _other, cashDueExtra: _dueExtra, ...pool }) => pool)
+      : views;
+    const drawer = emptyDrawer();
+
+    for (const pool of views) {
+      for (const key of DRAWER_KEYS) {
+        drawer[key] += pool.drawer[key];
+      }
+    }
+
+    const sum = (pick: (pool: (typeof views)[number]) => number | null) =>
+      Number(views.reduce((total, pool) => total + (pick(pool) ?? 0), 0).toFixed(2));
+
+    return {
+      totals: {
+        cashLimit: sum((pool) => pool.cashLimit),
+        cashInAccount: sum((pool) => pool.cashInAccount),
+        cashInTransit: sum((pool) => pool.cashInTransit),
+        cashLeftInBank: sum((pool) => pool.cashLeftInBank),
+        ...(isBc
+          ? {}
+          : {
+              cashOther: sum((pool) => pool.cashOther),
+              cashDueExtra: sum((pool) => pool.cashDueExtra),
+            }),
+        totalCashInHand: sum((pool) => pool.totalCashInHand),
+        drawer,
+        drawerTotal: drawerTotal(drawer),
+      },
+      pools,
     };
   }
 
@@ -290,7 +403,7 @@ export default class DashboardService {
       return {
         agentId: result.csp.agentId,
         cspName: result.csp.name,
-        month: from.toISOString().slice(0, 7),
+        month: istMonthKey(from),
         section,
         socialSecurity: this.buildSocialSecurityDailyData(result, from, to),
       };
@@ -299,7 +412,7 @@ export default class DashboardService {
     return {
       agentId: result.csp.agentId,
       cspName: result.csp.name,
-      month: from.toISOString().slice(0, 7),
+      month: istMonthKey(from),
       section,
       transaction: this.buildTransactionDailyData(result, from, to),
     };
@@ -321,7 +434,7 @@ export default class DashboardService {
     const manualMap = new Map<string, number>();
 
     for (const value of result.manualMetricValues) {
-      const dateKey = value.date.toISOString().slice(0, 10);
+      const dateKey = istDateKey(value.date);
 
       const key = `${dateKey}:${value.metricId}`;
 
@@ -335,23 +448,23 @@ export default class DashboardService {
         continue;
       }
 
-      const dateKey = receipt.transactionAt.toISOString().slice(0, 10);
+      const dateKey = istDateKey(receipt.transactionAt);
 
       const keys = [receipt.receiptType, receipt.transactionCategory];
 
       for (const key of keys) {
         const mapKey = `${dateKey}:${key}`;
 
-        receiptMap.set(mapKey, (receiptMap.get(mapKey) ?? 0) + 1);
+        receiptMap.set(mapKey, (receiptMap.get(mapKey) ?? 0) + receipt.count);
       }
     }
 
     for (
       let current = new Date(from);
       current <= to;
-      current.setUTCDate(current.getUTCDate() + 1)
+      current = addDays(current, 1)
     ) {
-      const dateKey = current.toISOString().slice(0, 10);
+      const dateKey = istDateKey(current);
 
       const metrics = result.metricDefinitions.map((metric) => {
         let value = 0;
@@ -395,53 +508,46 @@ export default class DashboardService {
     for (
       let current = new Date(from);
       current <= to;
-      current.setUTCDate(current.getUTCDate() + 1)
+      current = addDays(current, 1)
     ) {
-      const dateKey = current.toISOString().slice(0, 10);
+      const dateKey = istDateKey(current);
 
       const dayReceipts = result.receipts.filter(
         (receipt) =>
-          receipt.transactionAt?.toISOString().slice(0, 10) === dateKey,
+          receipt.transactionAt &&
+          istDateKey(receipt.transactionAt) === dateKey,
       );
+
+      const countOf = (category: string) =>
+        dayReceipts
+          .filter((receipt) => receipt.transactionCategory === category)
+          .reduce((total, receipt) => total + receipt.count, 0);
 
       rows.push({
         date: dateKey,
 
-        totalTxn: dayReceipts.length,
+        totalTxn: dayReceipts.reduce(
+          (total, receipt) => total + receipt.count,
+          0,
+        ),
 
-        passbookPrinter: 0,
+        passbookPrinter: countOf("PASSBOOK_PRINTING"),
 
-        cashWithdrawal: dayReceipts.filter(
-          (receipt) => receipt.transactionCategory === "CASH_WITHDRAWAL",
-        ).length,
+        cashWithdrawal: countOf("CASH_WITHDRAWAL"),
 
-        cashDeposit: dayReceipts.filter(
-          (receipt) => receipt.transactionCategory === "CASH_DEPOSIT",
-        ).length,
+        cashDeposit: countOf("CASH_DEPOSIT"),
 
-        microAtmTxn: dayReceipts.filter(
-          (receipt) => receipt.transactionCategory === "MICRO_ATM",
-        ).length,
+        microAtmTxn: countOf("MICRO_ATM"),
 
-        accountOpening: dayReceipts.filter(
-          (receipt) => receipt.transactionCategory === "ACCOUNT_OPENING",
-        ).length,
+        accountOpening: countOf("ACCOUNT_OPENING"),
 
-        miniStatement: dayReceipts.filter(
-          (receipt) => receipt.transactionCategory === "MINI_STATEMENT",
-        ).length,
+        miniStatement: countOf("MINI_STATEMENT"),
 
-        balanceInquiry: dayReceipts.filter(
-          (receipt) => receipt.transactionCategory === "BALANCE_ENQUIRY",
-        ).length,
+        balanceInquiry: countOf("BALANCE_ENQUIRY"),
 
-        moneyTransfer: dayReceipts.filter(
-          (receipt) => receipt.transactionCategory === "MONEY_TRANSFER",
-        ).length,
+        moneyTransfer: countOf("MONEY_TRANSFER"),
 
-        fundTransfer: dayReceipts.filter(
-          (receipt) => receipt.transactionCategory === "FUND_TRANSFER",
-        ).length,
+        fundTransfer: countOf("FUND_TRANSFER"),
       });
     }
 

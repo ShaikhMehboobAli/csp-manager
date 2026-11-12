@@ -1,4 +1,4 @@
-import { withTransaction } from "../../core/database/transaction";
+import { withTransaction, withReadOnly } from "../../core/database/transaction";
 import { CurrentUser } from "../../core/types/auth.types";
 import { BadRequestError } from "../../core/errors/BadRequestError";
 import { NotFoundError } from "../../core/errors/NotFoundError";
@@ -11,7 +11,7 @@ import {
 
 export default class MetricService {
   async getMetrics(filter: MetricListFilter, user: CurrentUser) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const repository = new MetricRepository(tx);
 
       const where = {
@@ -33,7 +33,7 @@ export default class MetricService {
   }
 
   async getMetric(metricId: string, user: CurrentUser) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       const repository = new MetricRepository(tx);
 
       const metric = await repository.findById(metricId);
