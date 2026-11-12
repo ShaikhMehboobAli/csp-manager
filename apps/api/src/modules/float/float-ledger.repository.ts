@@ -26,10 +26,10 @@ export default class FloatLedgerRepository {
     });
   }
 
-  async findByReceiptId(receiptId: string) {
+  async findByReceiptRecordId(receiptRecordId: string) {
     return this.db.floatLedger.findFirst({
       where: {
-        receiptId,
+        receiptRecordId,
       },
     });
   }

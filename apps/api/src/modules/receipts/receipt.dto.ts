@@ -10,7 +10,7 @@ import {
 
 export interface UploadReceiptRequest {
   machineCode: string;
-  apiKey: string;
+  apiKey?: string;
   fingerprint: string;
 
   receipts: ReceiptPayload[];
@@ -43,6 +43,13 @@ export interface ReceiptPayload {
   customerAccount?: string;
 
   location?: string;
+
+  // Optional extra fields (kept only when the super admin allows them).
+  bankName?: string;
+  balanceAfter?: number;
+  bankTransactionId?: string;
+  bankResponseCode?: string;
+  bankResponseMessage?: string;
 }
 
 export type UploadReceiptCountsPayload = UploadReceiptCountsRequest;

@@ -96,6 +96,12 @@ export async function generateReportWorkbook(rows: ReportSummaryRow[]) {
     },
 
     {
+      header: "Other Social Security",
+      key: "otherSocialSecurity",
+      width: 22,
+    },
+
+    {
       header: "Account Opening",
       key: "accountOpening",
       width: 20,
@@ -141,7 +147,7 @@ export async function generateReportWorkbook(rows: ReportSummaryRow[]) {
 
   worksheet.autoFilter = {
     from: "A1",
-    to: "Q1",
+    to: { row: 1, column: worksheet.columns.length },
   };
 
   const headerRow = worksheet.getRow(1);
@@ -221,13 +227,16 @@ export async function generateReportWorkbook(rows: ReportSummaryRow[]) {
       balanceEnquiry:
         row.services[TransactionCategory.BALANCE_ENQUIRY]?.count ?? 0,
 
-      //   passbookPrint: row.services[TransactionCategory.PASSBOOK_PRINT]?.count ?? 0,
+      passbookPrint:
+        row.services[TransactionCategory.PASSBOOK_PRINTING]?.count ?? 0,
 
-      //   pmjjby: row.services[TransactionCategory.PMJJBY]?.count ?? 0,
+      pmjjby: row.socialSecurity.PMJJBY,
 
-      //   pmsby: row.services[TransactionCategory.PMSBY]?.count ?? 0,
+      pmsby: row.socialSecurity.PMSBY,
 
-      //   apy: row.services[TransactionCategory.APY]?.count ?? 0,
+      apy: row.socialSecurity.APY,
+
+      otherSocialSecurity: row.socialSecurity.OTHER,
 
       accountOpening:
         row.services[TransactionCategory.ACCOUNT_OPENING]?.count ?? 0,

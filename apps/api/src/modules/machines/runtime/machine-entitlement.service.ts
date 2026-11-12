@@ -1,8 +1,12 @@
 import { withReadOnly } from "../../../core/database/transaction";
+import DiagnosticsService from "../diagnostics/diagnostics.service";
 import MachineAuthenticationService from "./machine-auth.service";
 import MachineRuntimeValidator from "./machine-runtime-validator";
 import { EntitlementRequest } from "./machine-runtime.validation";
 import SubscriptionEntitlementService from "../../subscriptions/subscription-entitlement.service";
+import ReceiptFieldsSettingsService from "../../settings/receipt-fields-settings.service";
+import DesktopSettingsService from "../../settings/desktop-settings.service";
+import { resolveReceiptWatcher } from "./receipt-watcher-policy";
 
 /**
  * Resolves the server-authoritative access state used by the desktop client.
@@ -22,11 +26,17 @@ export default class MachineEntitlementService {
 
       MachineRuntimeValidator.validateRuntime(authenticated);
 
-      const entitlementService = new SubscriptionEntitlementService(tx);
-      const { plan, features: planFeatures } =
-        await entitlementService.getPlanEntitlements(
-          authenticated.subscription.planId,
-        );
+      const [{ plan, features: planFeatures }, watcher, desktop, receiptFields] =
+        await Promise.all([
+          new SubscriptionEntitlementService(tx).getPlanEntitlements(
+            authenticated.subscription.planId,
+          ),
+          resolveReceiptWatcher(tx, authenticated),
+          new DesktopSettingsService(tx).resolveForMachine(
+            authenticated.machine.desktopControls,
+          ),
+          new ReceiptFieldsSettingsService(tx).allowed(),
+        ]);
 
       const features = planFeatures.map((feature) => ({
         code: feature.code,
@@ -59,6 +69,16 @@ export default class MachineEntitlementService {
           },
         },
         features,
+        ...watcher,
+        desktopControls: desktop.desktopControls,
+        latestWatcherVersion: desktop.latestWatcherVersion,
+        minimumVersion: desktop.minimumVersion,
+        downloadUrl: desktop.downloadUrl,
+        // Log upload asked by support (null = nothing asked).
+        diagnostics: await new DiagnosticsService(tx).forMachine(authenticated.machine.id),
+        // Subscription page; null until the web portal exists.
+        portalUrl: desktop.portalUrl,
+        receiptFields: { allowed: receiptFields },
       };
     });
   }

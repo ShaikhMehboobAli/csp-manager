@@ -9,6 +9,7 @@ import * as BcLinkController from "./bc-link.controller";
 import {
   createLinkRequestSchema,
   reviewLinkRequestSchema,
+  unlinkCspSchema,
 } from "./bc-link.validation";
 
 const router = Router();
@@ -19,6 +20,13 @@ router.get(
   "/csps/search",
   authorize(UserRole.BC_ADMIN),
   BcLinkController.searchCsps,
+);
+
+router.post(
+  "/csps/:cspAgentId/unlink",
+  authorize(UserRole.BC_ADMIN),
+  validate(unlinkCspSchema),
+  BcLinkController.unlinkCsp,
 );
 
 router.post(

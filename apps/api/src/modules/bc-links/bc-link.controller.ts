@@ -115,3 +115,9 @@ export const rejectRequest = async (req: Request, res: Response) => {
     data,
   });
 };
+
+export const unlinkCsp = async (req: Request, res: Response) => {
+  const data = await service.unlinkCsp(req.user!, req.params.cspAgentId as string, req.body?.reason);
+
+  return res.status(200).json({ success: true, message: "CSP unlinked.", data });
+};

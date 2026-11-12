@@ -70,6 +70,17 @@ export default class CodeGeneratorService {
     );
   }
 
+  async generateDiagnosticsRequestNumber() {
+    return this.generateSequentialNumber(RunningNumberType.DIAGNOSTICS_REQUEST, "DIAG");
+  }
+
+  async generateActivationRevokeRequestNumber() {
+    return this.generateSequentialNumber(
+      RunningNumberType.ACTIVATION_REVOKE_REQUEST,
+      "RVK",
+    );
+  }
+
   async generateCspActivitySessionCode() {
     return this.generateSequentialNumber(
       RunningNumberType.CSP_ACTIVITY_SESSION,

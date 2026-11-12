@@ -24,6 +24,15 @@ export function mapSubscription(subscription: any) {
       name: subscription.plan.name,
       ownerType: subscription.plan.ownerType,
       level: subscription.plan.level,
+      // Only when the query loaded them (GET /subscriptions/current).
+      ...(subscription.plan.features && {
+        features: subscription.plan.features.map((item: any) => ({
+          code: item.feature.code,
+          name: item.feature.name,
+          description: item.feature.description,
+          category: item.feature.category,
+        })),
+      }),
     },
 
     latestPayment:
