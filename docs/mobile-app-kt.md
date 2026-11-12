@@ -3,14 +3,58 @@
 **Audience:** the React Native team building the CSP Manager mobile app for **BC** and **CSP** users.
 **Not covered here:** the Super Admin console (React / Next.js) → `docs/admin-web-kt.md`; the Windows desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api` (Express + Prisma + PostgreSQL).
-**Last updated:** 2026-11-04 (rev 25)
+**Last updated:** 2026-11-12 (rev 33)
 
 > Describes the backend once PRs #3–#8 are merged into `development`. Where an older build behaves differently it says so.
+>
+> **Rev 33 (2026-11-12): onboarding email on assign + resend timers.** `POST /activations/assign` now emails the agent its code and password (result in `data.email`, §8); every code-sending call returns `resendAvailableAt` + `resendInSeconds`, "too soon" errors carry `details.retryAfterSeconds`, and every email has a central limit (429 `EMAIL_RATE_LIMITED`): §5.2 "Email codes, resend timer and limits".
+>
+> **Rev 32 (2026-11-11): emails are sent for real (Resend)** — signup / resend OTP, forgot password, profile email change, activation code emails. Any of them (except forgot password, which always answers the same) can now fail with **503 `EMAIL_SEND_FAILED`** (or `EMAIL_NOT_CONFIGURED`): show `message`, keep the user on the screen, allow a retry after the usual 60 s resend wait.
+>
+> **Rev 32 (2026-11-11): `MACHINE_OFFLINE`** (a PC with no heartbeat for 1 hour) and **`CASH_DAY_NOT_CLOSED`** (30 min before the team's closing time, or 18:00): §13D.
+>
+> **Rev 32 (2026-11-11): 12 new notification kinds** for the app (revoke approved / rejected / revoked, link approved / rejected / linked, KO settlements, KO cash requests, KO day close differences, problem report answered): table in §13D, push groups in §19.4 R23.
+>
+> **Rev 32 (2026-11-11): push is now sent through FCM, and the push token goes with login / refresh** (`pushToken`, `platform`, `appVersion` on `/auth/login`, `/auth/refresh`, `/auth/change-password`; `/auth/logout` removes it). `POST` / `DELETE /notifications/devices` are **removed**. App-side Firebase setup and the push message shape: §19.4 R23.
+>
+> **Rev 31 (2026-11-08): your §19.4 asks R20–R24 are built** — profile (`/auth/me`), BC unlink, `/app/config`, push devices + preferences, email the activation code. See **§19.4 "Backend status (rev 31)"** for what is exactly as you asked and what differs. **New §19.5:** app-side effects of this release's desktop work (receipt `source`, "Count needed" receipts, KO "SBI kiosk user ID", day close cash in account, "Send PC log to support", BC unlinked).
+
+> **Rev 29 (2026-11-08): read §6C first** — one list of every API change in rev 27–28 (billing fixes + free trial): which call changed, the request / response, the success and failure cases and where to handle each in the app. New: cancelling a trial → 400 `TRIAL_CANCEL_NOT_ALLOWED`. §7.1 response updated (`RENEWAL_PENDING`, `subscriptionType`, `trial`).
+
+> **Rev 28 (2026-11-07): free trial** (§6B): a new CSP / BC taps **Start free trial** and gets full access for the days the super admin set (CSP: 1 activation code). One trial per SBI agent ID, mobile, email and PC; new APIs `GET /subscriptions/trial`, `POST /subscriptions/trial/start`; `/subscriptions/access` adds `trial`.
+
+> **Rev 27 (2026-11-07), owner decisions:** (1) the plan is **blocked while the renewal is being charged / retried** (`state: RENEWAL_PENDING`, new 403 `RENEWAL_PENDING`, §6A.4, §7.2); (2) when the super admin changes a plan's price, running mandates are **replaced by a new mandate at the new price** (notification `MANDATE_REPLACED`, §6A.3); (3) a purchase after a cancel **starts now** (confirmed, §6A.5). A purchase while the renewal is being charged → 409 `RENEWAL_IN_PROGRESS`. CSP plans have **no grace period** any more.
+
+> **Rev 26 (2026-11-07) changes a lot: read §0 first.** Plans are now ₹250 / ₹550 only; a lapsed or ₹250 plan blocks most tabs (§7); subscriptions renew by **UPI mandate** and can only be **upgraded** (difference only, first 12 days) or **cancelled** (§6A); the cash limit is **worked out, never entered** (§5.1, §9, §13A); KO creation moves cash in hand between agents (§9.1); the CSP can increase / decrease cash (§13A.10); every cash in hand change makes a mandatory **Adjust** request on the desktop (§13A.11).
 
 ---
 
+### UI wording (owner's terms, 2026-11-08)
+
+The app shows the owner's words, not the API's. This KT keeps the API words (CSP, KO, cash in account, in bank, left in bank) because they are the field and code names; translate them only on screen.
+
+| In the API, database and code (unchanged) | Say on screen |
+|---|---|
+| CSP (`type: "CSP"`, `CSP_ADMIN`, the owner of a cash pool) | **KO** |
+| KO (`type: "KO"`, an operator under a CSP) | **Sub KO** |
+| BC | **BC** (unchanged) |
+| a CSP's `agentId` | **KO ID** |
+| a KO's `agentId` | **Sub KO ID** |
+| the login ID (`agentId` on login, signup, forgot password, profile) | **KO/BC ID** (CSP and BC owners both use it) |
+| `cashInAccount` (cash in account, the shared holding) | **Cash holding** |
+| `cashInTransit` (money sent to the bank in a KO settlement) and `cashLeftInBank` (what the bank didn't deliver) | **Current A/c** — one amount (their sum) where they're shown together; "Current account" where there's room, e.g. the ledger title "Sent to current account" |
+
+Rules:
+- **Only the words change.** Endpoint paths, field names, enum values, error `code`s and ledger types stay exactly as documented (`cashInAccount`, `CASH_IN_ACCOUNT`, `KO_CREATION`, `type: "KO"`, …). Never rename an API field to match the label.
+- Lower case in the middle of a sentence ("Added to cash holding", "goes through cash holding"); capital only at the start of a label ("Cash holding", "Current A/c").
+- Plan names stay as the super admin set them (e.g. "BC CSP Link").
+- Server `message` texts the user sees should follow the same words when they're next edited (e.g. "Not enough cash in account" → "Not enough cash holding").
+
+The mobile app (development, commit 63822d5) already uses these labels.
+
 ## Contents
 
+0. **Rev 26 at a glance (read first)**
 1. Product in one page
 2. App architecture (recommended stack)
 3. API conventions (client, errors, auth header)
@@ -19,7 +63,9 @@
 4B. **Every API the app uses, by role**: one table per area, plus what each tab calls
 5. Auth: signup, OTP, login, session
 6. Plans, subscription and payment
-7. Paywall and feature gating
+6A. **Subscription rules (rev 26): upgrade, cancel, UPI mandate, auto renewal**
+6B. **Free trial (rev 28)**
+7. **Paywall, plan blocking and feature gating (rev 26: which screens are blocked when)**
 8. Activations (machine codes for the desktop app)
 9. Agents: CSPs and KOs
 10. BC ₹799: link existing CSPs (with their KOs)
@@ -29,13 +75,36 @@
 13A. Cash management (CSP + KOs)
 13B. Commission (CSP)
 13C. Team today (CSP)
+13D. Notifications (rev 26)
 14. Reports
 15. Metrics (manual entries)
 16. CSP visits (photo upload)
 17. File downloads (Excel)
 18. Dates, money and formatting
-19. Known backend gaps (19.1 requirements from the mobile app, 19.2 endpoints for the v2 screens)
+19. Known backend gaps (19.1 requirements from the mobile app, 19.2 endpoints for the v2 screens, 19.4–19.6 later asks)
 20. Changelog
+
+---
+
+## 0. Rev 26 at a glance (read first)
+
+| # | Change | What the app does | Section |
+|---|---|---|---|
+| 1 | **₹450 plan removed.** CSP plans: `CSP_AUTOMATION` ₹250 (desktop automation only) and `CSP_COMPLETE` ₹550 (everything: automation, cash management, the app's dashboard / machines / cash / reports). | Plan list shows two CSP plans (it comes from the API). Running ₹450 subscriptions keep working until they end and can upgrade to ₹550. | §1, §4A.2 |
+| 2 | **Plan blocking.** Without a running subscription, only KO management, payments, plan history and subscribe / renew stay open: every other tab shows a **non-closable popup** "Please renew or take a new plan." On ₹250, dashboard / machines / cash / reports show **"Please upgrade the plan."** | Call `GET /subscriptions/access` on launch / resume / after payment and build the tab bar from `screens`. Handle 403 `SUBSCRIPTION_REQUIRED` / `PLAN_UPGRADE_REQUIRED` on any call. | §7 |
+| 3 | **Upgrade only, difference only, first 12 days.** A running subscription can't be downgraded or have fewer machines (cancel and buy a new one). An upgrade (higher plan and/or more machines) charges `(new price − old price) × old machines + new price × added machines` + GST; the end date doesn't move. Only in the first 12 days of the purchase or the last renewal. | Use `POST /subscriptions/quote` to show the amount; `create-order` does the same maths. Disable plans / machine counts below the current ones. | §6A.2 |
+| 4 | **UPI mandate, auto renewal, 2 retries, stop.** Every CSP purchase sets up a monthly UPI autopay mandate (25 years). It charges the monthly amount at the plan's end date/time. A failed charge is retried twice, 15 min apart; after the 3rd failure the plan **stops at once** (state `LAPSED`). From the end date until a charge succeeds the plan is **blocked** (state `RENEWAL_PENDING`, rev 27). A plan price change replaces the mandate with one at the new price (rev 27). | Show mandate status and next charge on the Subscription screen; on `RENEWAL_PENDING` / `LAPSED` / `EXPIRED` the blocking popup takes over. | §6A.3–6A.4 |
+| 5 | **Cancel = no refund, works till the end date, mandate cancelled.** | "Cancel subscription" on the Subscription screen → `POST /subscriptions/current/cancel`. | §6A.5 |
+| 6 | **One activation per agent.** An agent (KO or the CSP) that already has a code assigned (unused) or running on a PC can't get another: 400 `AGENT_ALREADY_HAS_ACTIVATION`. | In the assign sheet, list only agents without an activation. | §8 |
+| 7 | **Cash limit = worked out.** Signup asks only cash in hand + cash in account (`cspLimit` ignored). Limit = all cash in hand + cash in account + in bank + left in bank + balance due − other cash. Nothing is ever compared with it. ADJUSTMENT `cashLimit` is refused. | Remove the limit field everywhere; show it read-only. | §5.1, §13A |
+| 8 | **KO creation moves cash in hand.** The CSP enters the KO's cash in hand; the form lists the CSP and the other KOs with their cash in hand (editable). By default it's taken from the CSP's own cash in hand; what isn't covered raises the limit. | New KO form (only on a plan with cash management). | §9.1 |
+| 9 | **KO activation difference.** The desktop pre-fills the cash in hand the CSP gave; if the KO counts a different amount it says where the difference came from / went to (cash in account or other); "other" moves the limit and **notifies the CSP**. | Show the notification (§13D) and the ledger row (`ACTIVATION`, `reason`). | §13A.12 |
+| 10 | **Increase / decrease and direct edit.** New button: increase / decrease an agent's cash in hand (the CSP's own only when it has a running PC) or the cash in account; the limit moves. Direct edit of any agent's cash in hand / the cash in account stays (ADJUSTMENT), audited. | New sheet; ledger types `INCREASE` / `DECREASE`. | §13A.10 |
+| 11 | **Adjust requests.** Every cash in hand change the CSP makes (KO creation, edit, increase / decrease) creates a mandatory **Adjust** request for that agent on the desktop: it counts the notes given / taken. | Show "waiting for notes" per agent (`pendingAdjustments`), list in `GET /cash-management/adjustments`. | §13A.11 |
+| 12 | **Replace KO; delete KO.** `POST /agents/:agentId/replace` moves the old KO's machine and cash management to a new KO. Deleting a KO removes its cash in hand from the pool (limit goes down). | New "Replace KO" action. | §9.2–9.3 |
+| 13 | **Shared PCs.** Any KO of the CSP (and the CSP) can work on any PC of the CSP; cash management follows whoever logs in to SBI. KOs' emails are verified by OTP on the desktop. | Ask for the KO's email in the KO form (needed for the desktop cash login). `PATCH` with a new email resets its verification. | §9.4 |
+| 14 | **Failed transactions aren't recorded.** A receipt SBI shows as failed is skipped by the server (no count, commission, cash). | Nothing to change; numbers are just right. | — |
+| 15 | **Notifications.** `GET /notifications`, `POST /notifications/:id/read` (activation difference, renewal, renewal failed, lapsed, cancelled, mandate removed). | Bell icon + list. | §13D |
 
 ---
 
@@ -51,9 +120,9 @@ Plans (prices come from the API; these are the current values):
 
 | Who | Plan `code` | Price | Machines | Features |
 |---|---|---|---|---|
-| CSP | `CSP_AUTOMATION` | ₹250 per machine/month | chosen at checkout (1–100) | `DESKTOP_AUTOMATION`, `RECEIPT_SYNC` |
-| CSP | `CSP_AUTOMATION_CASH_MANAGEMENT` | ₹450 per machine/month | chosen at checkout | + `CASH_MANAGEMENT` |
-| CSP | `CSP_COMPLETE` | ₹550 per machine/month | chosen at checkout | + `CASH_MANAGEMENT`, `MOBILE_TRACKING` |
+| CSP | `CSP_AUTOMATION` | ₹250 per machine/month | chosen at checkout (1–100) | `DESKTOP_AUTOMATION`, `RECEIPT_SYNC` (desktop automation only; the app only manages KOs, codes and billing) |
+| CSP | `CSP_COMPLETE` | ₹550 per machine/month | chosen at checkout | + `CASH_MANAGEMENT`, `MOBILE_TRACKING` (desktop cash management + the app's dashboard, machines, cash, reports) |
+| ~~CSP~~ | ~~`CSP_AUTOMATION_CASH_MANAGEMENT`~~ | ~~₹450~~ | — | **Removed in rev 26** (inactive; not in the plan list). A running one keeps working until it ends and can be upgraded to `CSP_COMPLETE`. |
 | BC | `BC_BASIC` | ₹199/month | 1 | desktop features + `CASH_MANAGEMENT`, `MOBILE_TRACKING` |
 | BC | `BC_PRO` | ₹399/month | 5 | same |
 | BC | `BC_CSP_LINK` | ₹799/month, ₹4794/6 months, ₹9588/year | **0** | `CSP_LINKING`, `CASH_MANAGEMENT` |
@@ -176,12 +245,21 @@ App start
 
 **CSP plans** (price per machine per month; the CSP picks the number of machines: its own PC + its KOs' PCs):
 
-| Screen / action | `CSP_AUTOMATION` ₹250 | `CSP_AUTOMATION_CASH_MANAGEMENT` ₹450 | `CSP_COMPLETE` ₹550 |
+| Screen / action (rev 26) | No running plan (none / expired / lapsed) | `CSP_AUTOMATION` ₹250 | `CSP_COMPLETE` ₹550 |
 |---|---|---|---|
-| Dashboard, machines, transactions, reports, exports | yes | yes | yes |
-| Activation codes (one per machine), KOs | yes | yes | yes |
-| Cash: float cards, denominations, Cash tab (pool, settle, adjust, KO settlements, requests, labels, dues, day closes, tasks) | **no** (fields come back `null`, cash calls 403 `PLAN_NO_CASH_MANAGEMENT`): show "Upgrade to see cash" | yes | yes |
-| `MOBILE_TRACKING` | — | — | reserved (nothing to build) |
+| KO list, create / edit / delete / replace KO | **yes** | yes | yes |
+| Payments, plan history, plan list, subscribe / renew | **yes** | yes | yes |
+| Subscription screen: upgrade, cancel | subscribe / renew only | yes | yes |
+| Notifications, profile, change password, logout | yes | yes | yes |
+| Activation codes: list, assign, revoke request | list only (assign needs a running plan) | yes | yes |
+| Dashboard (Home), Team today, commission | **blocked**: non-closable popup "Please renew or take a new plan." | **"Please upgrade the plan."** | yes |
+| Machines tab (list, detail, analytics) | blocked (popup) | "Please upgrade the plan." | yes |
+| Cash tab (pool, increase / decrease, edit, settlements, requests, labels, dues, day closes, tasks, adjust requests) | blocked (popup) | "Please upgrade the plan." | yes |
+| Reports, transactions (receipts), exports | blocked (popup) | "Please upgrade the plan." | yes |
+| Desktop: SBI automation | stops: "Please ask your CSP to renew the service or create a new subscription in the mobile app" | yes | yes |
+| Desktop: cash management | stops (same text) | not shown ("Please ask your CSP to upgrade…") | yes |
+
+Source of truth: `GET /subscriptions/access` (§7). The server enforces the same rules (403 `SUBSCRIPTION_REQUIRED` / `PLAN_UPGRADE_REQUIRED`).
 
 **BC plans:**
 
@@ -312,7 +390,7 @@ A linked CSP drops out of the BC's data while its own plan has lapsed, and comes
 | Machines | all PCs of its CSPs and KOs | `GET /machines/list`, detail calls as for the CSP |
 | Reports | one row per CSP (with its KOs), export; transactions with filters | `/reports/*`, `/receipts/*` |
 | Cash (read-only) | a CSP's pool, ledger, dues, day closes, tasks, settlements | the §13A GETs with **`agentId` = the CSP (or a KO)** (400 without it) |
-| More → Metrics | daily manual values per CSP | `GET /metrics`, `GET|POST /metrics/values`, `PATCH /metrics/values/:id` (§15) |
+| More → Metrics | daily manual values per CSP (read-only, rev 33) | `GET /metrics`, `GET /metrics/values` (§15) |
 | More → CSP visits | one visit per CSP per month: photo + ≥ 5 reviews | `POST /uploads/presigned-url` → S3 → `POST /csp-visits`; `GET /csp-visits/csp/:cspAgentId` (§16) |
 
 **E. Renew, change, expire:** as for the CSP. Moving a machine plan to `BC_CSP_LINK` (0 machines) stops its PCs: warn before paying.
@@ -353,8 +431,8 @@ The last column points to the section with every field and error. Super-admin-on
 | POST | `/auth/verify-otp` | ✓ | ✓ | public | `{ agentId, otp }` → 200 | 5.1 |
 | POST | `/auth/login` | ✓ | ✓ | public | `{ agentId, password }` → `{ accessToken, refreshToken, user: { id, agentId, email, role } }` | 5.1 |
 | POST | `/auth/resend-otp` | ✓ | ✓ | public | `{ agentId }` → `{ expiresAt, resendAvailableAt }` (1 per minute, 5 per hour) | 5.2 |
-| POST | `/auth/refresh` | ✓ | ✓ | public | `{ refreshToken }` → `{ accessToken, refreshToken (new), user }` | 5.2 |
-| POST | `/auth/logout` | ✓ | ✓ | public | `{ refreshToken }` → 200 (ends that session) | 5.2 |
+| POST | `/auth/refresh` | ✓ | ✓ | public | `{ refreshToken, pushToken?, platform?, appVersion? }` → `{ accessToken, refreshToken (new), user }` | 5.2 |
+| POST | `/auth/logout` | ✓ | ✓ | public | `{ refreshToken }` → 200 (ends that session and its push token) | 5.2 |
 | POST | `/auth/forgot-password` | ✓ | ✓ | public | `{ agentId }` → always 200 `{ resendAvailableAt }` (emails a reset OTP if the account exists) | 5.2 |
 | POST | `/auth/reset-password` | ✓ | ✓ | public | `{ agentId, otp, password, confirmPassword }` → 200; every session ends | 5.2 |
 | POST | `/auth/change-password` | ✓ | ✓ | login | `{ currentPassword, password, confirmPassword }` → `{ accessToken, refreshToken }` (replace both); other devices signed out | 5.2 |
@@ -366,7 +444,10 @@ The last column points to the section with every field and error. Super-admin-on
 | GET | `/subscriptions/plans?ownerType=CSP\|BC` | ✓ | ✓ | public | → plans `{ id, code, name, machineLimit, pricing[] (with `gstPercent`, `gstAmount`, `priceWithGst`), features[] }` | 6 |
 | GET | `/subscriptions/current` | ✓ | ✓ | login | → current subscription or `null` | 6 |
 | GET | `/subscriptions/history` | ✓ | ✓ | login | → all subscriptions | 6 |
-| POST | `/payments/create-order` + `Idempotency-Key` | ✓ (`machineCount` 1–100) | ✓ (no `machineCount`) | login | `{ planId, billingCycle, machineCount? }` → payment `PENDING` | 6 |
+| GET | `/subscriptions/access` (rev 26) | ✓ | ✓ (`gated: false`) | login | → state, `screens`, `blocked`, renewal / mandate, upgrade window, cancel | 7.1 |
+| POST | `/subscriptions/quote` (rev 26) | ✓ | — | login | `{ planId, machineCount }` → `purpose` PURCHASE / UPGRADE, amount + GST, breakdown | 6A.2 |
+| POST | `/subscriptions/current/cancel` (rev 26) | ✓ | — | running | `{ reason? }` → cancelled, usable until `endDate`, mandate cancelled | 6A.5 |
+| POST | `/payments/create-order` + `Idempotency-Key` | ✓ (`machineCount` 1–100) | ✓ (no `machineCount`) | login | `{ planId, billingCycle, machineCount? }` → payment `PENDING` with `purpose` (PURCHASE / UPGRADE), `breakdown`, `mandate` | 6, 6A |
 | POST | `/payments/verify` | ✓ | ✓ | login | `{ paymentId, gatewayTransactionId, transactionReference? }` → subscription created / extended | 6 |
 | GET | `/payments/history` | *own* | *own* | login | → payments | 6 |
 | GET | `/payments/:paymentId` | *own* | *own* | login | → one payment (poll while `PENDING`) | 6 |
@@ -377,7 +458,7 @@ The last column points to the section with every field and error. Super-admin-on
 |---|---|---|---|---|---|---|
 | GET | `/activations` | *own* | *own* (none on ₹799) | active | → activations `{ id, activationCode, status, assignedAgentId, machine, pendingRevokeRequest, … }` | 8 |
 | GET | `/activations/:activationId` | *own* | *own* | active | → one, with `canRegenerate` | 8 |
-| POST | `/activations/assign` | to itself or its KOs | to its CSPs / KOs | active | `{ activationId, assignedAgentId }` → `{ activationCode, activationPassword }` (once) | 8 |
+| POST | `/activations/assign` | to itself or its KOs | to its CSPs / KOs | active | `{ activationId, assignedAgentId }` → `{ activationCode, activationPassword, email }` (once; rev 33: `email` = onboarding email result) | 8 |
 | POST | `/activations/:activationId/regenerate-password` | *own* | *own* | active | → new password (once; only `NOT_ACTIVATED`) | 8 |
 | POST | `/activations/:activationId/revoke-requests` | *own* | *own* | active | `{ reason? }` → 201 request `PENDING` (super admin decides) | 8 |
 | GET | `/activations/revoke-requests?status=&activationId=&page=&limit=` | *own* | *own* | active | → requests | 8 |
@@ -390,10 +471,11 @@ The last column points to the section with every field and error. Super-admin-on
 |---|---|---|---|---|---|---|
 | GET | `/agents?type=CSP\|KO&parentAgentId=&page=&limit=` | itself + its KOs | its CSPs + KOs | login | → agents | 9 |
 | GET | `/agents/:agentId` | in scope | in scope | login | → agent | 9 |
-| POST | `/agents/ko` | ✓ | — | login | `{ agentId, name, mobile?, email?, address?, openingCash }` → 201 KO (its cash taken from the CSP's cash in account) | 9 |
-| POST | `/agents/csp` | — | ✓ | **machines** | `{ agentId, name, …, cashLimit, openingCash, openingCashInAccount, kos?: [{ agentId, name, openingCash }] }` → 201 created / 202 link request sent | 9 |
+| POST | `/agents/ko` | ✓ | — | login (no running plan needed) | `{ agentId, name, mobile?, email?, address?, openingCash?, cashAdjustments? }` → 201 `{ ko, cash }` (rev 26: cash in hand from the CSP / edited agents; the rest raises the limit) | 9.1 |
+| POST | `/agents/:agentId/replace` (rev 26) | its KOs | — | login | `{ agentId, name, mobile?, email?, address? }` → new KO takes the PC + cash | 9.2 |
+| POST | `/agents/csp` | — | ✓ | **machines** | `{ agentId, name, …, openingCash, openingCashInAccount, kos?: [{ agentId, name, openingCash }] }` (limit = sum) → 201 created / 202 link request sent | 9 |
 | PATCH | `/agents/:agentId` | itself + its KOs | itself + its CSPs / KOs (not ₹799-linked ones) | login | `{ name?, mobile?, email?, address?, cashLimit?, openingCash?, openingCashInAccount?, status? }` | 9 |
-| DELETE | `/agents/:agentId` | its KOs | its CSPs (KOs first) / KOs | login | soft delete (never your own account) | 9 |
+| DELETE | `/agents/:agentId` | its KOs | its CSPs (KOs first) / KOs | login | soft delete (never your own account); rev 26: the KO's cash leaves the pool | 9.3 |
 
 ### BC ₹799: link CSPs (§10)
 
@@ -444,6 +526,8 @@ The last column points to the section with every field and error. Super-admin-on
 
 BCs read a CSP's cash with `agentId` = the CSP (or one of its KOs); without it → 400. A CSP reads its own (optional `agentId` = one of its KOs).
 
+**Rev 26:** `POST /cash-management/transactions` adds `type: "INCREASE" | "DECREASE"` (13A.10), ADJUSTMENT refuses `cashLimit`; new `GET /cash-management/adjustments` (13A.11). Every cash call needs `CSP_COMPLETE` for a CSP (403 `PLAN_UPGRADE_REQUIRED` / `SUBSCRIPTION_REQUIRED`).
+
 **BC cash scope (rev 25):** a BC sees **only the cash limit and its distribution**: `GET /cash-management` (without `cashOther` / `cashDueExtra`) and the dashboard `cash` block (same fields left out). Every other cash endpoint (ledger, settlements, requests, labels, dues, day closes, tasks) answers **403** to a BC: hide those screens in the BC app. "Other cash" is only for the CSP and its KOs.
 
 | Method | Path | CSP | BC | Sub | Body / query → answer | § |
@@ -482,8 +566,8 @@ BCs read a CSP's cash with `agentId` = the CSP (or one of its KOs); without it �
 | GET | `/metrics` | ✓ | ✓ | login | → metric definitions | 15 |
 | GET | `/metrics/:metricId` | ✓ | ✓ | login | → one definition | 15 |
 | GET | `/metrics/values?agentId=&metricId=&from=&to=` | in scope | in scope | login | → entered values | 15 |
-| POST | `/metrics/values` | — | ✓ | login | `{ metricId, agentId (a CSP), date, value }` | 15 |
-| PATCH | `/metrics/values/:valueId` | — | ✓ | login | `{ value }` | 15 |
+| POST | `/metrics/values` | — | — | super admin only (rev 33) | `{ metricId, agentId (a CSP), date, value }` | 15 |
+| PATCH | `/metrics/values/:valueId` | — | — | super admin only (rev 33) | `{ value }` | 15 |
 | POST | `/uploads/presigned-url` | (not used) | ✓ | login | `{ fileName, contentType }` → `{ key, uploadUrl, fields }` (S3 POST, 5 min, ≤ 5 MB) | 16 |
 | GET | `/uploads/presigned-url?key=` | (not used) | ✓ (own keys) | login | → signed download URL | 16 |
 | DELETE | `/uploads` | (not used) | ✓ (own keys) | login | `{ key }` (a discarded photo) | 16 |
@@ -509,7 +593,7 @@ BCs read a CSP's cash with `agentId` = the CSP (or one of its KOs); without it �
 | CSP, BC (₹199 / ₹399) | Activation codes | `GET /activations` → `POST /activations/assign` → `POST …/regenerate-password` → `POST …/revoke-requests` → `GET /activations/revoke-requests` |
 | CSP (cash plans) | Cash | `GET /cash-management` → settle / adjust `POST /transactions` → `GET /requests` + review → `GET /settlements` → `GET /ledger` → `GET /dues` → `GET /day-closes` → `GET|POST|PATCH|DELETE /tasks` → `GET|POST|PATCH /labels` |
 | BC | CSP → Cash | the same GETs with `agentId` = the CSP |
-| BC | More → Metrics | `GET /metrics` → `GET /metrics/values` → `POST` / `PATCH /metrics/values` |
+| BC | More → Metrics (read-only, rev 33) | `GET /metrics` → `GET /metrics/values` |
 | BC | More → CSP visits | `POST /uploads/presigned-url` → S3 POST → `POST /csp-visits` → `GET /csp-visits/csp/:cspAgentId` → `GET /csp-visits/:id` |
 
 ## 5. Auth
@@ -536,11 +620,13 @@ BCs read a CSP's cash with `agentId` = the CSP (or one of its KOs); without it �
 | `password`, `confirmPassword` | 8–100 chars, must match (`Passwords do not match.`) |
 | `cashInHand` | **CSP: required.** Opening cash in hand, ₹ ≥ 0, max 2 decimals (`Cash in hand is required.`) |
 | `cashInAccount` | **CSP: required.** Opening cash in the bank account (holding) (`Cash in account is required.`) |
-| `cspLimit` | **CSP: required.** The CSP limit (`CSP limit is required.`). **`cashInHand` + `cashInAccount` must equal it** (`Cash in hand + cash in account must equal the CSP limit.`) |
+| ~~`cspLimit`~~ | **Rev 26: remove the field.** The CSP limit is **worked out**: cash in hand + cash in account. Older apps may still send it; it's ignored (no "must equal" check any more). Show the sum read-only under the two fields ("Your cash limit: ₹1,00,000"). |
 
-The three cash fields are ignored for `BC`. Send numbers (a numeric string like `"2500.50"` also works). An empty field counts as missing, never as 0. Other messages: `… can't be negative.`, `… must be a number.`, `… can have at most 2 decimal places.`, `… is too large.` (max 9,999,999,999.99).
+At first the CSP holds **all** the cash in hand (e.g. cash in hand ₹1,00,000, cash in account ₹0 → limit ₹1,00,000). It hands cash in hand to each KO when it adds one (§9.1).
 
-What the server does with them (CSP): stores them on the agent (`openingCash`, `openingCashInAccount`, `cashLimit`) and opens the CSP's **cash pool** (§13A): the limit and cash in account shared with its KOs, and the CSP's own cash in hand, with an `OPENING` entry in the cash ledger.
+The cash fields are ignored for `BC`. Send numbers (a numeric string like `"2500.50"` also works). An empty field counts as missing, never as 0. Other messages: `… can't be negative.`, `… must be a number.`, `… can have at most 2 decimal places.`, `… is too large.` (max 9,999,999,999.99).
+
+What the server does with them (CSP): stores them on the agent (`openingCash`, `openingCashInAccount`, `cashLimit` = their sum) and opens the CSP's **cash pool** (§13A): the limit and cash in account shared with its KOs, and the CSP's own cash in hand, with an `OPENING` entry in the cash ledger.
 
 → 201 `Signup successful. OTP sent for verification.` `data: { userId, openingFloat }`. `openingFloat` (CSP only):
 - `CREATED`: the float was opened with these values.
@@ -552,7 +638,7 @@ Errors: 409 `Account already exists. Please login.`; 403 `KO cannot create login
 → 200 `OTP verified successfully.` Then go to Login (no token is returned here).
 Errors (409 unless noted): `Invalid OTP.`, `OTP has expired. Please request a new OTP.`, `Maximum OTP attempts exceeded. Please request a new OTP.`, 404 `OTP not found. Please request a new OTP.`, 404 `User not found.` For "request a new OTP", call signup again with the same data.
 
-**`POST /auth/login`** (public) `{ agentId, password }`
+**`POST /auth/login`** (public) `{ agentId, password, pushToken?, platform?, appVersion? }` (rev 32: push token fields optional, see §19.4 R23; `pushToken` without `platform` → 400 `Send the platform (android or ios) with the push token.`)
 
 ```json
 "data": {
@@ -567,16 +653,31 @@ Errors: 404 `User not found.`; 403 `Please verify your account first.` (→ OTP 
 
 ### 5.2 Refresh, logout, resend OTP (rev 23), forgot / reset / change password (rev 25)
 
-**`POST /auth/refresh`** (public) `{ refreshToken }` → 200 `Session refreshed.` `data: { accessToken, refreshToken, user }`.
+**`POST /auth/refresh`** (public) `{ refreshToken, pushToken?, platform?, appVersion? }` (rev 32: send the phone's current push token on every refresh, §19.4 R23) → 200 `Session refreshed.` `data: { accessToken, refreshToken, user }`.
 - Every refresh returns a **new** refresh token: store it and drop the old one. The old one stops working.
 - Sending an old (already used) refresh token again is treated as a stolen token: that session is ended and every token of it fails (401 `REFRESH_TOKEN_INVALID`) → Login.
 - 401 `REFRESH_TOKEN_INVALID` (`Invalid refresh token.` / `Refresh token has expired.`) → Login. A blocked or suspended account → 403 `ACCOUNT_BLOCKED` / `ACCOUNT_SUSPENDED` and the session ends.
 - A refresh token lasts **7 days** from its last use (each refresh restarts the 7 days). One session per login, so each phone has its own.
 - Not under the strict `/auth` rate limit (20 / 15 min); the general limit applies.
 
-**`POST /auth/logout`** (public) `{ refreshToken }` → 200 `Logged out.` Ends that session (any token, even an old or invalid one, answers 200). Call it on Logout, then delete the tokens.
+#### Email codes, resend timer and limits (rev 33)
 
-**`POST /auth/resend-otp`** (public) `{ agentId }` → 200 `OTP sent again.` `data: { expiresAt, resendAvailableAt }`: a new code to the same email (the old one stops working). Errors: 409 `OTP_RESEND_TOO_SOON` `Please wait N seconds before asking for a new OTP.` (one per minute: use `resendAvailableAt` for the countdown), 409 `OTP_RESEND_LIMIT` `Too many OTPs sent. Please try again in an hour.` (5 per hour), 409 `ACCOUNT_EXISTS` (already verified → Login), 404 `User not found.` Use it for "Send a new code"; signup again is no longer needed.
+Every call that emails a code returns the countdown fields, and every "too soon" error says how long to wait:
+
+| Call | Success `data` adds | Too soon / limit errors |
+|---|---|---|
+| `POST /auth/signup` | `resendAvailableAt`, `resendInSeconds` (60) | — |
+| `POST /auth/resend-otp` | `expiresAt`, `resendAvailableAt`, `resendInSeconds` | 409 `OTP_RESEND_TOO_SOON` / `OTP_RESEND_LIMIT` |
+| `POST /auth/forgot-password` | `resendAvailableAt`, `resendInSeconds` (always, same answer for every ID) | — |
+| `PATCH /auth/me` (new email, 202) | `pendingEmail`, `expiresAt`, `resendAvailableAt`, `resendInSeconds` | 409 `OTP_RESEND_TOO_SOON` / `OTP_RESEND_LIMIT` |
+
+- **Timer:** after a send, disable "Send a new code" and count down from `resendInSeconds` (or to `resendAvailableAt`; trust the server time, not the phone clock). One code per minute, 5 per hour per purpose.
+- **Errors now carry `details`:** `{ "success": false, "code": "OTP_RESEND_TOO_SOON", "message": "Please wait 40 seconds before asking for a new OTP.", "details": { "retryAfterSeconds": 40, "resendAvailableAt": "…" } }` → restart the countdown from `details.retryAfterSeconds`. `OTP_RESEND_LIMIT` → `details.retryAfterSeconds` up to an hour ("Try again at 19:35").
+- **Every email (any purpose) also has a central limit:** the same kind of email to one address at most once per 30 s, and at most 10 emails per address per hour → **429 `EMAIL_RATE_LIMITED`** with `details.retryAfterSeconds`. Show `message`; normal use never hits it. 503 `EMAIL_SEND_FAILED` / `EMAIL_NOT_CONFIGURED` / `EMAIL_DAILY_LIMIT` = the provider couldn't send: "try again later".
+
+**`POST /auth/logout`** (public) `{ refreshToken }` → 200 `Logged out.` Ends that session (any token, even an old or invalid one, answers 200) **and removes the push token saved for that session** (rev 32; no push token needed in the body). Call it on Logout, then delete the tokens.
+
+**`POST /auth/resend-otp`** (public) `{ agentId }` → 200 `OTP sent again.` `data: { expiresAt, resendAvailableAt, resendInSeconds }` (rev 33; timer and `details` on errors: see "Email codes, resend timer and limits" below): a new code to the same email (the old one stops working). Errors: 409 `OTP_RESEND_TOO_SOON` `Please wait N seconds before asking for a new OTP.` (one per minute: use `resendAvailableAt` for the countdown), 409 `OTP_RESEND_LIMIT` `Too many OTPs sent. Please try again in an hour.` (5 per hour), 409 `ACCOUNT_EXISTS` (already verified → Login), 404 `User not found.` Use it for "Send a new code"; signup again is no longer needed.
 
 **Forgot password (rev 25).** Login screen → "Forgot password?" → enter agent ID → OTP + new password screen → Login.
 
@@ -584,16 +685,16 @@ Errors: 404 `User not found.`; 403 `Please verify your account first.` (→ OTP 
 
 **`POST /auth/reset-password`** (public) `{ agentId, otp, password, confirmPassword }` (password 8–100 chars, must match) → 200 `Password reset. Please log in with your new password.` **Every session of the user ends** (all phones: their refresh tokens fail; their access tokens get 401 `SESSION_ENDED` at once). Go to Login with the agent ID prefilled. Errors: 409 `OTP_INVALID` (`Invalid OTP.`), 409 `OTP_EXPIRED`, 409 `OTP_ATTEMPTS_EXCEEDED`, 404 `OTP_NOT_FOUND` (also for an unknown ID — ask for a new OTP), 400 validation (`Passwords do not match.`).
 
-**`POST /auth/change-password`** (logged in; Profile → Change password) `{ currentPassword, password, confirmPassword }` → 200 `Password changed. Other devices have been signed out.` `data: { accessToken, refreshToken }`: **replace both tokens** with these (the old ones stop working at once). Errors: 400 `CURRENT_PASSWORD_INCORRECT`, 400 `PASSWORD_UNCHANGED` (`New password must be different from the current one.`), 400 validation. Under the `/auth` rate limit (20 / 15 min).
+**`POST /auth/change-password`** (logged in; Profile → Change password) `{ currentPassword, password, confirmPassword, pushToken?, platform?, appVersion? }` (rev 32: every old session ends, so send the push token to keep pushes on this phone) → 200 `Password changed. Other devices have been signed out.` `data: { accessToken, refreshToken }`: **replace both tokens** with these (the old ones stop working at once). Errors: 400 `CURRENT_PASSWORD_INCORRECT`, 400 `PASSWORD_UNCHANGED` (`New password must be different from the current one.`), 400 validation. Under the `/auth` rate limit (20 / 15 min).
 
 **Blocked while logged in (rev 25).** The super admin can block or suspend an account; access stops **at once**: the next API call with a still-valid access token gets **403 `ACCOUNT_BLOCKED` / `ACCOUNT_SUSPENDED`** (message includes ` Reason: …`), and refresh fails too. On either code: clear tokens and show a full-screen "Your account has been blocked / suspended" with the message (no retry loop, no refresh). **401 `SESSION_ENDED`** (`Session ended. Please log in again.`) means the password was changed or reset elsewhere: don't refresh, go to Login.
 
-Still planned (not built; proposals):
+Built in rev 31 (details §19.4 R23 / R24; delivery waits for FCM and the email provider):
 
 | Endpoint (proposed) | Body | Purpose |
 |---|---|---|
-| `POST /notifications/devices` / `DELETE /notifications/devices/:token` | `{ token, platform: "ios" \| "android" }` | register/unregister the push token (Expo or FCM, provider TBD) |
-| (no endpoint) activation email | — | assign/regenerate will email the code + password to the agent |
+| ~~`POST /notifications/devices` / `DELETE /notifications/devices/:token`~~ | — | **removed in rev 32**: the push token now goes with `/auth/login`, `/auth/refresh`, `/auth/change-password`, and `/auth/logout` removes it (§19.4 R23) |
+| `POST /activations/:activationId/send` | `{ to?: "agent" \| "me" }` | emails the code + a fresh password; **built rev 31** (§19.4 R24) |
 
 Email is still a console stub on the server: OTPs (signup and reset) are not delivered yet in any environment except through the server log.
 
@@ -644,21 +745,379 @@ Current subscription: `{ id, subscriptionNumber, status, subscriptionType, machi
 - The server also serialises orders per user and completes a payment only once: a second `verify` with a **different** `gatewayTransactionId` for an already paid payment → 400 `Payment is already verified.`; a `gatewayTransactionId` already used by another payment → 409 `This gateway transaction is already linked to another payment.` Disable the Pay button while a request is in flight anyway.
 - Machine slots in use: count activations on the current subscription (`GET /activations`).
 
-**Purchase rules (server):**
+**Purchase rules (server).** **Rev 26: CSP rules changed, see §6A** (upgrade only, difference only, first 12 days; renewals by UPI mandate; cancel). What follows is for **BC** plans only (unchanged):
 - Same plan **and same machine count** while it's running → **renewal**: the end date is extended from the current end date; machines keep working.
-- Same plan with a **different machine count** (adding/removing machines) → a new subscription starts now with the new count; the old one ends; activated machines carry over (up to the new count); missing codes are generated. No credit for unused days.
-- Different plan → **upgrade/switch**: a new subscription starts now and the old one ends immediately. Machines already activated move to the new plan (up to its machine limit). **No refund/credit for unused days** (decided; say so on the upgrade confirmation: "Your current plan ends now; unused days aren't credited.").
-- **Grace period (rev 25):** the super admin sets a grace period (0 days today, up to 30). During grace (after `endDate`, until `graceEndsAt`) everything keeps working, in the app and on the PCs; a renewal in grace continues from the old `endDate` (no days lost). `graceEndsAt` is `null` when there's no grace. Show "Expired on `endDate` — renew before `graceEndsAt` to keep using CSP Manager" as a banner while `endDate < now ≤ graceEndsAt`. When the super admin changes the grace period, running subscriptions follow it.
+- Different plan → **switch**: a new subscription starts now and the old one ends immediately. Machines already activated move to the new plan (up to its machine limit). No refund/credit for unused days.
+- **Grace period (rev 25; BC plans only since rev 27):** CSP subscriptions always have `graceEndsAt: null` — they renew by mandate on the end date and are blocked while the charge is tried (§6A.4). For BC plans: the super admin sets a grace period (0 days today, up to 30). During grace (after `endDate`, until `graceEndsAt`) everything keeps working, in the app and on the PCs; a renewal in grace continues from the old `endDate` (no days lost). `graceEndsAt` is `null` when there's no grace. Show "Expired on `endDate` — renew before `graceEndsAt` to keep using CSP Manager" as a banner while `endDate < now ≤ graceEndsAt`. When the super admin changes the grace period, running subscriptions follow it.
 - After the plan (and its grace) ended → new subscription from now.
 - Buying a plan of the wrong owner type → 400 `This plan is not available for your account.`; unknown cycle → 400 `Selected billing cycle is not available.`
 
 **Payment status — PENDING backend work:** today the payment is "manual": the app calls `create-order` and then `verify` with any `gatewayTransactionId`. Razorpay is being integrated (pre-production checklist 1.1–1.5). Build the checkout behind one function `payForPlan(planId, billingCycle)` so swapping in `react-native-razorpay` later only changes that function. Don't ship the manual flow to production users.
 
-**UI notes:** plan cards list every `pricing` entry (cycle selector) with "+ GST"; CSP plans show "per machine" and a machine stepper (default: current `machineLimit`). Show "Renews on `endDate`". Switching a machine plan to `BC_CSP_LINK` (0 machines) must warn: "Your machines will stop working."
+**UI notes:** plan cards list every `pricing` entry (cycle selector) with "+ GST"; CSP plans show "per machine" and a machine stepper (default and minimum while a plan runs: current `machineLimit`, §6A). Show "Renews on `endDate` by UPI autopay". Switching a BC machine plan to `BC_CSP_LINK` (0 machines) must warn: "Your machines will stop working."
 
-## 7. Paywall and feature gating
+## 6A. Subscription rules (rev 26): upgrade, cancel, UPI mandate, auto renewal
 
-Every data screen needs an **active subscription**. The server answers 403 with one of:
+These apply to **CSP** subscriptions (BC plans keep §6). Read the state from **`GET /subscriptions/access`** (§7.1): `subscription`, `renewal`, `upgrade`, `cancel`.
+
+### 6A.1 What the CSP can do, by state
+
+| `state` | Meaning | Allowed | Not allowed |
+|---|---|---|---|
+| `NONE` | never subscribed | buy any plan, any machines | — |
+| `ACTIVE` | running; renews by mandate on `endDate` | **upgrade** (first 12 days only), **cancel** | same plan + same machines again (409 `SUBSCRIPTION_ALREADY_ACTIVE`), lower plan (400 `PLAN_DOWNGRADE_NOT_ALLOWED`), fewer machines (400 `MACHINE_DECREASE_NOT_ALLOWED`), upgrade after day 12 (400 `UPGRADE_WINDOW_CLOSED`) |
+| `RENEWAL_PENDING` | `endDate` passed, the mandate charge is being tried / retried (up to ~30 min). **Blocked** (rev 27) until a charge succeeds | wait; cancel | upgrade, purchase (409 `RENEWAL_IN_PROGRESS`) |
+| `CANCELLED` | cancelled, still works until `cancel.usableUntil` (= `endDate`), won't renew | **buy a new subscription** (any plan / machines; see 6A.5) | upgrade |
+| `LAPSED` | renewal failed 3 times (or no mandate) → stopped at once | buy / renew (new purchase) | everything in the blocked list (§7) |
+| `EXPIRED` | ended (cancelled and past `endDate`, or no mandate) | buy / renew (new purchase) | blocked list (§7) |
+
+"Renew" in the app for `LAPSED` / `EXPIRED` = a new purchase (`create-order` with the plan and machines the CSP picks; pre-select the last ones from `subscription`). It creates a new mandate.
+
+### 6A.2 Upgrade: difference only, end date unchanged, first 12 days
+
+An upgrade changes the **running** subscription in place: higher plan and/or more machines. **The start and end dates and the activations don't change**; extra machines get new activation codes (unassigned, §8).
+
+```
+amount (before GST) = (new price − old price) × current machines   ← plan difference (0 if same plan)
+                    + new price × added machines                    ← new machines
+total               = amount + GST (gstPercent, 18 % today)
+```
+
+| From → to | Calculation | Amount | + 18 % GST |
+|---|---|---|---|
+| 1 × ₹250 (automation) → 1 × ₹550 (complete) | (550 − 250) × 1 | ₹300 | ₹354 |
+| 1 × ₹550 → 2 × ₹550 (add 1 machine) | 0 + 550 × 1 | ₹550 | ₹649 |
+| 1 × ₹250 → 2 × ₹550 | (550 − 250) × 1 + 550 × 1 | ₹850 | ₹1,003 |
+| 1 × ₹250 → 2 × ₹250 | 0 + 250 × 1 | ₹250 | ₹295 |
+| 2 × ₹550 → 1 × ₹550 | — | 400 `MACHINE_DECREASE_NOT_ALLOWED` | |
+| 1 × ₹550 → 1 × ₹250 | — | 400 `PLAN_DOWNGRADE_NOT_ALLOWED` | |
+
+"Old price" is the price per machine the subscription was bought / last upgraded at (`subscription.pricePerMachine`; falls back to the plan's current price for older subscriptions). Upgrades are monthly only (`billingCycle: MONTHLY`; else 400 `Upgrades are billed on the monthly plan.`).
+
+**Window:** allowed while `now ≤ upgrade.windowEndsAt` = **12 days after the purchase or the last renewal** (`subscription.currentPeriodStart` + 12 days; each mandate renewal starts a new period and a new window). After it: 400 `UPGRADE_WINDOW_CLOSED` "Upgrades are allowed only in the first 12 days of the plan or its last renewal (until …)." Show "Upgrade available until <date>" or, when closed, "Upgrades open again after your next renewal on <endDate>".
+
+**Calls:**
+
+1. **Quote** (no side effects): `POST /subscriptions/quote` `{ planId, machineCount }` (CSP) →
+   ```json
+   "data": { "purpose": "UPGRADE", "planId": "…", "planCode": "CSP_COMPLETE", "machineCount": 2,
+             "previousPlanId": "…", "previousMachineCount": 1,
+             "amount": "850.00", "gstPercent": 18, "taxAmount": "153.00", "totalAmount": "1003.00",
+             "breakdown": { "planDifference": { "machines": 1, "perMachine": "300.00", "amount": "300.00" },
+                            "newMachines":    { "machines": 1, "perMachine": "550.00", "amount": "550.00" } } }
+   ```
+   `purpose: "PURCHASE"` (and `breakdown: null`) when there's no running subscription or it's cancelled. The same errors as `create-order` (409 / 400 above). Call it whenever the plan or machine stepper changes (debounce 300 ms) and show the breakdown lines.
+2. **Order**: `POST /payments/create-order` `{ planId, billingCycle: "MONTHLY", machineCount }` (+ `Idempotency-Key`) → the payment with **`purpose: "UPGRADE"`**, `previousPlanId`, `previousMachineCount`, `subscriptionId` (the running one), `amount` / `taxAmount` / `totalAmount` as quoted, `breakdown`. Message `Upgrade order created: you pay only the difference. The plan's end date doesn't change.`
+3. **Verify**: `POST /payments/verify` as before → 200 `Upgrade paid. New machine slots are ready to assign.` `data: { paymentId, subscriptionId }` (same id as before). Refresh `GET /subscriptions/access` and `GET /activations`.
+
+An upgrade also raises the **mandate's monthly amount** (new price × machines + GST) from the next renewal; with a real gateway the CSP may have to approve the new amount in the UPI app (`renewal.mandate.amountChangePending: true` → show "Approve the new autopay amount in your UPI app"). A pending order priced before the situation changed (e.g. a purchase, now an upgrade) is cancelled and a new one is opened automatically.
+
+**Plan price changed by the super admin (rev 27).** Every running CSP subscription on that plan (auto renew on, not cancelled, not lapsed) moves to the new price **from its next renewal**; the current period isn't charged again. Its mandate is **cancelled** (`status: "REPLACED"`) and a **new mandate** for the new monthly amount (new price × machines + GST) is created, starting at `endDate`. The CSP gets a notification `kind: "MANDATE_REPLACED"`:
+- `data`: `{ subscriptionId, mandateId, previousMandateId, previousAmount, amount, status, authUrl, nextChargeAt }`.
+- `status: "ACTIVE"` → info only: "…a new one for ₹X/month (incl. GST) is set up. It's charged from your next renewal on <date>."
+- `status: "PENDING"` (real gateway) → the CSP must **approve the new mandate in the UPI app before `nextChargeAt`**, or the renewal can't be charged and the plan stops at its end date. Show a banner on the Subscription screen with **[Approve autopay]** → `renewal.mandate.authUrl` while `renewal.mandate.status === "PENDING"`.
+- `subscription.pricePerMachine` in `/subscriptions/access` shows the new price; later upgrade differences are worked out from it.
+
+**UI:** on the Plans screen while a plan runs, mark the current plan "Current", disable lower-level plans ("Can't downgrade: cancel and subscribe again"), set the machine stepper's minimum to `upgrade.minMachineCount`, hide everything when `upgrade.allowed` is false and show `upgrade.reason` (`UPGRADE_WINDOW_CLOSED`, `CANCELLED`, `NO_RUNNING_SUBSCRIPTION`).
+
+### 6A.3 UPI mandate (autopay)
+
+Every CSP **purchase** sets up a **recurring UPI mandate**: it charges the **current monthly amount** (price per machine × machines + GST) **every month on the day and time the plan ends**, for up to **25 years**, until the subscription is cancelled. `create-order` for a purchase returns `mandate: { required: true, frequency: "MONTHLY", years: 25 }`.
+
+Mandate object (in `GET /subscriptions/access` → `renewal.mandate`):
+
+```json
+{ "id": "…", "status": "ACTIVE", "provider": "MANUAL", "amount": "649.00", "amountChangePending": false, "authUrl": null, "endAt": "2051-11-05T…" }
+```
+
+| `status` | Show |
+|---|---|
+| `PENDING` | "Approve the autopay in your UPI app" (+ open `authUrl` when present) |
+| `ACTIVE` | "Autopay on: ₹`amount` on `renewal.nextChargeAt`" |
+| `CANCELLED` | "Autopay cancelled (subscription cancelled)" |
+| `REVOKED` | "Autopay removed in your UPI app. Your plan stops on `endDate`. Subscribe again to set up a new autopay." |
+| `COMPLETED` | "Autopay ended" |
+
+**PENDING backend work:** Razorpay UPI autopay isn't integrated yet (pre-production checklist 1.10). In development the mandate is created **ACTIVE at once** (`provider: "MANUAL"`) and charges succeed unless the server sets `DEV_MANDATE_RESULT=FAILED`. When Razorpay lands, the checkout will open the Razorpay mandate flow (UPI app approval) instead of the plain payment; keep the checkout behind `payForPlan()` (§6).
+
+### 6A.4 Auto renewal, retries and stopping
+
+```
+endDate (day + time of purchase)  → charge 1
+   success → endDate + 30 days, new 12-day upgrade window, notification "Subscription renewed"
+   failed  → +15 min charge 2 → failed → +15 min charge 3 → failed → STOP at once (state LAPSED)
+                                  (each failure: notification "Renewal payment failed", retry time)
+```
+
+- **While the charge is being tried (`state: RENEWAL_PENDING`, from `endDate` until a charge succeeds; ~30 min at most) the plan is blocked (rev 27, owner decision):** `usable: false`, `blocked: true`, all `screens` false, `desktop.automation` / `desktop.cashManagement` false, `blockReason: "RENEWAL_PENDING"`, `message` "Your plan's renewal payment is being charged through your UPI mandate. Services resume as soon as it goes through." The PCs are blocked too. A successful charge (attempt 1, 2 or 3) opens everything again at once (refetch `/subscriptions/access` on the `SUBSCRIPTION_RENEWED` notification or every 60 s while `RENEWAL_PENDING`).
+- **Cancel while `RENEWAL_PENDING`** is allowed (`cancel.allowed: true`): it stops the retries and the plan **ends now** (`state: EXPIRED`), then a new purchase is possible. While a charge is waiting for the bank's answer it's refused with 409 `RENEWAL_IN_PROGRESS` ("…Try again in a few minutes.").
+- A charge the bank hasn't answered in 30 min counts as a failed attempt. A renewal still unresolved 6 h after `endDate` is stopped (`LAPSED`, safety net).
+- A late bank success for an old plan after a new plan was bought, or for an attempt whose period another attempt already renewed, doesn't extend anything: the payment shows `SUCCESS` with `failureReason` "…refund due." and the CSP gets a "Late renewal charge" notification.
+- Buying a new plan while `RENEWAL_PENDING` → 409 `RENEWAL_IN_PROGRESS` ("…Please wait until it completes or fails (within about 30 minutes)."). After a lapse, a new purchase is allowed.
+- Retries happen only if the payment method allows it; a removed mandate (`REVOKED`) or none at all → the plan stops at `endDate` with no retry.
+- **On stop** (`LAPSED`): the server blocks the app's data screens and the desktop PCs **at once** (no grace period). `renewal.lastFailure` has the reason ("Insufficient balance", …). The CSP must **renew / subscribe again** (new purchase + new mandate).
+- `renewal`: `{ autoRenew, nextChargeAt, attempts (0–3), maxAttempts: 3, lastFailure, lapsedAt, mandate }`.
+- Payment history (`GET /payments/history`) shows each charge as a payment with **`purpose: "RENEWAL"`**, `attemptNumber` 1–3, `status` `SUCCESS` / `FAILED` (`failureReason`). Purchases are `PURCHASE`, upgrades `UPGRADE`.
+- Subscription history adds events `RENEWAL` (each successful charge), `RENEWAL_FAILED` (each failed attempt, `remarks` "Attempt 2 of 3: …"), `LAPSED`, `UPGRADE`, `CANCELLATION`.
+
+### 6A.5 Cancel
+
+`POST /subscriptions/current/cancel` `{ reason? }` (CSP; ≤ 500 chars) →
+```json
+200 "Subscription cancelled. No refund is made; you can use it until <endDate>. The UPI mandate is cancelled."
+"data": { "subscriptionId": "…", "cancelledAt": "…", "usableUntil": "<endDate>" }
+```
+- **No refund.** The plan keeps working until `endDate` (no grace after it), then stops (`EXPIRED`); it never renews. The mandate is cancelled with the gateway at once.
+- Errors: 400 `You have no running subscription to cancel.`; 409 `SUBSCRIPTION_ALREADY_CANCELLED`.
+- Confirm sheet: "Cancel your plan? No refund. You can use it until <endDate>. Autopay will be cancelled." [Keep plan] [Cancel plan].
+- **Fewer machines / lower plan:** cancel, then **buy a new subscription** with the new plan / machine count. Buying while the cancelled one still runs starts the new one **now** (confirmed by the owner, rev 27): the cancelled one ends at once (its remaining days are not refunded) and its activated PCs move to the new subscription (up to the new machine count; extra codes are generated, codes beyond the count are revoked). Say so before payment: "Your cancelled plan ends now; remaining days aren't refunded."
+- After cancelling, `cancel.allowed` is false and `cancel.usableUntil` is set: show "Cancelled — works until <date>" and a **Subscribe** button.
+
+### 6A.6 Subscription screen (suggested)
+
+```
+Plan: CSP Complete Solution · 2 machines · ₹550 / machine / month
+Period: 05 Nov – 05 Dec 2026   (Upgrade window open until 17 Nov)
+Autopay: ON · next charge ₹1,298 on 05 Dec 2026, 14:18
+[Upgrade plan / add machines]   [Cancel subscription]
+Payments ›   Plan history ›
+```
+Refresh on screen focus and after every payment / cancel.
+
+## 6B. Free trial (rev 28)
+
+A **new** CSP or BC account can take **one free trial** with **full access** for the days the super admin set (default 7). CSP trial = the **CSP Complete** plan (automation, cash management, every app tab) with **1 activation code** (the super admin can set more, and can extend a running trial). BC trial = the BC plan the super admin set (default `BC_CSP_LINK`, no machines).
+
+### 6B.1 Who can take it
+
+- Only an account that **never had any subscription** (paid or trial). Signed-up, OTP-verified CSP / BC owners only (not KOs).
+- **One trial per person and per PC.** It's refused when any of these was already part of another account's trial — even if that account was deleted:
+  - the **SBI agent ID** (the account's agent ID, or a KO's agent ID that activated a trial PC),
+  - the **mobile number** (last 10 digits; `+91` / `0` ignored),
+  - the **email** (case ignored; Gmail dots and `+tag` ignored),
+  - the **PC** (its hardware fingerprint) — checked when a trial code is **activated on the desktop**: a PC that already ran a trial can't run another account's trial (it can still be activated with a **paid** plan).
+
+### 6B.2 APIs
+
+`GET /subscriptions/trial` (CSP_ADMIN / BC_ADMIN) → 
+```json
+{ "enabled": true, "available": true, "reason": null,
+  "days": 7, "machineCount": 1, "plan": { "code": "CSP_COMPLETE", "name": "CSP Complete Solution" },
+  "trial": null }
+```
+- `reason` when `available: false`: `TRIAL_DISABLED` (super admin turned trials off) · `HAS_SUBSCRIPTION` (the account has / had a plan) · `TRIAL_ALREADY_USED` (agent ID / mobile / email already used a trial).
+- `trial` (after starting): `{ subscriptionId, active, startDate, endsAt, daysLeft, machineLimit }`.
+
+`POST /subscriptions/trial/start` (no body) → **201** `Free trial started.`
+```json
+{ "subscription": { "…": "same shape as GET /subscriptions/current", "subscriptionType": "TRIAL", "amountPaid": "0" },
+  "trial": { "subscriptionId": "…", "active": true, "endsAt": "…", "daysLeft": 7, "machineLimit": 1 },
+  "activations": [ { "activationCode": "…", "expiresAt": "…" } ] }
+```
+Errors: 403 `TRIAL_DISABLED` · 409 `TRIAL_NOT_AVAILABLE` ("The free trial is only for new accounts…") · 409 `TRIAL_ALREADY_USED` ("A free trial has already been used with this mobile number / email / SBI agent ID. Please buy a plan.") · 400 `TRIAL_PLAN_INVALID` (setup problem, show "contact support").
+
+### 6B.3 During and after the trial
+
+- `GET /subscriptions/access`: `subscription.subscriptionType: "TRIAL"` and a **`trial`** object `{ active, endsAt, daysLeft, machineLimit }` (`null` on a paid plan). `state: "ACTIVE"`, all `screens` true (CSP Complete). `upgrade.allowed: false` with `upgrade.reason: "TRIAL"`, `cancel.allowed: false` (calling cancel anyway → 400 `TRIAL_CANCEL_NOT_ALLOWED`, rev 29), no mandate / auto renewal.
+- The activation code works like a paid one (§8): assign it to the CSP or a KO and activate the PC. A desktop refusal `TRIAL_ALREADY_USED_ON_MACHINE` means that PC already ran someone's trial.
+- **Buy any time during the trial** (normal checkout, §6): the paid plan **starts now**, the trial ends at once, and PCs activated on the trial **move to the paid plan** (no re-activation, up to its machine count). Remaining trial days aren't added.
+- **When it ends** (`endsAt`): everything is blocked like an expired plan (§7: `SUBSCRIPTION_REQUIRED`, "Please renew or take a new plan."). `trial.active: false`. Buy a plan to continue; the PCs carry over.
+- Notifications (§13D): `TRIAL_STARTED`, `TRIAL_ENDING` (about 24 h before the end), `TRIAL_EXTENDED` (super admin added days / machines; `data.endDate`, `data.machineLimit`) → Subscription screen.
+
+### 6B.4 Screens
+
+- **After signup / login** (no subscription): a card **"Start your {days}-day free trial — full access, {machineCount} PC"** with **[Start free trial]** and **[See plans]**. Hide the card when `available: false`; for `TRIAL_ALREADY_USED` show "A free trial was already used with these details" under the plans button.
+- Tap → confirm dialog → `POST /subscriptions/trial/start` → show the activation code(s) (copy / share) and go to Home.
+- **Banner on every tab** while on trial: "Free trial — {daysLeft} days left. [Buy plan]". From 1 day left, make it a warning colour.
+- Subscription screen on trial: plan name + "Free trial until {endsAt}", **[Buy plan]** (no Upgrade / Cancel buttons).
+
+## 6C. API changes in rev 27–28 — what to change in the app (rev 29)
+
+One list of everything the backend changed for the **billing fixes** (rev 27) and the **free trial** (rev 28). The detailed rules are in §6A, §6B and §7; this section is the checklist. Every error body is `{ success: false, code, message }` — **branch on `code`**, show `message`.
+
+### 6C.1 Summary
+
+| # | API | New / changed | What changed | Screens affected |
+|---|---|---|---|---|
+| 1 | `GET /subscriptions/access` | changed | new `state` / `blockReason` `RENEWAL_PENDING`; `cancel.allowed` true while it's pending; `subscription.subscriptionType`; new `trial` object; `upgrade.reason: "TRIAL"`; `graceEndsAt` always null for CSP | every gated tab, Plans, Subscription |
+| 2 | CSP app routes (`/dashboard/*`, `/team/*`, `/machines/*`, `/receipts/*`, `/reports/*`, `/commission/*`, `/cash-management/*`) | changed | new **403 `RENEWAL_PENDING`** | global API interceptor |
+| 3 | `POST /subscriptions/quote`, `POST /payments/create-order` | changed | new **409 `RENEWAL_IN_PROGRESS`** while a renewal is being charged; during a trial they answer `purpose: "PURCHASE"` (never UPGRADE) | Plans / checkout |
+| 4 | `POST /subscriptions/current/cancel` | changed | allowed while `RENEWAL_PENDING` (plan ends **now**); new 409 `RENEWAL_IN_PROGRESS` while the bank hasn't answered; new 400 `TRIAL_CANCEL_NOT_ALLOWED` | Subscription screen, renewal popup |
+| 5 | mandate object (`renewal.mandate`) | changed | new `status: "REPLACED"`; a new mandate may be `PENDING` after a price change | Subscription screen |
+| 6 | `GET /payments/history` | changed | a `RENEWAL` payment can be `SUCCESS` with `failureReason` ending "refund due." | Payments |
+| 7 | `GET /notifications` | changed | new `kind`s `MANDATE_REPLACED`, `TRIAL_STARTED`, `TRIAL_ENDING`, `TRIAL_EXTENDED`; "Late renewal charge" uses `SUBSCRIPTION_RENEWAL_FAILED` | bell, notification tap routing |
+| 8 | `GET /subscriptions/trial` | **new** | is the trial offered to this account | Home (no plan), Plans |
+| 9 | `POST /subscriptions/trial/start` | **new** | starts the trial, returns the activation code(s) | trial card, confirm dialog |
+| 10 | `GET /subscriptions/current`, `GET /subscriptions/history` | changed | `subscriptionType: "TRIAL"` (`amountPaid: "0"`); history events `TRIAL_STARTED`, `TRIAL_EXTENDED` | Subscription, Plan history |
+| 11 | `GET /activations` | unchanged shape | trial codes appear like paid codes; `expiresAt` = the trial end | Activations |
+
+No URL was renamed or removed. No request body changed for existing calls.
+
+### 6C.2 `GET /subscriptions/access` (changed)
+
+**Request:** unchanged (no body, Bearer token).
+
+**Response changes** (full shape in §7.1):
+- `state` can be **`RENEWAL_PENDING`**: the end date passed and the UPI mandate is being charged (up to 3 attempts, 15 min apart). Then `usable: false`, `blocked: true`, `blockReason: "RENEWAL_PENDING"`, `message: "Your plan's renewal payment is being charged through your UPI mandate. Services resume as soon as it goes through."`, every `screens.*` false, `desktop.*` false, `cancel.allowed: true`. `renewal.attempts` (0–3), `renewal.nextChargeAt`, `renewal.lastFailure` say where it stands.
+- `subscription.subscriptionType`: `"PAID"` or `"TRIAL"`.
+- `trial`: `null`, or `{ active, endsAt, daysLeft, machineLimit }` on a trial.
+- `upgrade.reason` can be `"TRIAL"` (with `upgrade.allowed: false`).
+- `subscription.graceEndsAt` is always `null` for CSP (no grace period for CSP plans).
+
+**Handle:**
+| Case | What the app does |
+|---|---|
+| `state: RENEWAL_PENDING` | non-closable popup on dashboard / machines / cash / reports (§7.2) with `message`, "Attempt n of 3 — next try at <nextChargeAt>" when `attempts > 0`, **[Manage KOs]** and **[Cancel plan]**; **no Subscribe button**; poll this call every 60 s; close the popup when `usable` becomes true |
+| `trial` not null and `trial.active` | trial banner on every tab ("Free trial — {daysLeft} days left. [Buy plan]"; warning colour at ≤ 1 day); Subscription screen shows "Free trial until {endsAt}" and **[Buy plan]** only (no Upgrade / Cancel) |
+| `trial` not null and `trial.active: false` | same as an expired plan: popup "Please renew or take a new plan." → Plans |
+| `upgrade.reason: "TRIAL"` | hide the Upgrade button; Plans shows the normal purchase flow |
+| 401 | session expired → login |
+| network / 5xx | keep the last cached result, retry on the next poll / resume; don't unblock on an error |
+
+### 6C.3 403 `RENEWAL_PENDING` on gated CSP routes (changed)
+
+**Response:** `403 { code: "RENEWAL_PENDING", message: "Your plan's renewal payment is being charged…" }`.
+
+**Handle (global axios interceptor):** same as `SUBSCRIPTION_REQUIRED` / `PLAN_UPGRADE_REQUIRED` — refetch `/subscriptions/access`, show the renewal popup on the current tab, **don't retry the call**, don't show the data. KO management, payments, subscription, notifications and auth calls are never blocked.
+
+### 6C.4 `POST /subscriptions/quote` and `POST /payments/create-order` (changed)
+
+**Request:** unchanged (`{ planId, machineCount }` / `{ planId, billingCycle: "MONTHLY", machineCount }` + `Idempotency-Key`).
+
+| Case | Response | App |
+|---|---|---|
+| on a **trial** | 200, `purpose: "PURCHASE"`, `breakdown: null`, full price + GST | show "Your free trial ends now and the paid plan starts today; your PCs move to it." before Pay |
+| renewal being charged | **409 `RENEWAL_IN_PROGRESS`** "Your plan's renewal payment is being charged through your UPI mandate. Please wait until it completes or fails (within about 30 minutes)." | show the message, disable Pay, refetch `/subscriptions/access` (the renewal popup takes over) |
+| others | as before (§6A.2) | — |
+
+`POST /payments/verify` after a purchase during a trial → 200 as a normal purchase; then refetch `/subscriptions/access` (`trial: null`, `subscriptionType: "PAID"`) and `GET /activations` (the trial's PCs are now on the paid plan, no re-activation).
+
+### 6C.5 `POST /subscriptions/current/cancel` (changed)
+
+**Request:** unchanged `{ reason? }`.
+
+| Case | Response | App |
+|---|---|---|
+| running plan | 200 "Subscription cancelled. No refund is made; you can use it until <endDate>…" `data { subscriptionId, cancelledAt, usableUntil }` | as before: banner "Cancelled — works until <date>" |
+| **`RENEWAL_PENDING`** (new) | 200, the plan **ends now** (`usableUntil` ≈ now), retries stop, `state` becomes `EXPIRED` | confirm first: "Cancel your plan? The renewal won't be charged and the plan stops now. No refund."; then refetch access → Subscribe is allowed |
+| the bank is still answering a charge | **409 `RENEWAL_IN_PROGRESS`** "A renewal payment is waiting for the bank's answer. Try again in a few minutes." | show the message, keep the popup, let the CSP try again later |
+| on a **trial** (rev 29) | **400 `TRIAL_CANCEL_NOT_ALLOWED`** "A free trial can't be cancelled; it ends on its own. Buy a plan to keep using the app." | don't show Cancel on a trial; if it happens, show the message |
+| no plan / already cancelled | 400 "You have no running subscription to cancel." / 409 `SUBSCRIPTION_ALREADY_CANCELLED` | as before |
+
+### 6C.6 Mandate `REPLACED` after a price change (changed)
+
+`renewal.mandate` now points at the **new** mandate; the old one has `status: "REPLACED"`. Notification `kind: "MANDATE_REPLACED"`, `data { subscriptionId, mandateId, previousMandateId, previousAmount, amount, status, authUrl, nextChargeAt }`.
+
+| `data.status` / `renewal.mandate.status` | App |
+|---|---|
+| `ACTIVE` | info only: "Your autopay is now ₹{amount}/month (incl. GST) from {nextChargeAt}." |
+| `PENDING` (with Razorpay) | banner on Subscription: "Approve the new autopay amount in your UPI app before {nextChargeAt}, or your plan stops then." **[Approve autopay]** → `authUrl` |
+| `REPLACED` (old one in any list) | show as "Replaced (price change)" |
+
+### 6C.7 Late renewal charge — "refund due" (changed)
+
+If the bank confirms an old charge **after** the CSP bought a new plan, or confirms a second charge for a month already renewed, nothing is extended. The payment shows `status: "SUCCESS"`, `purpose: "RENEWAL"`, `failureReason` ending **"refund due."**, and the CSP gets a notification titled "Late renewal charge" (`kind: SUBSCRIPTION_RENEWAL_FAILED`). **App:** in Payments, show a "Refund due" tag when `failureReason` ends with "refund due."; on tap: "This charge came in late and didn't extend any plan. It will be refunded." (Refunds are manual for now.)
+
+### 6C.8 `GET /subscriptions/trial` (new)
+
+**Who:** CSP_ADMIN and BC_ADMIN (KOs and super admin → 403). **Request:** no body.
+
+**Response 200:** `{ enabled, available, reason, days, machineCount, plan { code, name }, trial }` (§6B.2).
+
+| Case | App |
+|---|---|
+| `available: true` | show the trial card "Start your {days}-day free trial — full access, {machineCount} PC" with **[Start free trial]** and **[See plans]** |
+| `reason: "TRIAL_DISABLED"` | hide the card |
+| `reason: "HAS_SUBSCRIPTION"` | hide the card (the account has / had a plan) |
+| `reason: "TRIAL_ALREADY_USED"` | hide the card; under the plans button show "A free trial was already used with these details" |
+| `trial` not null | the trial already started; use `/subscriptions/access` for the banner |
+| 401 / network | hide the card, retry on the next screen focus |
+
+**When to call:** after signup / login when `/subscriptions/access` says `state: "NONE"`, and on Plans screen focus.
+
+### 6C.9 `POST /subscriptions/trial/start` (new)
+
+**Request:** no body. Show a confirm dialog first ("Start your free {days}-day trial now? You can buy a plan any time."). Disable the button while the call runs (it's safe against double taps: a second call is refused).
+
+**Success 201** `Free trial started.` → `data { subscription, trial, activations: [{ activationCode, expiresAt }] }`. Show the code(s) with **Copy** / **Share**, explain "Assign this code to yourself or a KO and activate it on the PC", then go to Home and refetch `/subscriptions/access` and `/activations`.
+
+| Failure | `code` | Message | App |
+|---|---|---|---|
+| 403 | `TRIAL_DISABLED` | "Free trials aren't available right now." | show the message; go to Plans |
+| 403 | `TRIAL_NOT_AVAILABLE` | "Only a CSP or BC account can start a free trial." | shouldn't happen in the app; show the message |
+| 409 | `TRIAL_NOT_AVAILABLE` | "The free trial is only for new accounts. This account already has (or had) a plan." | show the message; go to Plans |
+| 409 | `TRIAL_ALREADY_USED` | "A free trial has already been used with this mobile number / email / SBI agent ID. Please buy a plan." | show the message; go to Plans |
+| 400 | `TRIAL_PLAN_INVALID` | "The free trial plan isn't available. Please contact support." | show "contact support" |
+| 401 / network / 5xx | — | — | show "Couldn't start the trial, try again"; on retry first call `GET /subscriptions/trial` (it may have started) |
+
+### 6C.10 Trial on the desktop (what the CSP may report)
+
+Activating a trial code on a PC can fail with **409 `TRIAL_ALREADY_USED_ON_MACHINE`** ("This PC has already been used for a free trial. Buy a plan to activate it.") or **409 `TRIAL_ALREADY_USED`** ("This SBI agent ID has already been used for a free trial…"). The fix is always **buy a plan**: the new paid codes activate on that PC. No app call is involved, but the Activations screen can show the hint "A PC that already ran a free trial needs a paid plan."
+
+### 6C.11 Notifications (changed)
+
+| `kind` | When | Tap |
+|---|---|---|
+| `MANDATE_REPLACED` | super admin changed the plan price | Subscription (6C.6) |
+| `TRIAL_STARTED` | trial started | Subscription |
+| `TRIAL_ENDING` | ~24 h before the trial ends | Plans (buy) |
+| `TRIAL_EXTENDED` | super admin added days / machines (`data.endDate`, `data.machineLimit`) | Subscription; refetch `/activations` (new codes when machines were added) |
+| `SUBSCRIPTION_RENEWAL_FAILED` titled "Late renewal charge" | late bank success (6C.7) | Payments |
+| `SUBSCRIPTION_CANCELLED` | also sent when the CSP cancels during `RENEWAL_PENDING` ("…has stopped; its renewal won't be charged.") | Subscription |
+
+On every subscription / trial / mandate kind: refetch `/subscriptions/access`.
+
+## 7. Paywall, plan blocking and feature gating
+
+### 7.1 `GET /subscriptions/access` — what the plan opens (rev 26, call this first)
+
+Call it **after login, on every app launch / resume, after any payment, upgrade or cancel, and when any call answers 403 `SUBSCRIPTION_REQUIRED` / `PLAN_UPGRADE_REQUIRED`**. Cache it in memory; poll every 5 min while the app is in the foreground (a renewal can fail and stop the plan while the app is open).
+
+```json
+"data": {
+  "gated": true,                       // false for BC / super admin: nothing is blocked by this
+  "state": "ACTIVE",                   // NONE | ACTIVE | CANCELLED | RENEWAL_PENDING | LAPSED | EXPIRED (§6A.1)
+  "usable": true,                      // a running subscription
+  "blocked": false,                    // true = show the non-closable popup (7.2)
+  "blockReason": null,                 // RENEWAL_PENDING | SUBSCRIPTION_REQUIRED | PLAN_UPGRADE_REQUIRED | null
+  "message": null,                     // the text to show in the popup for that blockReason (§7.2)
+  "screens": { "dashboard": true, "machines": true, "cash": true, "reports": true },
+  "alwaysOpen": ["koManagement", "payments", "planHistory", "subscribe", "renew", "cancel", "notifications", "profile"],
+  "desktop": { "automation": true, "cashManagement": true },
+  "subscription": { "id", "subscriptionNumber", "status", "subscriptionType", "planId", "planCode", "planName", "planLevel",
+                    "machineLimit", "pricePerMachine", "startDate", "currentPeriodStart", "endDate", "graceEndsAt", "features": [] },
+                                       // subscriptionType: "PAID" | "TRIAL" (rev 28); graceEndsAt is always null for CSP
+  "trial": null,                       // rev 28: { active, endsAt, daysLeft, machineLimit } while on a free trial (§6B)
+  "renewal": { "autoRenew", "nextChargeAt", "attempts", "maxAttempts", "lastFailure", "lapsedAt", "mandate": { … } },
+  "upgrade": { "allowed", "windowDays": 12, "windowEndsAt", "minPlanLevel", "minMachineCount", "reason" },
+                                       // reason: UPGRADE_WINDOW_CLOSED | CANCELLED | NO_RUNNING_SUBSCRIPTION | TRIAL | null
+  "cancel":  { "allowed", "cancelledAt", "usableUntil" }
+}
+```
+
+### 7.2 Where and when to block (CSP)
+
+| When | Tabs / screens | What to show |
+|---|---|---|
+| `blocked: true` (`state` NONE / LAPSED / EXPIRED) | **Home (dashboard) and everything under it** (Team today, commission, recent transactions), **Machines tab** and its screens, **Cash tab** and its screens, **Reports tab** and its screens (transactions, exports) | A **non-closable popup** (no ✕, back button / swipe / tap outside don't close it) over the tab: **"Please renew or take a new plan."** with buttons **[Renew / Subscribe]** → Plans screen and **[Manage KOs]** → KO list. Hide tab content behind it (don't render stale data). |
+| `blocked: true` | KO list / create / edit / delete / replace, Payments, Plan history, Plans / checkout, Subscription screen, Notifications, Profile, Logout | Open normally (these are `alwaysOpen`). |
+| `blockReason: "PLAN_UPGRADE_REQUIRED"` (₹250 automation plan) | each tab whose `screens[x]` is `false`: dashboard, machines, cash, reports | Same non-closable popup with **"Please upgrade the plan."** and **[Upgrade]** → Plans (pre-selects `CSP_COMPLETE`) + **[Manage KOs]**. KO management, payments, plan history, subscription (upgrade / cancel) stay open. |
+| `state: CANCELLED` | nothing blocked until `usableUntil` | Banner "Plan cancelled — works until <date>. [Subscribe]". |
+| `state: RENEWAL_PENDING` (`blockReason: "RENEWAL_PENDING"`, rev 27) | the same tabs as `blocked: true` (dashboard, machines, cash, reports); KO management, payments, plan history, subscription, notifications stay open | Non-closable popup with `message` ("Your plan's renewal payment is being charged through your UPI mandate. Services resume as soon as it goes through."), a line "Attempt n of 3 — next try at <renewal.nextChargeAt>" when `renewal.attempts > 0` (show `renewal.lastFailure`), **[Manage KOs]** and **[Cancel plan]** (stops the retries, ends the plan now; confirm first). No Subscribe button (a purchase is refused until it completes, fails or is cancelled). Poll `/subscriptions/access` every 60 s while shown; close it when `usable` turns true. |
+| `renewal.mandate.status` `REVOKED` | nothing blocked until `endDate` | Banner "Autopay removed — your plan stops on <endDate>. [Subscribe again]". |
+
+**The server enforces the same**, so a stale app can't read blocked data: CSP calls to `/dashboard/*`, `/team/*`, `/machines/*` (app routes), `/receipts/*` (app routes), `/reports/*`, `/commission/*`, `/cash-management/*` answer **403** with
+- `code: "RENEWAL_PENDING"`, message `Your plan's renewal payment is being charged…` — end date passed, the mandate charge is being tried (rev 27);
+- `code: "SUBSCRIPTION_REQUIRED"`, message `Please renew or take a new plan.` — no running subscription;
+- `code: "PLAN_UPGRADE_REQUIRED"`, message `Please upgrade the plan to use this.` — the plan doesn't include it.
+
+Global axios interceptor: on any of these codes → refetch `/subscriptions/access` and show the popup on the current tab; never retry. `/agents/*`, `/payments/*`, `/subscriptions/*`, `/notifications/*`, `/auth/*` are never blocked for the CSP (KO create / edit / delete work without a running plan). `/activations` list works; assigning needs a running plan (403 subscription messages below).
+
+**BC users:** `gated: false`, all `screens` true — BC rules are unchanged (below).
+
+### 7.3 Older subscription messages (still sent by some calls)
+
+Some calls (activation assign, BC calls) still answer 403 with one of:
 
 ```
 No subscription found. Please purchase or activate a subscription to continue.
@@ -682,6 +1141,8 @@ Your subscription has not started yet.
 
 `403 Your subscription does not include this feature.` (`PLAN_FEATURE_MISSING`) → upgrade prompt. Branch the Paywall on the `SUBSCRIPTION_*` codes (§3) rather than on the messages above.
 
+**Rev 26:** for CSPs `MOBILE_TRACKING` is no longer "reserved": it's what opens the app's dashboard / machines / cash / reports (only `CSP_COMPLETE` has it). Use `screens` from §7.1 rather than checking features yourself.
+
 ## 8. Activations (machine codes)
 
 Buying a machine plan creates one activation per machine (`machineLimit`; for a CSP = the machines bought). The owner **assigns** an activation to an agent, gets a one-time **password**, and the person at the PC types `agentId` + activation code + password into the desktop app.
@@ -690,7 +1151,16 @@ Buying a machine plan creates one activation per machine (`machineLimit`; for a 
 |---|---|---|
 | `GET /activations` | owner | all activations of the owner's subscriptions |
 | `GET /activations/:activationId` | owner | adds `canRegenerate` |
-| `POST /activations/assign` `{ activationId, assignedAgentId }` | owner | returns `{ activationCode, activationPassword }` **once** |
+| `POST /activations/assign` `{ activationId, assignedAgentId }` | owner | returns `{ activationCode, activationPassword, email }` **once** |
+
+**Onboarding email on assign (rev 33).** When the agent has an email, the server emails it right away: "Welcome to CSP Manager: your activation details" (Agent ID, activation code, password, how to install and activate, the code's end date, the installer link when the super admin set one). The assignment never fails because of the email; `data.email` says what happened:
+
+| `data.email` | `message` (200) | App |
+|---|---|---|
+| `{ "sent": true, "sentTo": "si*****@gmail.com" }` | `Activation assigned. The code and password were emailed to si*****@gmail.com.` | toast with `message`; the code + password modal can still show Copy / Share |
+| `{ "sent": false, "reason": "NO_EMAIL", "message": "This agent has no email…" }` | `Activation assigned successfully.` | show the modal (share yourself) + hint "Add an email to send it" → after adding, **Email to agent** (`POST /activations/:id/send`) |
+| `{ "sent": false, "reason": "RATE_LIMITED" \| "SEND_FAILED", "message": "…" }` | `Activation assigned successfully.` | show the modal + `email.message`; offer **Email to agent** later (it makes a new password) |
+
 | `POST /activations/:activationId/regenerate-password` | owner | only while `NOT_ACTIVATED`; returns a new password once |
 | `POST /activations/:activationId/revoke-requests` `{ reason? }` | owner (CSP / BC) | asks the super admin to revoke it: see **Revoke** below |
 | `GET /activations/revoke-requests?status=&activationId=&page=&limit=` | owner | own requests, newest first |
@@ -702,6 +1172,8 @@ Activation: `{ id, activationCode (XXXX-XXXX-XXXX-XXXX), activationPassword (DEV
 **Who can be assigned:**
 - **CSP owner:** itself or one of **its KOs** (`CSP can assign only to KO.`, `KO does not belong to this CSP.`).
 - **BC owner:** any agent whose BC is this BC (`Agent does not belong to this BC.`).
+
+**One activation per agent (rev 26):** an agent that already **holds** an activation — assigned and not used yet, or running on a PC — can't be given another: 400 `AGENT_ALREADY_HAS_ACTIVATION` ("This agent already has a running activation (CODE on MC-…). Assign codes only to agents without one." / "…already has an activation assigned (CODE) that isn't used yet…"). The same agent also can't activate a second code on another PC. In the assign sheet, list only agents with no `NOT_ACTIVATED`-assigned or `ACTIVE` activation (from `GET /activations`), and disable the rest with "Already has a code". To move a PC to another agent: revoke request (below) or **Replace KO** (§9.2).
 
 Other errors: `Activation not found.` (404), `Activation has already been used.`, `Activation is already assigned.`, `Agent is inactive.`, `Activation password cannot be regenerated.`
 
@@ -747,8 +1219,8 @@ Agent: `{ id, agentId, name, type, status ("ACTIVE" | "INACTIVE"), mobile, email
 - For a **BC** (and the super admin), each CSP also has **`ownSubscription`**: `{ status ("ACTIVE" | "EXPIRED" | "SUSPENDED" | "CANCELLED" | …), endDate, planCode } | null` — the CSP's own latest CSP subscription, `null` when it never bought one. Show "Own plan active" / "No own plan yet" (4A.5). KOs and CSP logins don't get the field.
 
 **`POST /agents/csp` (BC on a machine plan: `BC_BASIC` / `BC_PRO`)**. Needs an active subscription (403 subscription messages, §7). A BC on the ₹799 plan can't use it: 403 `PLAN_LINK_ONLY` (it links CSPs instead, §10). Body: `{ agentId, name, mobile?, email?, address?, cashLimit, openingCash, openingCashInAccount, machineCount, kos?: [{ agentId, name, mobile?, email?, address?, openingCash, machineCount }] }`.
-- **New CSP:** `cashLimit` (CSP limit), `openingCash` (cash in hand) and `openingCashInAccount` (cash in account) are **required** (`CSP limit is required.`, `Cash in hand is required.`, `Cash in account is required.`), and cash in hand + cash in account must equal the limit. They open the CSP's cash pool (§13A). For an **existing** CSP (link request, 202) they're ignored.
-- **KO:** only `openingCash` (its cash in hand), **required** (`Cash in hand is required.`). A KO shares its CSP's limit and cash in account, so `cashLimit` / `openingCashInAccount` sent for a KO are ignored. The KO's cash in hand is taken from the CSP's cash in account: 400 `Not enough cash in account for this KO's cash in hand: …` when it doesn't cover it (nothing is created).
+- **New CSP:** `openingCash` (cash in hand) and `openingCashInAccount` (cash in account) are **required** (`Cash in hand is required.`, `Cash in account is required.`). **Rev 26:** `cashLimit` is ignored: the CSP limit = cash in hand + cash in account. They open the CSP's cash pool (§13A). For an **existing** CSP (link request, 202) they're ignored.
+- **KOs listed with a new CSP:** `openingCash` (optional); taken from the new CSP's cash in hand, the rest raises the limit (as in §9.1).
 
 | Case | Response |
 |---|---|
@@ -764,11 +1236,73 @@ Handle **202 separately**: `csp` is `null`; show a success toast and open "Link 
 
 Validation (400, first problem): `agentId` 1–50 chars, `name` 2–100, `mobile` 10–15 chars, valid `email`, `cashLimit` / `openingCash` ≥ 0, `kos` ≤ 50. `machineCount` is optional (default 0) and no longer used: machines come from the owner's activations.
 
-**`POST /agents/ko` (CSP)** body: `{ agentId, name, mobile?, email?, address?, openingCash, machineCount }`: `openingCash` (cash in hand) required, taken from the CSP's cash in account (as above) → 201 `KO created successfully.` `data: { ko }`. Works for every CSP (with or without a BC). Errors: `KO is already linked with this CSP.`, `KO is already linked with another CSP.`, `Provided Agent ID does not belong to a KO.`
+**`POST /agents/ko` (CSP)** body: `{ agentId, name, mobile?, email?, address?, openingCash?, cashAdjustments?, machineCount }` → 201 `KO created successfully.` `data: { ko, cash }`. Works for every CSP (with or without a BC) and **without a running plan** (KO management is always open). Errors: `KO is already linked with this CSP.`, `KO is already linked with another CSP.`, `Provided Agent ID does not belong to a KO.` **Rev 26:** the cash part changed completely — see §9.1. Ask for the KO's **email** (optional on the server, but the KO needs it to log in to cash management on a shared PC, §9.4).
 
 **Edit/delete rules:**
 - A BC **can't edit or delete** CSPs linked through a ₹799 link request, or their KOs → 403 `This CSP is linked for viewing only. It manages its own account.` Hide edit/delete for those (`linkType` on the link request; or catch the 403).
 - `You cannot delete your own account.`; `Delete child agents first.` (delete KOs before the CSP); `You are not allowed to update/delete this agent.`
+
+### 9.1 KO creation form: cash in hand (rev 26)
+
+Only on a plan with **cash management** (`CSP_COMPLETE`, or a CSP on a BC machine plan). On `CSP_AUTOMATION` hide the cash section: `openingCash` is ignored and no cash is tracked.
+
+**What the CSP does:** enters how much cash in hand it gives the new KO. The form also lists **every existing agent's cash in hand** — the CSP itself and its other KOs (from `GET /cash-management` → `agents[]`, with `machineActive` to label who has a running PC) — and the CSP may edit any of them, e.g. take cash back from another KO to give it to the new one.
+
+```
+New KO ─ Cash in hand for this KO: [ 60,000 ]
+
+Cash in hand now                         after
+  You (CSP-001)       1,00,000   →   [ 40,000 ]   ← pre-filled: taken from you first
+  KO-001 (PC on)         0        →   [      0 ]
+──────────────────────────────────────────────
+Cash limit  1,00,000  →  1,00,000      (no change)
+[Create KO]
+```
+
+**Server rules** (`openingCash` = the new KO's cash in hand; required on a cash plan: `Cash in hand is required.`):
+
+1. **No `cashAdjustments`** (simple form): the KO's cash in hand is taken from **the CSP's own cash in hand**, as far as it goes; whatever the CSP's cash in hand doesn't cover is **new cash** and **raises the cash limit**.
+2. **With `cashAdjustments: [{ agentId, cashInHand }]`** (the CSP edited rows): those agents get exactly the new cash in hand given (the CSP's row too, if sent); nothing else is taken automatically. Send the final value of **every row the CSP changed**, including the CSP's own row if you pre-filled it. The new KO must not be in the list; each agent once; ≥ 0.
+3. **No check against the limit, ever.** The cash limit moves by the net change: (new KO's cash in hand) + Σ(after − before of the adjusted rows). Cash in account doesn't change.
+4. Every existing agent whose cash in hand changed gets a mandatory **Adjust** request on its desktop (§13A.11) to count the notes taken from / given to it. The new KO counts its notes at PC activation (§13A.12).
+
+**Worked example** (from the product owner):
+
+| Step | CSP hand | KO1 hand | KO2 hand | KO3 hand | Cash in account | Cash limit |
+|---|---|---|---|---|---|---|
+| Signup: hand 1,00,000, account 0 | 1,00,000 | | | | 0 | 1,00,000 |
+| Add KO1 with 60,000 (no adjustments) | 40,000 | 60,000 | | | 0 | 1,00,000 |
+| Add KO2 with 50,000 (CSP has only 40,000) | 0 | 60,000 | 50,000 | | 0 | **1,10,000** (+10,000 new cash) |
+| Add KO3 with 30,000, `cashAdjustments: [{ KO1, 30,000 }]` (take 30,000 back from KO1) | 0 | 30,000 | 50,000 | 30,000 | 0 | 1,10,000 (no change) → KO1 gets an Adjust request "₹30,000 taken" |
+| Add KO4 with 20,000, `cashAdjustments: [{ KO2, 40,000 }]` (only 10,000 taken back) | 0 | 30,000 | 40,000 | 30,000 + KO4 20,000 | 0 | **1,20,000** (+10,000) |
+
+**Answer** `data.cash` (null when the plan has no cash management or the pool isn't set up):
+
+```json
+{ "status": "ADDED", "cashLimit": 110000, "cashLimitChange": 10000, "cashInAccount": 0,
+  "agents": [ { "agentId": "CSP-001", "cashInHandBefore": 40000, "cashInHand": 0 },
+              { "agentId": "KO-002", "cashInHandBefore": 0, "cashInHand": 50000 } ] }
+```
+`{ "status": "NOT_SET_UP" }` when the CSP has no pool yet. Show a toast "Cash limit is now ₹1,10,000 (+₹10,000)" when `cashLimitChange ≠ 0`. Errors: 400 `Each agent can appear only once.`, `Agent … isn't part of this CSP.`, `The new KO's cash in hand goes in cashInHand, not in adjustments.`, `Cash in hand can't be below ₹0.00.`
+
+### 9.2 Replace a KO (rev 26)
+
+`POST /agents/:agentId/replace` (CSP; `:agentId` = the KO leaving) body `{ agentId, name, mobile?, email?, address? }` (the new KO) → 201 `KO replaced. The machine and cash management moved to the new KO.`
+```json
+"data": { "ko": { …new KO… }, "replaced": "KO-001", "cash": { "cashInHand": 30000 }, "machines": 1 }
+```
+What moves to the new KO: its **activation and PC** (keeps working, no re-activation; the old KO's unused assigned code too), **cash in hand and drawer**, open **balance dues**, open **tasks**, open **settlements**, pending **Adjust requests**. The cash limit doesn't change. The old KO is deleted. Errors: 404 `KO not found.` (not your KO), 400 `The new KO needs a different Agent ID.`, `An agent with this Agent ID already exists.` UI: KO detail → "Replace KO" → new KO form (no cash fields) → confirm "The PC and cash of <old> move to <new>; <old> is deleted."
+
+### 9.3 Delete a KO (rev 26)
+
+`DELETE /agents/:agentId` now also removes the KO's **cash management**: its cash in hand and drawer leave the pool and the **cash limit goes down** by its cash in hand (ledger `AGENT_REMOVED`); open Adjust requests are cancelled. Refused while the KO has open balance dues or an open settlement: 409 `KO_HAS_OPEN_CASH` "This KO still has open balance dues or an open settlement. Settle them (or replace the KO) before deleting it." Confirm text: "Delete <KO>? Its cash in hand (₹…) leaves your cash limit." Works without a running plan.
+
+### 9.4 KO email and shared PCs (rev 26)
+
+Any agent of a CSP (the CSP and all its KOs) may log in to SBI on **any PC of that CSP**; cash management on the desktop follows whoever logged in (automatically after the SBI kiosk fingerprint login, or by **email OTP** to the agent's email as the fallback). So:
+- Ask for the **KO's email** in the KO form (and let the CSP edit it). The KO verifies it on the desktop (at PC activation or in the cash panel); the app only stores it.
+- `PATCH /agents/:agentId` with a **different email** clears its verification (the KO verifies again on the desktop). Agent objects carry `emailVerifiedAt` (null = not verified): show "Email not verified" on the KO detail.
+- Agents of other CSPs can't log in on your PCs.
 
 ## 10. BC ₹799: link existing CSPs (with their KOs)
 
@@ -949,11 +1483,15 @@ Enums for filters:
 
 ## 13A. Cash management (CSP + KOs)
 
-A CSP and its KOs share **one cash limit** and **one cash in account (holding)**: the **pool**. Each agent (the CSP and each KO) has its **own cash in hand** and its own **drawer** (note/coin counts). Always:
+> **Rev 26: the cash limit is worked out, never entered or checked.** Read 13A.9–13A.13 for the new flows (direct edit, increase / decrease, Adjust requests, activation differences). Cash management needs `CSP_COMPLETE` (§7): on `CSP_AUTOMATION` every cash call answers 403 `PLAN_UPGRADE_REQUIRED`.
+
+A CSP and its KOs share **one cash in account (holding)**: the **pool**. Each agent (the CSP and each KO) has its **own cash in hand** and its own **drawer** (note/coin counts); a KO's desktop shows only its own cash in hand and drawer, but the **cash in account is the same for everyone** in the CSP. The **cash limit** is the result (rev 26):
 
 ```
-cash in account + cash in hand (CSP) + cash in hand (every KO) + in bank (open KO settlements) + left in bank + extra cash held by dues = cash limit + other cash
+cash limit = cash in hand (CSP) + cash in hand (every KO) + cash in account + in bank (open KO settlements) + left in bank + extra cash held by dues − other cash
 ```
+
+The CSP never types a limit; it moves whenever cash comes in or goes out (a KO given more cash than the CSP had, an increase / decrease, a KO's "other" difference at activation, a KO deleted). There's **no comparison with the limit anywhere** (nothing is refused because of it).
 
 **Extra cash held by dues** (`cashDueExtra`, + to collect, − to give) is what the KOs' open balance dues put on "extra cash" are worth; it moves with other cash so the books balance. Show it read-only next to other cash.
 
@@ -964,7 +1502,8 @@ Nothing ever goes below ₹0. Who can do what:
 | | CSP | BC | Super admin | KO (desktop) |
 |---|---|---|---|---|
 | View pool, every agent's cash in hand and drawer, ledger, requests | yes | yes (send `agentId`) | yes (send `agentId`) | own cash only (heartbeat) |
-| Settle, adjust (limit, cash in account, cash in hand, drawer) | yes | no | no | no |
+| Settle, edit (cash in account, any agent's cash in hand incl. its own, drawer), increase / decrease (rev 26) | yes | no | no | no |
+| Count notes for the CSP's cash in hand changes (Adjust request, rev 26) | sees them | no | no | does it on the desktop (mandatory) |
 | KO settlements (cash in account ↔ bank ↔ cash in hand) | **informed only** (feed) | sees them | sees them | starts and approves its own, from the desktop |
 | Approve / reject a KO's change request | yes | no | no | asks from the desktop |
 | Labels for custom transactions | create, rename, deactivate | sees them | sees them | picks one |
@@ -988,9 +1527,16 @@ All endpoints need the `CASH_MANAGEMENT` plan feature for CSP plans (403 `Your s
 | KO settlement left in bank → hand: approved (notes counted, ≤ amount) | + counted | — (amount − counted back to left in bank) |
 | CSP settlement account → hand | + amount | − amount |
 | Settlement hand → account | − amount | + amount |
-| Limit raised / lowered (no new cash in account given) | — | + / − the difference |
-| KO added with cash in hand X | + X (the KO's) | − X |
-| PC activated: the agent counts cash in hand Y (was X) | set to Y; drawer set to the count | − (Y − X) |
+| ~~Limit raised / lowered~~ | rev 26: the limit can't be set | |
+| KO added with cash in hand X (rev 26) | KO + X; CSP − min(X, CSP's cash in hand) (or the edited rows) | — (limit + whatever wasn't covered) |
+| PC activated: the agent counts Y (CSP gave X), difference from / to **cash in account** (rev 26) | set to Y; drawer set to the count | − (Y − X) (limit unchanged) |
+| PC activated: difference **other** (cash brought / taken by the CSP) (rev 26) | set to Y | — (limit + (Y − X); CSP notified) |
+| CSP increases / decreases an agent's cash in hand by A (rev 26) | + A / − A (Adjust request for the notes) | — (limit + A / − A) |
+| CSP increases / decreases cash in account by A (rev 26) | — | + A / − A (limit + A / − A) |
+| CSP edits cash in hand / cash in account directly (rev 26) | set | set (limit worked out again) |
+| KO deleted (rev 26) | its cash in hand → 0 | — (limit − its cash in hand) |
+| KO replaced (rev 26) | moves to the new KO | — |
+| Desktop one-step transfer hand ⇄ account (rev 26) | − A / + A | + A / − A |
 | Custom transaction IN / OUT (paid now P) | + P / − P | — (other cash + P / − P) |
 | Balance due settled: collected / given A | + A / − A | — (other cash + A / − A) |
 | Balance due added for an applied receipt (A unpaid): to collect / to give | − A / + A | — (other cash − A / + A) |
@@ -1021,7 +1567,11 @@ CSP: no `agentId` = the whole CSP (merged + every agent); `agentId=<KO>` = that 
 }
 ```
 
-`setUp: false` (limit and cash in account `null`) is a CSP that existed before cash management. Show a "Set up cash" screen that sends one ADJUSTMENT with `cashLimit` (and optionally `cashInAccount` and each agent's `cashInHand`). Agents may already show a cash in hand: a KO counts it when activating a PC, and it's kept until setup. Without `cashInAccount`, cash in account = limit − every agent's cash in hand (400 `The cash limit (₹…) is less than the agents' cash in hand (₹… in total).`). Money values are numbers in rupees (2 decimals).
+**Rev 26 fields:** each agent also has **`machineActive`** (it has a running PC: its desktop counts notes; the CSP's own cash in hand can be increased / decreased only then) and **`pendingAdjustments`** (open Adjust requests: show "Waiting for notes" on its row); the pool adds **`balanceDue`** (= `cashDueExtra`, the balance due held in the books, part of the limit).
+
+**Dashboard / Cash tab totals (rev 26):** by default show everything **together**: total cash in hand of all KOs + the CSP (`totalCashInHand`), cash in account, balance due (`balanceDue`), the **cash limit** (excluding other cash: `cashLimit` already subtracts it; show other cash separately) and the merged denomination (`drawer`). A segmented control "All / <each agent>" switches to one agent (`agents[]`, or `?agentId=`). The dashboard `cash` block has the same totals.
+
+`setUp: false` (cash in account `null`) is a CSP that existed before cash management. Show a "Set up cash" screen that sends one ADJUSTMENT with `cashInAccount` and each agent's `cashInHand` (rev 26: no `cashLimit`; the limit is their sum). Agents may already show a cash in hand: a KO counts it when activating a PC, and it's kept until setup. Money values are numbers in rupees (2 decimals).
 
 ### `POST /cash-management/transactions` (CSP) — settle or adjust
 
@@ -1035,22 +1585,20 @@ Optional header `Idempotency-Key` (8–128 chars): a retry with the same key ret
 
 `direction`: `ACCOUNT_TO_HAND` | `HAND_TO_ACCOUNT`; `amount` > 0. Errors (400): `Not enough cash in account: ₹… available, ₹… needed.`, `Not enough cash in hand: …`, `Agent … isn't part of this CSP.`, `Cash management isn't set up for this CSP yet. …`. Example: limit 1L, cash in account 95K, KO cash in hand 5K; settle 50K → cash in account 45K, KO cash in hand 55K.
 
-**Adjustment** sets values by hand (corrections, raising the limit, setting the drawer, first setup). `remarks` is required; send only what changes:
+**Adjustment** (rev 26: "Edit cash") sets values by hand: any agent's cash in hand (its own too), the cash in account, the drawer, left in bank / other cash, first setup. `remarks` is required; send only what changes. **`cashLimit` is refused** (400 "The cash limit can't be set: it is cash in hand + cash in account (+ balance due). Change those instead."). The limit is worked out again from the result; nothing is compared. Every agent whose cash in hand changed **without** a `drawer` gets a mandatory Adjust request (13A.11).
 
 ```json
-{ "type": "ADJUSTMENT", "cashLimit": 120000, "remarks": "Bank raised the limit" }
 { "type": "ADJUSTMENT", "cashInAccount": 60000, "agents": [{ "agentId": "KO-001", "cashInHand": 55000, "drawer": { "notes500": 100, "notes100": 50 } }], "remarks": "Counted the drawer" }
 { "type": "ADJUSTMENT", "cashLeftInBank": 0, "cashInAccount": 53500, "remarks": "Bank returned the rest" }
 { "type": "ADJUSTMENT", "cashOther": 0, "cashInAccount": 44400, "remarks": "Shop cash counted into the books" }
 ```
 
 Rules:
-- A new `cashLimit` without `cashInAccount` moves cash in account by the difference (raise by 20K → cash in account +20K).
-- The result must keep cash in account + all cash in hand + in bank + left in bank = cash limit: 400 `Cash in hand (₹… in total) + cash in account (₹…) [+ in bank (₹…, open settlements)] [+ left in bank (₹…)] must equal the cash limit (₹…).`
+- ~~A new `cashLimit` …~~ / ~~must equal the cash limit~~ — removed in rev 26: no limit input, no equality check.
 - `cashLeftInBank` sets what partly delivered KO settlements left in bank, e.g. to 0 when the bank returns it (raise `cashInAccount` by the same amount). Audited like every adjustment (ledger `cashLeftInBankChange`). 400 `Nothing is left in bank before cash management is set up.` when there's no pool yet.
-- `cashOther` sets the net cash from custom transactions and dues (may be negative), e.g. to 0 once the CSP has accounted for it; change `cashInAccount` (or the limit) to match. The rule's message adds `+ / − other cash (₹…)` when it isn't 0. 400 `There's no other cash before cash management is set up.` with no pool.
+- `cashOther` sets the net cash from custom transactions and dues (may be negative), e.g. to 0 once the CSP has accounted for it (the limit follows). 400 `There's no other cash before cash management is set up.` with no pool.
 - The CSP's direct `SETTLEMENT` and every `ADJUSTMENT` are in the ledger with `actorType: USER` and the user's id.
-- Nothing below 0: 400 `Cash in account can't go below ₹0.00: …`
+- Nothing below 0: 400 `Cash in hand and cash in account can't be below ₹0.00.`
 - Drawer keys you leave out keep their count.
 - Other 400s: `Remarks are required.`, `Nothing to change.`, `Each agent can appear only once.`
 
@@ -1127,6 +1675,64 @@ To-dos shared between the CSP and its agents. A KO manages its own on the deskto
 - **Other cash, dues, day closes, tasks (CSP):** "Other cash" next to left in bank; a Balance due list per KO (to collect / to give); a "Today" strip with each KO's day close (closed, short, over, not closed); Tasks per KO (open, overdue, done) with "Add task"; Labels under settings.
 - **Ledger:** filters for agent(s), type and period.
 
+### 13A.9 Ledger types and reasons added in rev 26
+
+`types` filter adds `INCREASE`, `DECREASE` (reason `CASH_IN_HAND` / `CASH_IN_ACCOUNT`), `DRAWER_ADJUSTED` (the agent counted notes for an Adjust request), `AGENT_REMOVED` (KO deleted), `AGENT_TRANSFERRED` (KO replaced, two rows), `TRANSFER` (desktop one-step hand ⇄ account). `ADJUSTMENT` rows from KO creation have `reason: "KO_CREATION"`; `AGENT_ADDED` rows carry `cashLimitChange`. `ACTIVATION` rows have `reason` `DIFFERENCE_FROM_CASH_IN_ACCOUNT`, `DIFFERENCE_TO_CASH_IN_ACCOUNT`, `OTHER_INCREASED_BY_CSP`, `OTHER_DECREASED_BY_CSP` (or null when the count matched) and `amount` = the difference. Every row keeps `actorType` / `actorId` (USER = CSP's userId, MACHINE = machineCode): the audit trail the owner asked for.
+
+### 13A.10 Increase / decrease cash (rev 26, new button)
+
+On the Cash tab, a **"Cash in / out"** button (only with `screens.cash`). Sheet:
+
+```
+[ Increase ▾ | Decrease ]
+Where:   ( ) Cash in hand of: [ KO-001 ▾ ]     ( ) Cash in account
+Amount:  [ 10,000 ]     Remarks: [ Gave cash for withdrawals ]     [Save]
+```
+- The agent picker lists the KOs and **the CSP itself only when `machineActive`** is true for it (its desktop counts the notes). Without a PC, the CSP's own cash goes through **cash in account**: if it's picked anyway → 400 `CSP_HAND_NEEDS_MACHINE` "You don't have a running machine, so your cash in hand isn't counted on a desktop. Change the cash in account instead."
+- `POST /cash-management/transactions` (+ `Idempotency-Key`):
+  ```json
+  { "type": "INCREASE", "target": "CASH_IN_HAND", "agentId": "KO-001", "amount": 10000, "remarks": "Gave cash" }
+  { "type": "DECREASE", "target": "CASH_IN_ACCOUNT", "amount": 5000, "remarks": "Withdrew for the shop" }
+  ```
+  → 201 with the pool view; message "Cash in hand increased. The agent counts the notes on the desktop (Adjust request)." / "Cash in account decreased."
+- The **cash limit moves by the amount** (+ / −); nothing is compared with it. Can't go below 0: 400 `Not enough cash in hand: ₹… available, ₹… to take out.` / `Not enough cash in account: …`.
+- A cash in hand change creates an **Adjust request** for that agent (13A.11). Audited (ledger `INCREASE` / `DECREASE`).
+- Errors: 400 `agentId is required to change an agent's cash in hand.`, `Agent … isn't part of this CSP.`, `Remarks are required.`
+
+### 13A.11 Adjust requests (rev 26) — the agent counts the notes
+
+Whenever the CSP changes an agent's cash in hand from the app — **KO creation** (rows it took cash from / gave to), **edit** (ADJUSTMENT without a drawer), **increase / decrease** — the server creates a **mandatory Adjust request** for that agent. On its desktop (whichever PC it's logged in on) the agent sees it with an **[Adjust]** button that opens the denomination modal with its current notes; it enters the notes given / taken (or recounts the whole drawer) so the drawer total matches the new cash in hand. Until it's done, the agent's other desktop cash actions are refused (409 `ADJUSTMENT_PENDING`); receipts still upload and apply.
+
+`GET /cash-management/adjustments?agentId=&status=PENDING|COMPLETED|CANCELLED` (CSP, super admin) →
+```json
+"data": [ { "id": "…", "agentId": "KO-001", "source": "CSP_INCREASE",          // KO_CREATION | CSP_EDIT | CSP_INCREASE | CSP_DECREASE
+            "status": "PENDING", "kind": "GIVEN", "amount": 10000,             // GIVEN = CSP gave cash; TAKEN = CSP took it
+            "cashInHandBefore": 45000, "cashInHandAfter": 55000,
+            "drawerBefore": { … }, "drawerAfter": null, "mandatory": true,
+            "remarks": "Gave cash", "requestedBy": "<userId>", "completedAt": null, "completedBy": null, "createdAt": "…" } ]
+```
+Show on the agent's row "Waiting for notes (₹10,000 given)" and in the Requests inbox; `COMPLETED` rows show `drawerAfter` and the PC (`completedBy`). The pool view's `agents[].pendingAdjustments` is the count. Only shown for plans with cash management.
+
+### 13A.12 KO's first PC activation: cash in hand difference (rev 26)
+
+The KO's desktop activation form is **pre-filled with the cash in hand the CSP gave** (e.g. ₹60,000, editable) and asks for the denomination. If the KO counts a different amount, it chooses where the difference came from / went to:
+
+| KO counted | Chooses | Effect | CSP |
+|---|---|---|---|
+| more than given | **Cash in account** | difference taken from cash in account → KO's cash in hand; limit unchanged | ledger only |
+| more than given | **Other** (cash increased by the CSP) | only the KO's cash in hand goes up; **limit + difference** | **notified** |
+| less than given | **Cash in account** | difference added to cash in account; limit unchanged | ledger only |
+| less than given | **Other** (cash decreased by the CSP) | only the KO's cash in hand goes down; **limit − difference** | **notified** |
+
+The KO's new cash in hand is always what it counted. Every case is audited (ledger `ACTIVATION` with `reason`, 13A.9). The notification (§13D, `kind: CASH_ACTIVATION_DIFFERENCE`) reads e.g. "Ravi (KO-002) counted ₹55,000.00 at machine activation, ₹5,000.00 more than the ₹50,000.00 you gave. Marked as other (cash increased by you): the cash limit is now ₹1,15,000.00." with `data: { agentId, machineCode, given, counted, difference, differenceSource }`. Show it in the bell and as a banner on the Cash tab until read.
+
+### 13A.13 Cash screens (rev 26 additions)
+
+- **Cash tab header:** All / per agent switch; cards Cash in hand (total), Cash in account, Balance due, **Cash limit (worked out)**, Other cash; merged denomination.
+- **Agent row:** cash in hand, drawer total, "PC on" chip (`machineActive`), "Waiting for notes" chip (`pendingAdjustments > 0`), tap → agent detail with Edit cash / Cash in / out.
+- **Edit cash sheet:** cash in account + each agent's cash in hand (incl. the CSP); preview the new limit locally (= Σ cash in hand + cash in account + in bank + left in bank + balance due − other cash) before saving.
+- Remove every "CSP limit" input and every "must equal the limit" message from the app.
+
 ## 13B. Commission (CSP)
 
 **Who earns:** only the **CSP**. A KO is paid a salary by its CSP, so every successful receipt of the CSP **or of its KOs** earns commission for the CSP. Commission is earned **by month** (the Home hero shows this month so far; "Monthly" lists past months).
@@ -1186,6 +1792,42 @@ Per agent of the CSP (the CSP and its KOs), from their PCs:
 
 `GET /team/settings` / `PATCH /team/settings { "workdayStart": "09:30" | null, "workdayEnd": "18:30" | null }` (CSP): its team's working day (`HH:mm`, IST). 400 `Use a time like 09:30.`, `The start time must be before the closing time.`
 
+## 13D. Notifications (rev 26)
+
+In-app notifications for the CSP (and BC) login. Every notification is also sent as a push (rev 32, §19.4 R23) when the user's settings allow it; still refresh the badge with `GET /notifications?unreadOnly=true&limit=1` on resume and when a push arrives in the foreground.
+
+| Call | Notes |
+|---|---|
+| `GET /notifications?unreadOnly=&page=&limit=` | newest first → `{ items: [{ id, title, message, type: INFO\|SUCCESS\|WARNING\|ERROR, kind, data, isRead, readAt, createdAt }], unread, pagination }` |
+| `POST /notifications/:id/read` | mark one read; `:id` = `all` marks every unread one |
+
+`kind` → where to go on tap: `CASH_ACTIVATION_DIFFERENCE` → Cash tab, that agent (`data.agentId`); `SUBSCRIPTION_RENEWED` / `SUBSCRIPTION_RENEWAL_FAILED` / `SUBSCRIPTION_LAPSED` / `SUBSCRIPTION_CANCELLED` / `MANDATE_REVOKED` / `MANDATE_REPLACED` (rev 27) / `TRIAL_STARTED` / `TRIAL_ENDING` / `TRIAL_EXTENDED` (rev 28) → Subscription screen (refetch `/subscriptions/access`); `BC_UNLINKED` (rev 31, CSP: a BC unlinked it) → nothing; `GENERAL` → nothing. Push for these: §19.4 R23.
+
+**New kinds (rev 32)** — who gets them, `data` keys, the push setting (group) that controls them, and where to go on tap:
+
+| `kind` | To | When | `data` | Group | On tap |
+|---|---|---|---|---|---|
+| `ACTIVATION_REVOKE_APPROVED` | CSP / BC owner | the super admin approved its revoke request | `requestId, requestNumber, activationId, activationCode, machineCode` | requests | Activations → that code (refetch; it's unassigned now) |
+| `ACTIVATION_REVOKE_REJECTED` | CSP / BC owner | its revoke request was rejected (message has the reason) | `requestId, requestNumber, activationId, activationCode` | requests | Revoke requests list |
+| `ACTIVATION_REVOKED` | CSP / BC owner | the super admin revoked a code directly (the PC stops working) | `activationId, activationCode, machineCode` | machines | Activations → that code |
+| `BC_LINK_APPROVED` | BC | its link request was approved | `requestId, cspAgentId` | requests | BC → that CSP |
+| `BC_LINK_REJECTED` | BC | its link request was rejected (message has the reason) | `requestId, cspAgentId` | requests | Link requests list |
+| `BC_LINKED` | CSP | it is now linked to a BC | `bcId, bcName` | requests | nothing |
+| `CASH_SETTLEMENT_STARTED` | CSP | a KO started a settlement (step 1, or the single "left in bank → hand" step) | `agentId, settlementId, direction, amount` | settlements | Cash → that KO → settlements |
+| `CASH_SETTLEMENT_COMPLETED` | CSP | a KO finished the last step (message says what was left in bank) | `agentId, settlementId (first step's id), direction, amount, settledAmount` | settlements | same |
+| `CASH_SETTLEMENT_CANCELLED` | CSP | a KO cancelled an open step (money went back) | `agentId, settlementId, direction, amount` | settlements | same |
+| `CASH_REQUEST_RAISED` (`type: WARNING`) | CSP | a KO asked to change its cash in hand | `agentId, requestId, systemCashInHand, requestedCashInHand` | cash | Cash → requests → that request (approve / reject) |
+| `CASH_DAY_CLOSE_DIFFERENCE` (`type: WARNING`) | CSP | a KO closed the day short / over, or its cash in account reading differs | `agentId, dayCloseId, date (YYYY-MM-DD), difference, accountDifference` | cash | Cash → that KO → day closes |
+| `MACHINE_OFFLINE` (`type: WARNING`) | CSP / BC owner | a PC sent no heartbeat for **1 hour of the working day**: the CSP's `workdayStart`–`workdayEnd` (`/team/settings`), or **09:00–19:00 IST** when not set; nothing outside those hours (a PC off overnight alerts 1 hour after the day starts if still off). Once per outage; again after it comes back and drops again | `machineId, machineCode, machineName, agentId, activationCode, lastHeartbeatAt` | machines | Machines → that PC |
+| `CASH_DAY_NOT_CLOSED` (`type: WARNING`) | CSP | an agent (a KO or the CSP itself) that worked today hasn't closed the day by the reminder time: **30 min before the team's closing time** (`/team/settings` `workdayEnd`), or **18:00** when none is set; once per agent per day | `agentId, date, closeTime, remindedAt` | cash | Cash → that agent (the desktop shows its own reminder) |
+| `RECEIPT_REPORT_RESOLVED` / `RECEIPT_REPORT_REJECTED` | whoever reported | the super admin closed its problem report (message = "What was done") | `reportId, receiptId, status` | requests | My reports → that report |
+
+- Money values in `data` are strings with 2 decimals (`"1000.00"`), like everywhere else. In a push every `data` value is a string (§19.4 R23).
+- Only KO actions notify the CSP; the CSP's own desktop actions don't.
+- `ACTIVATION_REVOKE_REQUESTED`, `BC_LINK_REQUESTED`, `RECEIPT_REPORT_RAISED` go to the super admin only (admin console); the app never receives them.
+- Group `machines` has `ACTIVATION_REVOKED` and `MACHINE_OFFLINE`; `settlements` has the three settlement kinds; `cash` adds `CASH_DAY_NOT_CLOSED`.
+- Team settings screen: tell the CSP that the working day also sets the alerts: "PC offline" only between start and closing time (09:00–19:00 when empty), and the day-close reminder 30 min before closing (18:00 when empty).
+
 ## 14. Reports
 
 `GET /reports/summary?period=TODAY|YESTERDAY|CURRENT_MONTH|LAST_MONTH|CUSTOM&from=&to=&cspAgentId=&agentId=` (default `TODAY`). Sending `from`/`to` overrides `period`; `CUSTOM` without dates = all time. `CURRENT_MONTH` = 1st of this month → today, `LAST_MONTH` = the whole previous month (IST days, §18). Older builds ignored `period` and returned all-time totals.
@@ -1199,18 +1841,18 @@ UI: period chips; horizontal-scroll table (`FlatList` with sticky first column) 
 
 ## 15. Metrics (manual entries)
 
-Metric definitions are managed by the Super Admin. BCs enter daily values for **manual** metrics (e.g. social-security enrolments) for their CSPs; they show in the dashboard `socialSecurity` sections.
+Metric definitions **and values** are managed by the Super Admin (rev 33: BCs can no longer enter values). The app only **reads** them: they show in the dashboard `socialSecurity` sections and in a read-only Metrics list.
 
 | Call | Who | Notes |
 |---|---|---|
 | `GET /metrics` | any | `[{ id, code, name, category, source (RECEIPT\|MANUAL), inputType, description, isActive }]` |
 | `GET /metrics/values?agentId=&metricId=&from=&to=` | any (scoped) | entered values |
-| `POST /metrics/values` `{ metricId, agentId, date, value ≥ 0 }` | BC | |
-| `PATCH /metrics/values/:valueId` `{ value }` | BC | |
+| `POST /metrics/values` `{ metricId, agentId, date, value ≥ 0 }` | **Super admin only** (rev 33; a BC / CSP gets 403) | done in the admin console |
+| `PATCH /metrics/values/:valueId` `{ value }` | **Super admin only** (rev 33) | |
 
 Errors: `Metric not found.`, `Metric is inactive.`, `Values can only be entered manually for manual metrics.`, `Manual metric values can only be assigned to a CSP.`, `Metric value already exists for this CSP and date.` (→ offer to edit the existing value).
 
-UI: pick CSP + date, list active `MANUAL` metrics with number inputs, save one by one (no bulk endpoint).
+UI (rev 33): **remove the BC entry form**; show values read-only (pick CSP + date range → `GET /metrics/values`).
 
 ## 16. CSP visits (photo upload)
 
@@ -1271,8 +1913,11 @@ await Sharing.shareAsync(res.uri, { mimeType: "application/vnd.openxmlformats-of
 | Payments are manual (no Razorpay yet) | don't ship checkout to production | checklist 1.1–1.5 |
 | No push notifications / activation emails yet | poll lists for link approvals and machine status; show passwords from the assign response | planned (§5.2) |
 | `POST /auth/check-agent` returns the full agent record | only use `success` | backend to trim |
-| No unlink endpoint for BC↔CSP | can't undo a link from the app | Super Admin/backend |
+| ~~No unlink endpoint for BC↔CSP~~ | built rev 31: `POST /bc-links/csps/:cspAgentId/unlink` (§19.4 R21) | done |
 | `cashLimit`/`openingCash` are ignored when an existing CSP is requested via `POST /agents/csp` | the CSP keeps its own values | by design for now |
+| UPI autopay (Razorpay) not integrated (rev 26) | dev mandates are ACTIVE at once and charges succeed; no real UPI approval screen | checklist 1.10 |
+| A purchase after a cancel starts now (the cancelled plan's remaining days are lost) (rev 26) | warn before payment (§6A.5) | confirmed by the owner (rev 27) |
+| Agent / KO email OTPs are a console stub (rev 26) | desktop email verification / cash login OTPs aren't delivered yet | email provider before launch |
 
 ### 19.1 Backend requirements from the mobile app
 
@@ -1452,7 +2097,222 @@ The canvas shows "Own plan active" / "No own plan yet" per CSP. Add `ownSubscrip
 
 Built in rev 25 (were future scope): receipt slip / PDF / report a problem (§13), commission slabs (§13B), forgot / reset / change password (§5.2).
 
+### 19.4 New endpoints for screens not in the app yet (app team, rev 30)
+
+Found while comparing the app with this KT (canvas row "Not in the app yet"). Shapes follow §3 (`{ success, message, data }`, `code` on errors). Until an endpoint exists the app hides that screen or button (404 → hidden).
+
+| # | Endpoint(s) | Screen | Status |
+|---|---|---|---|
+| R20 | `GET /auth/me`, `PATCH /auth/me`, `POST /auth/me/email/verify` | Profile (More → Profile; `profile` is in §7.1 `alwaysOpen`) | **Done (rev 31)** |
+| R21 | `POST /bc-links/csps/:cspAgentId/unlink` | BC · unlink a CSP (§19 gap "No unlink endpoint") | **Done (rev 31)** |
+| R22 | `GET /app/config` | Help & support, blocked-account screen (contact support), forced update | **Done (rev 31)** |
+| R23 | push token on `/auth/login` / `/auth/refresh` (rev 32, replaces `/notifications/devices`), `GET` / `PATCH /notifications/preferences` | Push + notification settings (§5.2 "still planned", checklist 2.14) | **Done (rev 31, changed rev 32)**; push sent through FCM |
+| R24 | `POST /activations/:activationId/send` | "Email to KO" on the code + password sheet (§5.2 "activation email", no endpoint) | **Done (rev 31)**; email delivery waits for the email provider |
+
+#### Backend status (rev 31, 2026-11-08)
+
+All five are built as you described below; **the differences are listed here** (the request / response blocks under each R are your ask, still valid unless a line here says otherwise). Errors are `{ success: false, code, message }` as always.
+
+**R20 · Profile**
+
+| Call | Request | Success | Failures |
+|---|---|---|---|
+| `GET /auth/me` (any login, also super admin; not rate limited like the other `/auth` calls; never blocked by the plan) | — | 200 `data: { userId, agentId, role, name, email, emailVerified, emailVerifiedAt, pendingEmail, phone, address, createdAt }` | 401 (token) |
+| `PATCH /auth/me` | any of `{ name (2–100), phone (10–15 chars), address, email }` | name / phone / address only → **200** `Profile updated.` `data`: the profile · with a **new** email → **202** `We sent a code to <email>.` `data: { pendingEmail, expiresAt, resendAvailableAt, profile }` | 400 `Nothing to change.` (nothing differs) · 400 `VALIDATION_FAILED` · 409 `EMAIL_TAKEN` · 409 `OTP_RESEND_TOO_SOON` (1 code per minute; `resendAvailableAt`) · 409 `OTP_RESEND_LIMIT` (5 per hour) · 429 (auth limit 20 / 15 min) |
+| `POST /auth/me/email/verify` | `{ otp: "123456" }` (6 digits) | 200 `Email changed.` `data`: the profile (new `email`, `emailVerifiedAt` set, `pendingEmail: null`) | 409 `OTP_INVALID` (attempt counted; 5th deletes it) · 409 `OTP_EXPIRED` (10 min) · 409 `OTP_ATTEMPTS_EXCEEDED` · 404 `OTP_NOT_FOUND` · 409 `EMAIL_TAKEN` (someone took it meanwhile) |
+
+Differences from your ask:
+- Extra fields on the profile: **`emailVerified`** (true once the signup OTP was done) and **`pendingEmail`** (the new email waiting for its code, else null). `emailVerifiedAt` is `null` until an email is changed and verified here (signup didn't store a time).
+- One `PATCH` may change name / phone / address **and** the email: the other fields are saved at once, the email waits for the code (202 with `profile` inside `data`).
+- Emails are compared case-insensitively and stored lower-case. The old email keeps working (login OTPs, reset) until the new one is verified.
+- **Source of truth:** the agent row (`name`, `mobile`, `address`, `email`); a BC's own record is updated too. `GET /agents/:agentId` shows the same values (`mobile` = `phone`). The login email (`user.email`) and the agent email change together.
+- **App:** Profile screen reads `GET /auth/me`; Edit → `PATCH`; on 202 open the OTP screen for `pendingEmail` with a resend countdown to `resendAvailableAt` ("Send again" = the same `PATCH` with the email); on verify success replace the profile. Show "Email change pending: <pendingEmail> [Enter code]" while `pendingEmail` is set.
+
+**R21 · BC unlink** — `POST /bc-links/csps/:cspAgentId/unlink` (BC_ADMIN) `{ reason? ≤ 500 }` → 200 `CSP unlinked.` `data: { cspAgentId, unlinkedAt, koCount }` exactly as asked. Differences:
+- **No running plan needed** (you wrote "CSP_LINKING"): a BC whose plan lapsed can still clean up its list.
+- The approved link request now has **`status: "UNLINKED"`** (new value; add it to the Link requests status chips / filter `?status=UNLINKED`), with `unlinkedAt` and `unlinkReason` on the request object.
+- Errors: 404 `CSP not found.` (not linked to you, or already unlinked) · 400 `UNLINK_NOT_ALLOWED` `You created this CSP; delete it instead.` (a CSP you created, `BC_MANAGED`) · 403 for other roles.
+- The CSP gets notification **`kind: "BC_UNLINKED"`** `data: { bcId, bcName }` ("<BC> no longer sees your data. Your plan and data are unchanged."). Audit row written (super admin console).
+- **App (BC):** CSP detail (linked ones only, `linkType: SUBSCRIBED_CSP`) → **[Unlink]** → confirm "Unlink <CSP>? It and its <koCount> KOs leave your lists. You can send a new link request later." → on 200 remove it from every BC list and refetch.
+
+**R22 · App config** — `GET /app/config?platform=android|ios&version=1.4.0` (public) exactly as asked, plus:
+- **`updateAvailable`** (`version` < `latestVersion`) next to `updateRequired` → a dismissible "Update available" banner.
+- `platform` other than android / ios → 400 `VALIDATION_FAILED`; without `platform` the versions are `null` and `updateRequired: false`. `version` must look like `1.4.0`.
+- Every field can be `null` until the super admin fills it (hide the row / button). Response header `Cache-Control: public, max-age=3600`.
+- Set by the super admin: `GET` / `PATCH /admin/app-config` (admin KT §9L).
+- **App:** call on launch (before login too) and on resume after 1 h; `updateRequired` → full-screen "Please update" with `updateUrl` and stop other calls; `message` → banner; Help & support and the blocked-account screen use `support.*` (tel: / WhatsApp / mailto links).
+
+**R23 · Push devices and preferences** — preferences are built as asked; **the push token goes with login and refresh instead of separate device calls (rev 32)**. Details:
+- **Push is sent through FCM (rev 32).** The server sends once a Firebase service account is set; until then it only logs. Register the token today; nothing changes on the app when the key goes live.
+- **App setup (rev 32):** use `@react-native-firebase/app` + `@react-native-firebase/messaging` (FCM tokens, **not** Expo push tokens, on both platforms). Put `google-services.json` (Android) and `GoogleService-Info.plist` (iOS) from the CSP Manager Firebase project into the app; Android package / iOS bundle ID must match what is registered there (ask the backend owner). Android 13+: ask `POST_NOTIFICATIONS`; iOS: `requestPermission()` (APNs key is uploaded in Firebase by the backend owner). Create an Android channel with id **`default`** (the server sends `channelId: "default"`, high priority, sound default).
+- **Rev 32: no separate device calls.** `POST /notifications/devices` and `DELETE /notifications/devices/:token` are **removed** (404 now). The token is tied to the login session:
+  - **Login** `POST /auth/login { agentId, password, pushToken, platform, appVersion }`: get the token with `messaging().getToken()` before calling login (if permission was denied or Firebase fails, log in without the three fields).
+  - **Refresh** `POST /auth/refresh { refreshToken, pushToken, platform, appVersion }`: send the current token on every refresh (the app refreshes at least every 15 min). This also covers Firebase rotating the token (`onTokenRefresh`: you can trigger a refresh at once, or let the next one carry it) and the user granting permission later. Without `pushToken` the saved one stays.
+  - **Change password** `POST /auth/change-password { …, pushToken, platform, appVersion }`: every old session ends, so send the token to keep pushes (otherwise the next refresh brings them back).
+  - **Logout** `POST /auth/logout { refreshToken }`: the session's token is removed by the server; then call `messaging().deleteToken()`.
+  - `pushToken` (10–4096 chars) needs `platform` (`android` / `ios`), else 400 `Send the platform (android or ios) with the push token.` `appVersion` ≤ 30 chars.
+  - **Pushes go only to live sessions:** after logout, a session revoked (password change elsewhere, block / suspend, stolen refresh token) or expired (7 days unused), that phone gets nothing more. One phone, the last login: the same token on another login moves there.
+  - The server deletes tokens Firebase reports as dead.
+- **Message shape:** `notification: { title, body }` (same as the in-app item) and `data` (all values are **strings**): `notificationId`, `kind`, and each key of the notification's `data` (objects JSON-encoded). On tap (`onNotificationOpenedApp` / `getInitialNotification`) route by `kind` exactly like the in-app list (§13D) and mark it read with `notificationId`. In the foreground (`onMessage`) Android shows nothing by itself: refresh the badge / list or show your own banner.
+- A push can arrive a second or more after the action (the server sends only once the change is saved).
+- `GET /notifications/preferences` → `{ plan: true, cash, settlements, machines, requests, locked: ["plan"] }` (all `true` until changed). `PATCH` any of `cash`, `settlements`, `machines`, `requests` → same shape; `plan: false` → 400 **`PREFERENCE_LOCKED`**; empty body → 400 `Nothing to change.`
+- Groups (rev 32): `plan` = `GENERAL`, `SUBSCRIPTION_*`, `MANDATE_*`, `TRIAL_*` (always on); `cash` = `CASH_ACTIVATION_DIFFERENCE`, `CASH_REQUEST_RAISED`, `CASH_DAY_CLOSE_DIFFERENCE`, `CASH_DAY_NOT_CLOSED`; `settlements` = `CASH_SETTLEMENT_STARTED` / `_COMPLETED` / `_CANCELLED`; `machines` = `ACTIVATION_REVOKED`, `MACHINE_OFFLINE`; `requests` = `BC_UNLINKED`, `BC_LINKED`, `BC_LINK_APPROVED` / `_REJECTED`, `ACTIVATION_REVOKE_APPROVED` / `_REJECTED`, `RECEIPT_REPORT_RESOLVED` / `_REJECTED`. Full list with `data` and tap targets: §13D. A switched-off group still shows in the in-app list; only the push is skipped.
+
+**R24 · Email the activation code** — `POST /activations/:activationId/send` (CSP_ADMIN / BC_ADMIN; needs a running plan, like regenerate) `{ to?: "agent" | "me" }` → 200 `Code sent to <email>.` `data: { sentTo, sentAt, activationCode }` as asked. Differences:
+- **Emails are sent through Resend (rev 32).** The server makes a fresh password, records the send and emails it. If the email provider fails → **503 `EMAIL_SEND_FAILED`** ("We couldn't send the email right now…"): the password was already replaced, so show the message and let the user tap Send again (counts toward 5 per hour). In development `GET /activations` still shows `activationPassword` (dev only).
+- Errors: 404 `Activation not found.` · 400 `Activation has already been used.` (not `NOT_ACTIVATED`) · 400 `Activation has not been assigned.` · 400 `AGENT_HAS_NO_EMAIL` (`Add an email for this agent first.`; with `to: "me"`: `Your account has no email.`) · 429 **`RATE_LIMITED`** (5 sends per activation per hour) · 400 `` `to` must be "agent" or "me". `` · 403 subscription messages (§7.3).
+- `to: "me"` sends to the login email (the owner forwards it).
+- **App:** on the code + password sheet add **[Email to agent]** (disabled with "Add an email for <agent> first" when the agent has no `email`); after 200 show "Sent to <sentTo>. The old password no longer works." and hide the password shown before.
+
+#### R20 · Profile: your own details
+
+`GET /auth/me` (login) →
+
+```json
+"data": { "userId": "…", "agentId": "CSP-001", "role": "CSP_ADMIN", "name": "Ravi Kumar",
+          "email": "ravi@example.com", "emailVerifiedAt": "2026-11-01T10:00:00.000Z",
+          "phone": "9876543210", "address": "Main road, Rampur", "createdAt": "…" }
+```
+
+`PATCH /auth/me` (login) — any of `{ "name": "…", "phone": "…", "address": "…" }` (same rules as signup §5.1) → 200 `Profile updated.` `data`: the profile above. Errors: 400 `VALIDATION_FAILED`, 400 `Nothing to change.`
+
+Email change, two steps (the email receives OTPs, so it's verified first):
+
+- `PATCH /auth/me { "email": "new@example.com" }` → 202 `We sent a code to new@example.com.` `data: { pendingEmail, expiresAt, resendAvailableAt }`; the old email stays until verified. 409 `EMAIL_TAKEN` `This email is already used by another account.`
+- `POST /auth/me/email/verify { "otp": "123456" }` → 200 `Email changed.` `data`: the profile. Errors as §5.1 OTP (`OTP_INVALID`, `OTP_EXPIRED`, `OTP_ATTEMPTS_EXCEEDED`, `OTP_NOT_FOUND`).
+
+Never blocked by the plan (like `/auth/*`). The agent row (`/agents/:agentId`) should follow name / phone / address / email changes, or say which one is the source of truth.
+
+#### R21 · BC: unlink a CSP
+
+`POST /bc-links/csps/:cspAgentId/unlink` (BC, `CSP_LINKING`) body `{ "reason"?: "…" }` (≤ 500) → 200 `CSP unlinked.`
+
+```json
+"data": { "cspAgentId": "CSP-0042", "unlinkedAt": "…", "koCount": 2 }
+```
+
+- Only CSPs linked through a link request (`linkType: SUBSCRIBED_CSP`, §10). A BC-created CSP (`BC_MANAGED`) → 400 `UNLINK_NOT_ALLOWED` `You created this CSP; delete it instead.`
+- The CSP and its KOs leave every BC screen at once; the CSP keeps its own plan and data. The CSP gets a notification `kind: "BC_UNLINKED"` (`data: { bcId, bcName }`).
+- 404 `CSP not found.` (not linked to you). A new link request is possible afterwards (§10).
+- Audit: who unlinked, when, reason (super admin console).
+
+#### R22 · App config: support contacts and minimum version
+
+`GET /app/config?platform=android|ios&version=1.4.0` (public, cacheable 1 h) →
+
+```json
+"data": {
+  "support": { "phone": "+91…", "whatsapp": "+91…", "email": "support@…", "hours": "Mon–Sat, 9:00–19:00" },
+  "links": { "terms": "https://…", "privacy": "https://…" },
+  "minVersion": "1.3.0", "latestVersion": "1.4.0",
+  "updateRequired": false, "updateUrl": "https://play.google.com/store/apps/details?id=…",
+  "message": null
+}
+```
+
+- `updateRequired: true` when `version` < `minVersion` → the app shows a full-screen "Please update" with `updateUrl` and stops calling other endpoints.
+- `message`: optional banner text (maintenance etc.), `null` when none.
+- Set by the super admin (console); no secrets in it.
+
+#### R23 · Push notifications: devices and preferences
+
+_(Your rev 30 ask; rev 32 backend: the token goes with `/auth/login` / `/auth/refresh` and `/auth/logout` removes it, see the backend status above. `/notifications/devices` was removed.)_ The server sends a push for every §13D notification the user's preferences allow (FCM for Android; APNs via FCM for iOS).
+
+`GET /notifications/preferences` (login) →
+
+```json
+"data": { "plan": true, "cash": true, "settlements": true, "machines": false, "requests": true,
+          "locked": ["plan"] }
+```
+
+`PATCH /notifications/preferences` any of `{ cash, settlements, machines, requests }` (booleans) → 200 with the same shape. `plan` (renewal, failed charge, lapsed, trial, mandate) is always on: 400 `PREFERENCE_LOCKED` if sent as `false`. Groups → `kind`s: `plan` = `SUBSCRIPTION_*`, `MANDATE_*`, `TRIAL_*`; `cash` = `CASH_ACTIVATION_DIFFERENCE`, Adjust requests done, KO cash requests; `settlements` = KO settlements, balance dues; `machines` = a PC offline during the working day (§13C); `requests` = revoke / link requests answered, problem reports answered. The in-app list (§13D) keeps everything regardless.
+
+#### R24 · Email the activation code to the agent
+
+`POST /activations/:activationId/send` (owner) body `{ "to"?: "agent" | "me" }` (default `agent`) → 200 `Code sent to meena@example.com.`
+
+```json
+"data": { "sentTo": "meena@example.com", "sentAt": "…", "activationCode": "7KQ2-M9XA-31TC-P8LW" }
+```
+
+- Only for an assigned, `NOT_ACTIVATED` activation. The server makes a **fresh password** and emails code + password (the old password stops working), so the app never has to keep it.
+- 400 `AGENT_HAS_NO_EMAIL` `Add an email for this agent first.`; 400 `Activation has already been used.`; 429 after 5 sends per activation per hour.
+- Email is a console stub on the server today (§19): build it with the email provider.
+
+### 19.5 App-side effects of the desktop work in rev 31
+
+The desktop team's asks (desktop KT #35–#39) changed a few things the app shows or sends. None of them is required for the app to keep working; each field is new and optional.
+
+| # | Where | What changed | App |
+|---|---|---|---|
+| 1 | `GET /receipts`, `GET /receipts/:receiptId` | new **`source`**: `"AUTOMATION"` (Transaction Controller) / `"MANUAL"` (done by hand on the SBI kiosk) / `null` (older desktops); new **`denominationPending`** (boolean) | optional chip "Automation" / "Manual"; when `denominationPending` show **"Count needed"** on the receipt (the agent still has to enter the notes on its desktop; no action for the CSP) |
+| 2 | `GET /cash-management` (pool view) | each `agents[]` item adds **`pendingCounts: { count, amount }`** | on the agent row: "₹6,500 still to count (2 receipts)" when `count > 0`; it explains why `drawerMatchesCashInHand` is false |
+| 3 | `GET /cash-management/ledger` | new type **`RECEIPT_COUNT`**: the agent entered the notes of a receipt uploaded without them (`drawerChange` only, `remarks` "Notes for cash withdrawal ₹4500.00") | label "Notes counted" in the ledger filter and rows |
+| 4 | `GET /cash-management/day-closes` | items add `system.cashInAccount`, `counted.cashInAccount` (both `null` when the KO didn't enter it) and **`accountDifference`** (counted − system; negative = SBI shows less) | show both differences per close: "Cash in hand: matched · Cash in account: ₹200 less", each with its `closedAt` time (cash in account is shared, so several KOs may report it the same day) |
+| 5 | Agent object (`GET /agents`, `/agents/:agentId`), `POST /agents/ko`, `PATCH /agents/:agentId` | new optional **`sbiUserId`**: the User ID the agent types on the SBI kiosk login page, **only when it differs from its agent ID**. 1–50 of `A–Z a–z 0–9 . _ -`, stored upper-case; `PATCH { sbiUserId: null }` clears it | KO form and KO / CSP edit: optional field "SBI kiosk user ID (if different from the agent ID)". 409 **`SBI_USER_ID_TAKEN`** ("This SBI user ID belongs to another agent.") → field error. Without it a shared PC can't tell who logged in when the SBI id differs |
+| 6 | **New** `POST /machines/:machineId/diagnostics` (CSP_ADMIN / BC_ADMIN, in scope) `{ fromDate?, toDate?, note? ≤ 300 }` (IST `YYYY-MM-DD`, default today, **only the last 3 days** (today and the 2 before), not in the future) | asks the PC to upload its desktop log to support → 201 `Log requested. The PC sends it with its next heartbeat (about a minute) while it's on.` `data: { id, requestId: "DIAG-2026-000012", machineCode, fromDate, toDate, status: "OPEN", note, partsReceived: [], createdAt, … }`. A new request replaces an open one (that one → `CANCELLED`). | Machine detail → "Send PC log to support" → optional note → toast with `requestId` (tell support this number). Errors: 404 `Machine not found.`, 400 `DIAGNOSTICS_RANGE_TOO_OLD` (older than 3 days; limit the date picker), 400 date messages. **`GET /machines/:machineId/diagnostics`** lists the requests with `status` `OPEN` / `RECEIVED` / `CANCELLED` (show "Sent" when `RECEIVED`) |
+| 7 | Notifications | new `kind: "BC_UNLINKED"` (to the CSP, R21) | tap: nothing (info only) |
+| 8 | Link requests | new `status: "UNLINKED"` (R21) | status chip "Unlinked" |
+
+Both 6 and the ledger type 3 are behind the plan gate like the other machine / cash calls (§7.2).
+
+### 19.6 Service counts on Home (app team, rev 32 ask)
+
+The owner approved a new CSP Home (canvas "Home · services card option B" and "Service counts"): the first card shows **today's successful receipts in five groups**, each with **when its last receipt came in** ("2 min ago"); a new screen lists every type with its count and last time, for any day. The app builds the groups from `GET /dashboard/summary` → `services[]` (category + receipt type, §11). Two things are missing.
+
+| # | Endpoint | Screen | Status |
+|---|---|---|---|
+| R25 | `GET /dashboard/summary` (changed: `services[].lastTransactionAt`) + a `CIF` receipt type | Home "Today's services", Service counts | **Requested** |
+
+Groups (successful receipts only; failed are never counted):
+
+| Group | Rows (`transactionCategory` + `receiptType`) |
+|---|---|
+| Transaction | `CASH_DEPOSIT` + `AEPS`, `CASH_DEPOSIT` + `ACCOUNT`, `CASH_WITHDRAWAL` + `AEPS`, `CASH_WITHDRAWAL` + `ACCOUNT`, `MONEY_TRANSFER` + `ACCOUNT`, `MONEY_TRANSFER` + **`CIF` (new)** |
+| ATM | `CASH_DEPOSIT` + `CARD`, `CASH_WITHDRAWAL` + `CARD`, `MONEY_TRANSFER` + `CARD` |
+| Social security | `SOCIAL_SECURITY` + `PMJJBY` / `PMSBY` / `APY` |
+| Account opening | `ACCOUNT_OPENING` |
+| Passbook printing | `PASSBOOK_PRINTING` |
+| Other (counts screen only) | `BALANCE_ENQUIRY`, `MINI_STATEMENT`, and anything not above |
+
+#### R25 · Last receipt time per service row, and money transfer by CIF
+
+**1. `GET /dashboard/summary`** — request unchanged (`from`, `to`, `agentId`, `includeKos`, …; the app sends one IST day as `from` = `to`). Each `services[]` row adds **`lastTransactionAt`**: the `transactionAt` of the newest **successful** receipt of that category + receipt type in the range (and the agents in view), `null` when it has none.
+
+```json
+"services": [
+  { "transactionCategory": "CASH_DEPOSIT", "receiptType": "AEPS", "successCount": 12, "failedCount": 1,
+    "successAmount": 84000, "failedAmount": 5000, "lastTransactionAt": "2026-11-08T13:12:00.000Z" },
+  { "transactionCategory": "MONEY_TRANSFER", "receiptType": "CIF", "successCount": 2, "failedCount": 0,
+    "successAmount": 9000, "failedAmount": 0, "lastTransactionAt": "2026-11-08T09:50:00.000Z" },
+  { "transactionCategory": "PASSBOOK_PRINTING", "receiptType": "PASSBOOK", "successCount": 0, "failedCount": 1,
+    "successAmount": 0, "failedAmount": 0, "lastTransactionAt": null }
+]
+```
+
+- Needed for ranges inside the retention period (the app asks for one day in the last 30). For days whose receipts were already deleted, `null` is fine (counts still come from the daily counts).
+- Same for a BC with `agentId` = a CSP (the CSP and its KOs).
+- Until it's sent, the app takes the time from `recentTransactions` (only right for groups that appear there) and otherwise shows the count without a time.
+
+**2. Money transfer by CIF** — today a money transfer is `ACCOUNT`, `AEPS` or `CARD`; the owner counts "money transfer (CIF)" separately. Please add **`receiptType: "CIF"`** (the desktop sends it for a CIF-based money transfer), accept it in `/receipts` `receiptTypes=` filters and the exports, and return it in `services[]` and `/receipts/stats`. If CIF is better carried another way (e.g. a field on `ACCOUNT` receipts), say how and the app will follow. Until then the app shows "Money transfer (CIF) 0".
+
+Errors: none new (as §11).
+
 ## 20. Changelog
+
+- 2026-11-08 (rev 32, app team ask) — New §19.6 R25: `services[].lastTransactionAt` in `/dashboard/summary` and a `CIF` receipt type for money transfer, for the new Home "Today's services" card and Service counts screen.
+- 2026-11-12 (rev 33) — Metric values are super-admin only: `POST` / `PATCH /metrics/values` refuse BC and CSP (403); the app's Metrics screen becomes read-only.
+- 2026-11-12 (rev 33) — Onboarding email on `POST /activations/assign` (`data.email`: `sent` / `NO_EMAIL` / `RATE_LIMITED` / `SEND_FAILED`); `resendAvailableAt` + `resendInSeconds` on signup, resend-otp, forgot password, profile email change; error `details.retryAfterSeconds` on `OTP_RESEND_TOO_SOON` / `OTP_RESEND_LIMIT`; central 429 `EMAIL_RATE_LIMITED`.
+- 2026-11-11 (rev 32) — Emails through Resend; new 503 `EMAIL_SEND_FAILED` / `EMAIL_NOT_CONFIGURED` on `/auth/signup`, `/auth/resend-otp`, `PATCH /auth/me` (email change), `POST /activations/:id/send`. Forgot password is unchanged (always the same answer).
+- 2026-11-11 (rev 32) — `MACHINE_OFFLINE` (1 hour without a heartbeat within the working day, else 09:00–19:00; once per outage) and `CASH_DAY_NOT_CLOSED` (30 min before `workdayEnd`, else 18:00; once per agent per day).
+- 2026-11-11 (rev 32) — New notification kinds (§13D table): `ACTIVATION_REVOKE_APPROVED` / `_REJECTED`, `ACTIVATION_REVOKED`, `BC_LINK_APPROVED` / `_REJECTED`, `BC_LINKED`, `CASH_SETTLEMENT_STARTED` / `_COMPLETED` / `_CANCELLED`, `CASH_REQUEST_RAISED`, `CASH_DAY_CLOSE_DIFFERENCE`, `RECEIPT_REPORT_RESOLVED` / `_REJECTED`; push groups `settlements` and `machines` now used.
+- 2026-11-11 (rev 32) — Push delivery through FCM (§19.4 R23). **Push token moved onto auth:** optional `pushToken` / `platform` / `appVersion` on `/auth/login`, `/auth/refresh`, `/auth/change-password`; `/auth/logout` removes the session's token; `POST` / `DELETE /notifications/devices` removed; pushes only to live sessions. App Firebase setup (`@react-native-firebase/messaging`, config files, Android channel `default`), push `data` keys (`notificationId`, `kind`, notification data as strings), dead tokens removed by the server.
+- 2026-11-08 (rev 31) — §19.4 R20–R24 **built** (backend status block with every request, response and error, and the differences from the ask: `emailVerified` / `pendingEmail` on the profile, email change returns 202, unlink needs no plan and sets link request `UNLINKED`, `updateAvailable` in `/app/config`, push and activation emails stored but not delivered until FCM / the email provider). New §19.5: receipt `source` and `denominationPending`, pool `agents[].pendingCounts`, ledger `RECEIPT_COUNT`, day close cash in account, agent `sbiUserId`, "Send PC log to support" (`/machines/:machineId/diagnostics`), `BC_UNLINKED`.
+- 2026-11-08 (rev 30) — New §19.4 (app team): endpoints for screens not in the app yet, with request and response: profile `GET` / `PATCH /auth/me` + email verify (R20), BC unlink a CSP (R21), `GET /app/config` support contacts and minimum version (R22), push devices + notification preferences (R23), email the activation code to the agent (R24).
+- 2026-11-08 (rev 29) — New §6C: one checklist of every API change in rev 27–28 (billing fixes + free trial) with request / response, success and failure handling and the screens affected. Cancelling a trial → 400 `TRIAL_CANCEL_NOT_ALLOWED`. §7.1 response now lists `RENEWAL_PENDING`, `subscriptionType`, `trial` and `upgrade.reason: "TRIAL"`.
+- 2026-11-07 (rev 28) — New §6B free trial: `GET /subscriptions/trial`, `POST /subscriptions/trial/start`, `trial` in `/subscriptions/access`, trial notifications; one trial per SBI agent ID / mobile / email / PC (`TRIAL_ALREADY_USED`, `TRIAL_ALREADY_USED_ON_MACHINE`).
+- 2026-11-07 (rev 27) — Owner decisions: blocked during renewal retries (`state` / 403 `RENEWAL_PENDING`, §6A.4, §7.2; purchase meanwhile → 409 `RENEWAL_IN_PROGRESS`); a plan price change replaces running mandates at the new price (`MANDATE_REPLACED` notification, mandate status `REPLACED`, §6A.3); a purchase after a cancel starts now (confirmed); CSP plans have no grace period (`graceEndsAt` always null).
+- 2026-11-07 (rev 26) — **Read §0.** Plans: ₹450 `CSP_AUTOMATION_CASH_MANAGEMENT` removed (₹250 automation / ₹550 complete). New `GET /subscriptions/access` and plan blocking (§7: non-closable "Please renew or take a new plan." / "Please upgrade the plan."; server 403 `SUBSCRIPTION_REQUIRED` / `PLAN_UPGRADE_REQUIRED` on dashboard, team, machines, receipts, reports, commission, cash for CSPs). §6A: CSP upgrade only (difference only, first 12 days, end date unchanged; `POST /subscriptions/quote`; payment `purpose`), no downgrade / fewer machines, UPI mandate with monthly auto renewal at the end date/time (2 retries 15 min apart, then stop at once: `LAPSED`), `POST /subscriptions/current/cancel` (no refund, works till end date, mandate cancelled). §8: one activation per agent (`AGENT_ALREADY_HAS_ACTIVATION`). §5.1 / §9: no CSP limit input (worked out); KO creation moves cash in hand from the CSP / edited agents (`cashAdjustments`), the rest raises the limit; `POST /agents/:id/replace`; delete removes the KO's cash; KO email (`emailVerifiedAt`) for shared PCs; KO management works without a running plan. §13A: derived limit, no limit check, `INCREASE` / `DECREASE`, Adjust requests (`GET /cash-management/adjustments`, `machineActive`, `pendingAdjustments`, `balanceDue`), activation difference (cash in account / other) with CSP notification; new ledger types. New §13D notifications.
 
 - 2026-11-04 (rev 25) — §5.2: forgot / reset / change password; blocking cuts access at once (403 `ACCOUNT_BLOCKED` / `ACCOUNT_SUSPENDED` with a reason on any call; 401 `SESSION_ENDED` after a password change elsewhere); OTP attempts now really count. §6: **price + GST** (`gstPercent`, `gstAmount`, `priceWithGst` on plans; `taxPercent`, `taxAmount`, `totalAmount`, `invoiceNumber` on payments), grace period (`graceEndsAt`, set by the super admin), no credit on upgrade. §11: dashboard `commission` (today + month). §13: fixed default receipt fields (`rrn`, `location`; `stan` and `terminalId` are now optional, off until the super admin selects them) + super-admin-selected extras (`fixed` in `/receipts/fields`), receipt **slip** (`hasSlip`, `GET …/slip`), **PDF** (`GET …/pdf`), **report a problem** (`POST …/report`, `GET /receipts/reports`). §13A: a BC sees only the cash limit and its distribution (other cash hidden; other cash endpoints 403). §13B: `SLAB` rates (`slabs`).
 

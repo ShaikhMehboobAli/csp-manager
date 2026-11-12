@@ -7,6 +7,10 @@ export interface ActivateMachineInput {
 
   cashDenomination?: Partial<Record<string, number>>;
 
+  // Counted cash in hand ≠ what the CSP gave: where the difference came
+  // from / went to.
+  differenceSource?: "CASH_IN_ACCOUNT" | "OTHER";
+
   activationCode: string;
 
   activationPassword: string;

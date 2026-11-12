@@ -1,4 +1,5 @@
 import { PrismaDb } from "../../../core/database/prisma.types";
+import TrialService from "../../subscriptions/trial/trial.service";
 import { withTransaction } from "../../../core/database/transaction";
 
 import MachineRepository from "../machine.repository";
@@ -30,6 +31,12 @@ import SubscriptionResolver from "../../subscriptions/subscription-validator/sub
 import SubscriptionAccessValidator from "../../subscriptions/subscription-validator/subscription-access-validator";
 import { closeOpenMachineSessions } from "../runtime/machine-release.helper";
 import { normalizeDevicePublicKey } from "../../../core/security/machine-signature";
+import ActivationRepository from "../../activations/activation.repository";
+import SubscriptionEntitlementService, {
+  DesktopFeature,
+} from "../../subscriptions/subscription-entitlement.service";
+import AgentEmailOtpService, { maskEmail } from "../family/agent-email-otp.service";
+import { emptyDrawer } from "../../cash/cash.constants";
 
 /**
  * The install's device key, replaced on every (re-)activation. An activation
@@ -45,14 +52,15 @@ function deviceKeyFields(devicePublicKey: string | undefined) {
 }
 
 /**
- * Cash in hand + drawer counted at activation. Required for a KO; a CSP may
- * send them (both together). The denomination total must equal the cash in
- * hand. Checked before anything is written.
+ * Cash in hand + drawer counted at activation, on a plan with cash
+ * management: required for a KO; a CSP may send them (both together).
+ * Without cash management nothing is asked or kept. The denomination total
+ * must equal the cash in hand. Checked before anything is written.
  */
-function activationCashOf(agent: Agent, data: ActivateMachineInput) {
+function activationCashOf(agent: Agent, data: ActivateMachineInput, cashManagement: boolean) {
   const given = data.cashInHand !== undefined || data.cashDenomination !== undefined;
 
-  if (agent.type !== AgentType.KO && !given) {
+  if (!cashManagement || (agent.type !== AgentType.KO && !given)) {
     return null;
   }
 
@@ -73,7 +81,7 @@ function activationCashOf(agent: Agent, data: ActivateMachineInput) {
     );
   }
 
-  return { cashInHand: data.cashInHand, drawer };
+  return { cashInHand: data.cashInHand, drawer, differenceSource: data.differenceSource };
 }
 
 /** Applies the counted cash (same transaction) and adds it to the response. */
@@ -93,6 +101,7 @@ async function withActivationCash<
     agentId,
     cashInHand: cash.cashInHand,
     drawer: cash.drawer,
+    differenceSource: cash.differenceSource,
     machineCode: result.data.machineCode,
   });
 
@@ -128,8 +137,6 @@ export default class MachineActivationService {
       // Rejects a malformed device key before anything is written.
       const deviceKey = deviceKeyFields(data.machine.devicePublicKey);
 
-      const cash = activationCashOf(agent, data);
-
       /**
        * STEP 2
        * Find Activation
@@ -141,6 +148,15 @@ export default class MachineActivationService {
       if (!activation) {
         throw new NotFoundError("Activation code not found.");
       }
+
+      const cash = activationCashOf(
+        agent,
+        data,
+        await new SubscriptionEntitlementService(db).hasFeature(
+          activation.subscription.planId,
+          DesktopFeature.CASH_MANAGEMENT,
+        ),
+      );
 
       // check for subscription and access validation
       const resolver = new SubscriptionResolver(db);
@@ -195,11 +211,33 @@ export default class MachineActivationService {
        */
       this.validateOwnership(activation, agent);
 
+      // One running activation per agent (a second code can't be used
+      // while the first is live on another PC).
+      const held = await new ActivationRepository(db).findHeldActivation(
+        agent.agentId,
+        activation.id,
+      );
+
+      if (held?.status === ActivationStatus.ACTIVE) {
+        throw new BadRequestError(
+          `This agent already has a running activation (${held.activationCode}${held.machine ? ` on ${held.machine.machineCode}` : ""}). Ask the owner to revoke it first.`,
+          "AGENT_ALREADY_HAS_ACTIVATION",
+        );
+      }
+
       /**
        * STEP 6
        * Verify Password
        */
       await this.verifyPassword(activation, data.activationPassword);
+
+      // Free trial: a PC (or agent) that was part of another account's trial
+      // can't be activated under this trial.
+      await new TrialService(db).claimMachine({
+        subscription: activation.subscription,
+        fingerprint: data.machine.fingerprint,
+        agentId: agent.agentId,
+      });
 
       /**
        * STEP 5
@@ -251,6 +289,154 @@ export default class MachineActivationService {
     };
 
     return withTransaction(execute);
+  }
+
+  /**
+   * Before activating (the desktop's activation form): checks the code and
+   * password for this agent and returns what the form pre-fills: the agent
+   * (email, verified), whether the plan has cash management, and the cash
+   * in hand the CSP gave this agent (editable; a difference needs a
+   * `differenceSource` at activation). Nothing is written.
+   */
+  async preview(input: { agentId: string; activationCode: string; activationPassword: string }) {
+    return withTransaction(async (db) => {
+      const { agent, activation } = await this.checkCredentials(db, input);
+
+      const cashManagement = await new SubscriptionEntitlementService(db).hasFeature(
+        activation.subscription.planId,
+        DesktopFeature.CASH_MANAGEMENT,
+      );
+
+      const [row, pool, plan] = await Promise.all([
+        db.agentCash.findUnique({ where: { agentId: agent.agentId } }),
+        (async () => {
+          const csp = agent.type === AgentType.KO ? agent.parentAgentId : agent.agentId;
+
+          return csp ? db.cashPool.findUnique({ where: { cspAgentId: csp } }) : null;
+        })(),
+        db.plan.findUnique({ where: { id: activation.subscription.planId } }),
+      ]);
+
+      const drawer = row ? drawerOf(row as Partial<Drawer>) : emptyDrawer();
+
+      return {
+        success: true,
+        message: "Activation details fetched successfully.",
+        data: {
+          agent: {
+            agentId: agent.agentId,
+            name: agent.name,
+            type: agent.type,
+            email: agent.email,
+            emailMasked: maskEmail(agent.email),
+            emailVerified: !!agent.email && !!agent.emailVerifiedAt,
+          },
+          plan: { code: plan?.code ?? null, name: plan?.name ?? null, cashManagement },
+          reactivation: activation.status === ActivationStatus.ACTIVE,
+          cash: cashManagement
+            ? {
+                // KO: required; CSP: optional.
+                required: agent.type === AgentType.KO,
+                setUp: !!pool,
+                // Pre-fill: what the CSP gave this agent (editable).
+                cashInHand: row ? Number(row.cashInHand) : 0,
+                drawer,
+                drawerTotal: drawerTotal(drawer),
+                differenceSources: ["CASH_IN_ACCOUNT", "OTHER"],
+              }
+            : null,
+        },
+      };
+    });
+  }
+
+  /** Activation form: send an OTP to verify the agent's email (KOs). */
+  async sendEmailOtp(input: {
+    agentId: string;
+    activationCode: string;
+    activationPassword: string;
+    email?: string;
+  }) {
+    return withTransaction(async (db) => {
+      const { agent } = await this.checkCredentials(db, input);
+      const email = input.email?.trim().toLowerCase() ?? agent.email;
+
+      if (!email) {
+        throw new BadRequestError("Enter the email to verify.", "AGENT_EMAIL_MISSING");
+      }
+
+      const sent = await new AgentEmailOtpService(db).send({
+        agentId: agent.agentId,
+        email,
+        purpose: "EMAIL_VERIFICATION",
+      });
+
+      return { success: true, message: "OTP sent to the email.", data: sent };
+    });
+  }
+
+  async verifyEmail(input: {
+    agentId: string;
+    activationCode: string;
+    activationPassword: string;
+    otp: string;
+  }) {
+    return withTransaction(async (db) => {
+      const { agent } = await this.checkCredentials(db, input);
+
+      const { email } = await new AgentEmailOtpService(db).verify({
+        agentId: agent.agentId,
+        purpose: "EMAIL_VERIFICATION",
+        code: input.otp,
+      });
+
+      await db.agent.update({
+        where: { agentId: agent.agentId },
+        data: { email, emailVerifiedAt: new Date() },
+      });
+
+      return { success: true, message: "Email verified.", data: { agentId: agent.agentId, emailVerified: true } };
+    });
+  }
+
+  /** Agent + activation + password, as activation checks them (no writes). */
+  private async checkCredentials(
+    db: PrismaDb,
+    input: { agentId: string; activationCode: string; activationPassword: string },
+  ) {
+    const repository = new MachineRepository(db);
+    const agent = await repository.findAgentByAgentId(input.agentId);
+
+    if (!agent || agent.isDeleted) {
+      throw new NotFoundError("Agent not found.");
+    }
+
+    if (agent.status !== AgentStatus.ACTIVE) {
+      throw new BadRequestError("Agent is inactive.");
+    }
+
+    const activation = await repository.findActivation(input.activationCode);
+
+    if (!activation) {
+      throw new NotFoundError("Activation code not found.");
+    }
+
+    if (
+      activation.status !== ActivationStatus.NOT_ACTIVATED &&
+      activation.status !== ActivationStatus.ACTIVE
+    ) {
+      throw new BadRequestError("Activation has already been used.");
+    }
+
+    if (activation.assignedAgentId !== agent.agentId) {
+      throw new BadRequestError("Activation is not assigned to this agent.");
+    }
+
+    this.validateOwnership(activation, agent);
+
+    await this.verifyPassword(activation, input.activationPassword);
+
+    return { agent, activation };
   }
 
   /**

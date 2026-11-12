@@ -17,6 +17,10 @@ import {
 import { withTransaction, withReadOnly } from "../../core/database/transaction";
 import ReceiptFieldsSettingsService from "../settings/receipt-fields-settings.service";
 import CommissionService, { rateLabel } from "../commission/commission.service";
+import MachineFamilyService from "../machines/family/machine-family.service";
+
+/** upload-counts skip reason for a receipt SBI shows as failed / pending. */
+export const FAILED_RECEIPT_REASON = "Failed transaction: not recorded.";
 import ReceiptDailyCountRepository from "./repository/receipt-daily-count.repository";
 import { receiptUploadCutoff } from "./receipt-retention.service";
 
@@ -27,6 +31,7 @@ import {
   SubscriptionStatus,
 } from "../../generated/prisma/enums";
 import CashService, { ReceiptCashResult } from "../cash/cash.service";
+import { isEmptyDenomination } from "../cash/cash-receipt-count.service";
 import ReceiptListRepository from "./repository/receipt-list.repository";
 import { mapReceiptDetail, mapReceiptList } from "./receipt.mapper";
 import ReceiptDetailRepository from "./repository/receipt-detail.repository";
@@ -294,10 +299,10 @@ export default class ReceiptService {
         [DesktopFeature.AUTOMATION, DesktopFeature.RECEIPT_SYNC],
       );
 
+      // The agent logged in to SBI: the PC's own agent or any other agent of
+      // the owner CSP's family (shared PCs). Its receipts and cash are its own.
       if (authenticated.machine.currentAgentId !== request.agentId) {
-        throw new ForbiddenError(
-          "The supplied agent does not match this machine's assignment.",
-        );
+        await new MachineFamilyService(tx).requireMember(authenticated, request.agentId);
       }
 
       const assignedAgent = await repository.findAssignedAgent(request.agentId);
@@ -335,6 +340,16 @@ export default class ReceiptService {
           skippedReceipts.push({
             receiptId: parsed.receiptId,
             reason: parsed.reason,
+          });
+          continue;
+        }
+
+        // A transaction SBI shows as failed (or still pending) on the receipt
+        // page never reaches the counts, commission or cash ledger.
+        if (parsed.receipt.status && parsed.receipt.status !== ReceiptStatus.SUCCESS) {
+          skippedReceipts.push({
+            receiptId: parsed.receipt.receiptId,
+            reason: FAILED_RECEIPT_REASON,
           });
           continue;
         }
@@ -404,6 +419,7 @@ export default class ReceiptService {
           transactionAt: receipt.transactionAt,
           amount: receipt.amount,
           count: receipt.count,
+          source: receipt.source ?? null,
         })),
       );
 
@@ -431,10 +447,11 @@ export default class ReceiptService {
         acceptedReceipts.push({ receiptId: receipt.receiptId, count: 1 });
       }
 
+      // An empty denomination ({} or all zero) counts as "no notes".
       await repository.createCashDenominations(
         saved.flatMap(({ receipt, id }) =>
-          receipt.cashDenomination
-            ? [{ receiptRecordId: id, ...receipt.cashDenomination }]
+          !isEmptyDenomination(receipt.cashDenomination)
+            ? [{ receiptRecordId: id, ...receipt.cashDenomination! }]
             : [],
         ),
       );
@@ -446,17 +463,37 @@ export default class ReceiptService {
           receiptRecordId: id,
           transactionCategory: receipt.transactionCategory,
           amount: receipt.amount,
-          cashDenomination: receipt.cashDenomination,
+          cashDenomination: isEmptyDenomination(receipt.cashDenomination) ? null : receipt.cashDenomination,
         })),
         { type: "MACHINE", id: authenticated.machine.machineCode },
       );
+
+      // A cash receipt applied without its notes: the balances moved, the
+      // drawer waits for the agent's count ("Count needed"). Only on a plan
+      // with cash management.
+      const countsNeeded =
+        (await entitlementService.canViewCashManagement(authenticated.subscription))
+          ? saved.filter(
+              ({ receipt, id }) =>
+                cash.get(id)?.status === "APPLIED" && isEmptyDenomination(receipt.cashDenomination),
+            )
+          : [];
+
+      if (countsNeeded.length > 0) {
+        await tx.receipt.updateMany({
+          where: { id: { in: countsNeeded.map(({ id }) => id) } },
+          data: { denominationPending: true },
+        });
+      }
+
+      const pendingIds = new Set(countsNeeded.map(({ id }) => id));
 
       // Cash receipts say whether they changed the balances.
       for (const [index, { id }] of saved.entries()) {
         const result = cash.get(id);
 
         if (result) {
-          acceptedReceipts[index].cash = result;
+          acceptedReceipts[index].cash = pendingIds.has(id) ? { status: "APPLIED", denomination: "PENDING" } : result;
         }
       }
 

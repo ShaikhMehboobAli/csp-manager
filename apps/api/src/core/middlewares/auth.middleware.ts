@@ -14,6 +14,12 @@ export const authMiddleware = async (
   res: Response,
   next: NextFunction,
 ) => {
+  // Already authenticated earlier in the chain (e.g. a plan gate); the
+  // user context set then still wraps the rest of the request.
+  if (req.user) {
+    return next();
+  }
+
   const authHeader = req.headers.authorization;
 
   if (!authHeader) {

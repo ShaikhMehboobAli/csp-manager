@@ -47,6 +47,8 @@ export default class PaymentRepository {
         billingCycle,
         machineCount,
         status: PaymentStatus.PENDING,
+        // Mandate renewals are charged by the job, never reused as an order.
+        purpose: { not: "RENEWAL" },
       },
       orderBy: {
         createdAt: "desc",

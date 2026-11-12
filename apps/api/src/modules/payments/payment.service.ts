@@ -28,6 +28,8 @@ import { PaymentWebhookDto } from "./validations/webhook-payment.validation";
 import ActivationService from "../activations/activation.service";
 import prisma from "../../config/prisma";
 import BillingSettingsService from "../settings/billing-settings.service";
+import SubscriptionBillingService from "../subscriptions/billing/subscription-billing.service";
+import { PaymentPurpose } from "../../generated/prisma/enums";
 
 export default class PaymentService {
   async createOrder(data: CreatePaymentOrderInput) {
@@ -79,22 +81,6 @@ export default class PaymentService {
         }
       }
 
-      const pendingPayment = await repository.findPendingPayment(
-        data.ownerType,
-        data.ownerId,
-        data.planId,
-        data.billingCycle,
-        machineCount,
-      );
-
-      if (pendingPayment) {
-        return {
-          success: true,
-          message: "Pending payment already exists.",
-          data: pendingPayment,
-        };
-      }
-
       const codeGenerator = createCodeGeneratorService(tx);
 
       const plan = await repository.findPlanWithPricing(data.planId);
@@ -116,13 +102,66 @@ export default class PaymentService {
         throw new BadRequestError("Selected billing cycle is not available.");
       }
 
+      // CSP: a running subscription can only be upgraded (difference only,
+      // first 12 days); otherwise this is a new purchase. Throws on a
+      // downgrade, fewer machines, the same terms or a closed window.
+      const quote = await new SubscriptionBillingService(tx).quote({
+        ownerType: data.ownerType,
+        ownerId: data.ownerId,
+        plan,
+        billingCycle: data.billingCycle,
+        unitPrice: pricing.price,
+        machineCount,
+      });
+
+      if (
+        quote.purpose === PaymentPurpose.UPGRADE &&
+        data.billingCycle !== BillingCycle.MONTHLY
+      ) {
+        throw new BadRequestError("Upgrades are billed on the monthly plan.");
+      }
+
+      // The same open order is returned again, unless it was priced for a
+      // different situation (e.g. a purchase, now an upgrade): then it's
+      // cancelled and a new one is opened.
+      const pendingPayment = await repository.findPendingPayment(
+        data.ownerType,
+        data.ownerId,
+        data.planId,
+        data.billingCycle,
+        machineCount,
+      );
+
+      if (pendingPayment) {
+        const { amount: quoted } = await new BillingSettingsService(tx).withGst(
+          Number(quote.amount),
+        );
+
+        if (
+          pendingPayment.purpose === quote.purpose &&
+          pendingPayment.amount.equals(quoted)
+        ) {
+          return {
+            success: true,
+            message: "Pending payment already exists.",
+            data: { ...pendingPayment, breakdown: quote.breakdown, mandate: null },
+          };
+        }
+
+        await tx.payment.update({
+          where: { id: pendingPayment.id },
+          data: {
+            status: PaymentStatus.CANCELLED,
+            failureReason: "Replaced by a new order with an updated price.",
+          },
+        });
+      }
+
       const paymentNumber = await codeGenerator.generatePaymentNumber();
 
       // GST is added on top of the plan price (subscriptions only).
       const { amount, taxAmount, totalAmount, gstPercent } =
-        await new BillingSettingsService(tx).withGst(
-          Number(pricing.price) * machineCount,
-        );
+        await new BillingSettingsService(tx).withGst(Number(quote.amount));
 
       const payment = await repository.createPayment({
         paymentNumber,
@@ -138,6 +177,14 @@ export default class PaymentService {
         billingCycle: data.billingCycle,
 
         machineCount,
+
+        purpose: quote.purpose,
+
+        previousPlanId: quote.previousPlanId ?? undefined,
+
+        previousMachineCount: quote.previousMachineCount ?? undefined,
+
+        subscriptionId: quote.subscriptionId ?? undefined,
 
         idempotencyKey: data.idempotencyKey,
 
@@ -160,8 +207,21 @@ export default class PaymentService {
 
       return {
         success: true,
-        message: "Payment order created successfully.",
-        data: payment,
+        message:
+          quote.purpose === PaymentPurpose.UPGRADE
+            ? "Upgrade order created: you pay only the difference. The plan's end date doesn't change."
+            : "Payment order created successfully.",
+        data: {
+          ...payment,
+          // How the amount was worked out (UPGRADE only).
+          breakdown: quote.breakdown,
+          // CSP purchases set up a monthly UPI autopay mandate on success.
+          mandate:
+            data.ownerType === SubscriptionOwnerType.CSP &&
+            quote.purpose === PaymentPurpose.PURCHASE
+              ? { required: true, frequency: BillingCycle.MONTHLY, years: 25 }
+              : null,
+        },
       };
     });
   }
@@ -184,9 +244,38 @@ export default class PaymentService {
       );
     }
 
+    if (payment.purpose === PaymentPurpose.UPGRADE) {
+      const upgraded = await new SubscriptionBillingService(tx).applyUpgrade({
+        id: payment.id,
+        planId: payment.planId,
+        machineCount: payment.machineCount,
+        amount: payment.amount,
+        previousPlanId: payment.previousPlanId,
+        ownerId: payment.ownerId,
+      });
+
+      await repository.updatePaymentSuccess(
+        payment.id,
+        upgraded.id,
+        gatewayTransactionId,
+        transactionReference,
+        await createCodeGeneratorService(tx).generateInvoiceNumber(),
+      );
+
+      return {
+        success: true,
+        message: "Upgrade paid. New machine slots are ready to assign.",
+        data: { paymentId: payment.id, subscriptionId: upgraded.id },
+      };
+    }
+
+    if (payment.purpose === PaymentPurpose.RENEWAL) {
+      throw new BadRequestError("Renewals are charged by the UPI mandate, not verified here.");
+    }
+
     const subscriptionService = new SubscriptionService(prisma);
 
-    const subscription = await subscriptionService.createPaidSubscription(
+    const created = await subscriptionService.createPaidSubscription(
       {
         agentId: payment.ownerId,
 
@@ -205,6 +294,16 @@ export default class PaymentService {
         paymentId: payment.id,
       },
       tx,
+    );
+
+    // CSP: price, upgrade window and the monthly UPI mandate.
+    const subscription = await new SubscriptionBillingService(
+      tx,
+    ).setUpNewSubscription(
+      created,
+      payment.machineCount > 0
+        ? payment.amount.dividedBy(payment.machineCount)
+        : payment.amount,
     );
 
     const activationService = new ActivationService();

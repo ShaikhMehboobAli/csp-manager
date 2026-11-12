@@ -6,7 +6,8 @@
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "seed:super-admin": "tsx prisma/seeds/super-admin.seed.ts"
+    "seed:super-admin": "tsx prisma/seeds/super-admin.seed.ts",
+    "cleanup:keep-cash": "tsx prisma/scripts/cleanup-keep-cash.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -26,6 +27,7 @@
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "express-rate-limit": "7.5.0",
+    "firebase-admin": "^13.10.0",
     "helmet": "^8.2.0",
     "jsonwebtoken": "^9.0.3",
     "morgan": "^1.11.0",

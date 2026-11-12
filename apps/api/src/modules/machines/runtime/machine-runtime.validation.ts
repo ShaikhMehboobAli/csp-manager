@@ -38,10 +38,15 @@ const machineCredentials = {
   fingerprint: z.string().trim().min(1),
 };
 
-export const activityStartSchema = z.object({
-  ...machineCredentials,
-  agentId: z.string().trim().min(1),
-});
+export const activityStartSchema = z
+  .object({
+    ...machineCredentials,
+    // Our agent ID, or the User ID typed on the SBI kiosk (sbiUserId) when
+    // the desktop has no match in accessAgents. One of the two.
+    agentId: z.string().trim().min(1).optional(),
+    sbiUserId: z.string().trim().min(1).max(50).optional(),
+  })
+  .refine((data) => data.agentId || data.sbiUserId, "Send agentId or sbiUserId.");
 
 export const activityHeartbeatSchema = z.object({
   ...machineCredentials,
@@ -56,6 +61,28 @@ export const activityStopSchema = z.object({
     ActivityEndReason.AUTO_LOGOUT,
     ActivityEndReason.APP_CLOSE,
   ]),
+});
+
+export const machineCashLoginOtpSchema = z.object({
+  ...machineCredentials,
+  agentId: z.string().trim().min(1, "Choose the agent."),
+});
+
+export const machineCashLoginVerifySchema = z.object({
+  ...machineCredentials,
+  agentId: z.string().trim().min(1, "Choose the agent."),
+  otp: z.string().trim().regex(/^\d{6}$/, "Enter the 6-digit OTP."),
+});
+
+export const machineEmailOtpSchema = z.object({
+  ...machineCredentials,
+  // A new / corrected email; omitted = the agent's saved email.
+  email: z.string().trim().email("Invalid email address.").optional(),
+});
+
+export const machineEmailVerifySchema = z.object({
+  ...machineCredentials,
+  otp: z.string().trim().regex(/^\d{6}$/, "Enter the 6-digit OTP."),
 });
 
 export type HeartbeatRequest = z.infer<typeof heartbeatSchema>;

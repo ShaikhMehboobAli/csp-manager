@@ -66,7 +66,13 @@ export default class BillingSettingsService {
     if (change.graceDays !== undefined && change.graceDays !== current.graceDays) {
       updatedSubscriptions = await this.db.$executeRaw`
         UPDATE "Subscription"
-        SET "graceEndsAt" = ${value.graceDays > 0 ? Prisma.sql`"endDate" + (${value.graceDays} * INTERVAL '1 day')` : Prisma.sql`NULL`},
+        SET "graceEndsAt" = CASE
+              -- CSP plans have no grace: they renew by UPI mandate on the
+              -- end date (not usable while the charge is retried) or stop
+              -- on it (cancelled). Grace applies to BC plans only.
+              WHEN "ownerType" = 'CSP' THEN NULL
+              ELSE ${value.graceDays > 0 ? Prisma.sql`"endDate" + (${value.graceDays} * INTERVAL '1 day')` : Prisma.sql`NULL`}
+            END,
             "updatedAt" = CURRENT_TIMESTAMP
         WHERE "status" = ${SubscriptionStatus.ACTIVE}::"SubscriptionStatus"
           AND "subscriptionType" <> ${SubscriptionType.LIFETIME}::"SubscriptionType"

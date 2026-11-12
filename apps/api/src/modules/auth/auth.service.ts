@@ -1,4 +1,6 @@
 import prisma from "../../config/prisma";
+import { resendLimitError, resendTimer, resendTooSoonError } from "../../core/services/otp-timer.helper";
+import { Logger } from "../../core/utils/logger";
 
 import AuthRepository from "./auth.repository";
 
@@ -27,6 +29,7 @@ import JwtService, { REFRESH_TOKEN_DAYS } from "../../core/services/jwt.service"
 import { UnauthorizedError } from "../../core/errors/UnauthorizedError";
 import { createHash } from "node:crypto";
 import { LoginDto } from "./validations/login.validation";
+import type { PushDeviceInput } from "./validations/push-device.validation";
 import type {
   ChangePasswordDto,
   ForgotPasswordDto,
@@ -127,6 +130,7 @@ export default class AuthService {
         message: "Signup successful. OTP sent for verification.",
         data: {
           userId: user.id,
+          ...resendTimer(),
         },
       };
     });
@@ -149,16 +153,16 @@ export default class AuthService {
 
       await this.createAgentIfNeeded(repository, data);
 
-      // Validation requires these for CSP signups.
+      // Validation requires both for CSP signups. The CSP limit is their
+      // sum (the CSP holds all the cash in hand until it adds KOs).
       const cash = {
         openingCash: data.cashInHand!,
         openingCashInAccount: data.cashInAccount!,
-        cashLimit: data.cspLimit!,
+        cashLimit: data.cashInHand! + data.cashInAccount!,
       };
 
       const openingFloat = await new CashService(tx).openPool({
         cspAgentId: data.agentId,
-        cashLimit: cash.cashLimit,
         cashInAccount: cash.openingCashInAccount,
         cashInHand: cash.openingCash,
         actor: { type: "SYSTEM", id: null },
@@ -184,6 +188,7 @@ export default class AuthService {
         data: {
           userId: user.id,
           openingFloat,
+          ...resendTimer(),
         },
       };
     });
@@ -570,7 +575,7 @@ export default class AuthService {
   }
 
   private async sendSignupOtp(email: string, otpCode: string) {
-    await this.emailService.sendOtp(email, otpCode);
+    await this.emailService.sendOtp(email, otpCode, "SIGNUP");
   }
 
   async verifyOtp(data: VerifyOtpDto) {
@@ -674,7 +679,7 @@ export default class AuthService {
         message: "Login successful.",
         data: {
           accessToken,
-          refreshToken: await this.startSession(repository, user, client),
+          refreshToken: await this.startSession(repository, user, client, data),
           user: {
             id: user.id,
             agentId: user.agentId,
@@ -691,6 +696,7 @@ export default class AuthService {
     repository: AuthRepository,
     user: { id: string; agentId: string; role: UserRole },
     client: SessionClient,
+    device: PushDeviceInput = {},
   ) {
     const session = await repository.createSession({
       userId: user.id,
@@ -708,6 +714,10 @@ export default class AuthService {
 
     await repository.rotateSession(session.id, hashToken(refreshToken), refreshExpiry());
 
+    if (device.pushToken && device.platform) {
+      await repository.savePushDevice(user.id, session.id, { pushToken: device.pushToken, platform: device.platform, appVersion: device.appVersion });
+    }
+
     return refreshToken;
   }
 
@@ -716,7 +726,7 @@ export default class AuthService {
    * stops working; using it again means it was copied, so the whole session
    * is revoked (the user logs in again).
    */
-  async refresh(refreshToken: string, client: SessionClient) {
+  async refresh(refreshToken: string, client: SessionClient, device: PushDeviceInput = {}) {
     let payload;
 
     try {
@@ -732,7 +742,7 @@ export default class AuthService {
     let revoke: string | null = null;
 
     try {
-      return await this.rotate(refreshToken, payload, client, (sessionId) => {
+      return await this.rotate(refreshToken, payload, client, device, (sessionId) => {
         revoke = sessionId;
       });
     } finally {
@@ -746,6 +756,7 @@ export default class AuthService {
     refreshToken: string,
     payload: { userId: string; sid: string },
     client: SessionClient,
+    device: PushDeviceInput,
     revokeLater: (sessionId: string) => void,
   ) {
     return withTransaction(async (tx) => {
@@ -790,6 +801,10 @@ export default class AuthService {
         await tx.userSession.update({ where: { id: session.id }, data: client });
       }
 
+      if (device.pushToken && device.platform) {
+        await repository.savePushDevice(user.id, session.id, { pushToken: device.pushToken, platform: device.platform, appVersion: device.appVersion });
+      }
+
       return {
         success: true,
         message: "Session refreshed.",
@@ -814,6 +829,7 @@ export default class AuthService {
 
     if (sid) {
       await this.repository.revokeSession(sid);
+      await this.repository.deletePushDevicesOfSession(sid);
     }
 
     return { success: true, message: "Logged out." };
@@ -843,11 +859,11 @@ export default class AuthService {
         const wait = Math.ceil((last.createdAt.getTime() + RESEND_WAIT_MS - now) / 1000);
 
         if (wait > 0) {
-          throw new ConflictError(`Please wait ${wait} second${wait === 1 ? "" : "s"} before asking for a new OTP.`);
+          throw resendTooSoonError(last.createdAt);
         }
 
         if (last.resendCount >= RESEND_MAX && now - last.createdAt.getTime() < RESEND_WINDOW_MS) {
-          throw new ConflictError("Too many OTPs sent. Please try again in an hour.");
+          throw resendLimitError(last.createdAt);
         }
       }
 
@@ -873,7 +889,7 @@ export default class AuthService {
       return {
         success: true,
         message: "OTP sent again.",
-        data: { expiresAt, resendAvailableAt: new Date(now + RESEND_WAIT_MS) },
+        data: { expiresAt, ...resendTimer(now) },
       };
     });
   }
@@ -888,7 +904,7 @@ export default class AuthService {
     const answer = {
       success: true,
       message: FORGOT_PASSWORD_MESSAGE,
-      data: { resendAvailableAt: new Date(now + RESEND_WAIT_MS) },
+      data: resendTimer(now),
     };
 
     const user = await this.repository.findUserByAgentId(data.agentId);
@@ -920,7 +936,11 @@ export default class AuthService {
       });
     });
 
-    await this.emailService.sendOtp(user.email, otpCode);
+    // Same answer even if the email fails: an error here would reveal that
+    // the account exists. The user can ask again after the resend wait.
+    await this.emailService.sendOtp(user.email, otpCode, "FORGOT_PASSWORD").catch((error: Error) => {
+      Logger.error(`[Auth] Forgot-password email failed for user ${user.id}: ${error.message}`);
+    });
 
     return answer;
   }
@@ -988,7 +1008,7 @@ export default class AuthService {
       message: "Password changed. Other devices have been signed out.",
       data: {
         accessToken: this.jwtService.generateAccessToken(claims),
-        refreshToken: await this.startSession(this.repository, user, client),
+        refreshToken: await this.startSession(this.repository, user, client, data),
       },
     };
   }

@@ -20,6 +20,7 @@ import CashDeskService from "./cash-desk.service";
 import CashDayService from "./cash-day.service";
 import { CashLabelService, CashTaskService } from "./cash-task.service";
 import {
+  cashAdjustmentsQuerySchema,
   cashAgentQuerySchema,
   cashDayClosesQuerySchema,
   cashDuesQuerySchema,
@@ -125,28 +126,43 @@ export const createTransaction = async (req: Request, res: Response) => {
     const service = new CashService(tx);
     const cspAgentId = req.user!.agentId;
 
-    const outcome =
-      body.type === "SETTLEMENT"
-        ? await service.settle({
-            cspAgentId,
-            agentId: body.agentId,
-            amount: body.amount,
-            direction: body.direction,
-            remarks: body.remarks,
-            idempotencyKey,
-            actor,
-          })
-        : await service.adjust({
-            cspAgentId,
-            cashLimit: body.cashLimit,
-            cashInAccount: body.cashInAccount,
-            cashLeftInBank: body.cashLeftInBank,
-            cashOther: body.cashOther,
-            agents: body.agents,
-            remarks: body.remarks,
-            idempotencyKey,
-            actor,
-          });
+    let outcome: { replayed: boolean; adjustment?: unknown };
+
+    if (body.type === "INCREASE" || body.type === "DECREASE") {
+      outcome = await service.changeCash({
+        cspAgentId,
+        target: body.target,
+        agentId: body.agentId,
+        direction: body.type,
+        amount: body.amount,
+        remarks: body.remarks,
+        idempotencyKey,
+        actor,
+      });
+    } else if (body.type === "SETTLEMENT") {
+      outcome = await service.settle({
+        cspAgentId,
+        agentId: body.agentId,
+        amount: body.amount,
+        direction: body.direction,
+        remarks: body.remarks,
+        idempotencyKey,
+        actor,
+      });
+    } else if (body.type === "ADJUSTMENT") {
+      outcome = await service.adjust({
+        cspAgentId,
+        cashInAccount: body.cashInAccount,
+        cashLeftInBank: body.cashLeftInBank,
+        cashOther: body.cashOther,
+        agents: body.agents,
+        remarks: body.remarks,
+        idempotencyKey,
+        actor,
+      });
+    } else {
+      throw new BadRequestError("Unknown transaction type.");
+    }
 
     return { ...outcome, view: await service.getView(cspAgentId) };
   });
@@ -157,7 +173,11 @@ export const createTransaction = async (req: Request, res: Response) => {
       ? "Already recorded (same Idempotency-Key)."
       : body.type === "SETTLEMENT"
         ? "Settlement recorded."
-        : "Cash adjusted.",
+        : body.type === "INCREASE" || body.type === "DECREASE"
+          ? body.target === "CASH_IN_HAND"
+            ? `Cash in hand ${body.type === "INCREASE" ? "increased" : "decreased"}. The agent counts the notes on the desktop (Adjust request).`
+            : `Cash in account ${body.type === "INCREASE" ? "increased" : "decreased"}.`
+          : "Cash adjusted.",
     data: result.view,
   });
 };
@@ -459,3 +479,19 @@ function withoutOtherCash<T>(data: T): T {
 
   return (Array.isArray(data) ? data.map(strip) : strip(data as Record<string, unknown>)) as T;
 }
+
+/** Adjust requests (the agents counting notes for the CSP's cash changes). */
+export const getAdjustments = async (req: Request, res: Response) => {
+  const query = cashAdjustmentsQuerySchema.parse(req.query);
+
+  const data = await withReadOnly(async (tx) => {
+    const pool = await resolvePool(tx, req.user!, query.agentId);
+    const agentIds =
+      pool.onlyAgentIds ??
+      (await new CashRepository(tx).findUnitAgents(pool.cspAgentId)).map((agent) => agent.agentId);
+
+    return new CashService(tx).listDrawerAdjustments({ agentIds, status: query.status });
+  });
+
+  return res.status(200).json({ success: true, message: "Adjust requests fetched successfully.", data });
+};

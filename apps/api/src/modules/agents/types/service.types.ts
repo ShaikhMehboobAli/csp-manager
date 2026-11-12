@@ -13,9 +13,19 @@ export interface CreateKOInput {
   email?: string;
   address?: string;
 
+  /** SBI kiosk User ID when it differs from agentId (upper-case). */
+  sbiUserId?: string;
+
   cashLimit?: number;
   openingCash?: number;
   openingCashInAccount?: number;
+
+  /**
+   * KO creation form: the new cash in hand of existing agents (the CSP
+   * and/or its KOs) the CSP moved cash from / to. Omitted: the KO's cash in
+   * hand comes out of the CSP's own cash in hand (the rest raises the limit).
+   */
+  cashAdjustments?: { agentId: string; cashInHand: number }[];
 
   machineCount: number;
 }

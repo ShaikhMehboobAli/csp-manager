@@ -162,6 +162,24 @@ export default class SubscriptionRepository {
             },
           },
         ],
+        NOT: [
+          // A mandate charge still waiting for the gateway's answer: the
+          // renewal job / webhook decides (renews or lapses it).
+          {
+            payments: {
+              some: { purpose: "RENEWAL", status: "PENDING" },
+            },
+          },
+          // CSP subscriptions renewing by mandate: the renewal job charges
+          // them on the end date and lapses them after the 3rd failed attempt.
+          // They are not usable after the end date meanwhile (no grace).
+          {
+            ownerType: SubscriptionOwnerType.CSP,
+            autoRenew: true,
+            cancelledAt: null,
+            lapsedAt: null,
+          },
+        ],
       },
       data: {
         status: SubscriptionStatus.EXPIRED,

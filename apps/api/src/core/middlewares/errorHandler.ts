@@ -48,6 +48,7 @@ export function errorHandler(
       success: false,
       code: errorCodeOf(err.message, err.statusCode, err.code),
       message: err.message,
+      ...(err.details && { details: err.details }),
     });
   }
 

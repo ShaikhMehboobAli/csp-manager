@@ -23,6 +23,15 @@ export interface CreatePaymentInput {
 
   idempotencyKey?: string;
 
+  purpose?: "PURCHASE" | "UPGRADE" | "RENEWAL";
+
+  previousPlanId?: string;
+
+  previousMachineCount?: number;
+
+  // UPGRADE: the running subscription it changes.
+  subscriptionId?: string;
+
   amount: number;
 
   taxAmount: number;

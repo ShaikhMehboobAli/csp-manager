@@ -19,8 +19,13 @@ const cspViewers = authorize(UserRole.CSP_ADMIN, UserRole.SUPER_ADMIN);
 // Pool, every agent's cash in hand and drawer, totals (BC: without other cash).
 router.get("/", viewers, CashController.getCash);
 
-// SETTLEMENT or ADJUSTMENT (limit, cash in account, cash in hand, drawer).
+// SETTLEMENT, ADJUSTMENT (cash in account, cash in hand, drawer; the limit
+// is worked out) or INCREASE / DECREASE (cash in hand of an agent, or cash in
+// account; the limit moves).
 router.post("/transactions", authorize(UserRole.CSP_ADMIN), CashController.createTransaction);
+
+// "Adjust" requests: agents counting the notes for the CSP's cash changes.
+router.get("/adjustments", cspViewers, CashController.getAdjustments);
 
 // Audit of every change (receipts, settlements, adjustments, approvals).
 router.get("/ledger", cspViewers, CashController.getLedger);

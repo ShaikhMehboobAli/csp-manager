@@ -1,3 +1,4 @@
+import { replaceKoSchema } from "../validations/agent.validation";
 import { Request, Response } from "express";
 import { AgentService } from "../service/agent.service";
 import { CreateCSPInput, CreateKOInput } from "../types/service.types";
@@ -114,5 +115,19 @@ export const deleteAgent = async (req: Request, res: Response) => {
   return res.status(200).json({
     success: true,
     message: "Agent deleted successfully.",
+  });
+};
+
+export const replaceKO = async (req: Request<{ agentId: string }>, res: Response) => {
+  const result = await agentService.replaceKO(
+    req.params.agentId,
+    replaceKoSchema.parse(req.body),
+    req.user!,
+  );
+
+  return res.status(201).json({
+    success: true,
+    message: "KO replaced. The machine and cash management moved to the new KO.",
+    data: result,
   });
 };
