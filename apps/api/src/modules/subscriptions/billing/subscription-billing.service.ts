@@ -23,7 +23,8 @@ import NotificationService from "../../notifications/notification.service";
 import BillingSettingsService from "../../settings/billing-settings.service";
 import SubscriptionRepository from "../subscription.repository";
 
-import { getMandateGateway } from "./mandate-gateway";
+import { Logger } from "../../../core/utils/logger";
+import { getMandateGateway, MandateCustomer } from "./mandate-gateway";
 
 import {
   MANDATE_YEARS,
@@ -87,6 +88,21 @@ export function isRenewalPending(
 }
 
 /** Renews by mandate (CSP, not cancelled, not lapsed). */
+/** Name, email and mobile of a plan owner (CSP agent or BC), for the payment gateway. */
+export async function ownerContact(db: PrismaDb, ownerId: string): Promise<MandateCustomer> {
+  const [agent, bc, user] = await Promise.all([
+    db.agent.findUnique({ where: { agentId: ownerId }, select: { name: true, email: true, mobile: true } }),
+    db.businessCorrespondent.findUnique({ where: { bcId: ownerId }, select: { name: true } }),
+    db.user.findUnique({ where: { agentId: ownerId }, select: { email: true } }),
+  ]);
+
+  return {
+    name: agent?.name ?? bc?.name ?? null,
+    email: agent?.email ?? user?.email ?? null,
+    contact: agent?.mobile ?? null,
+  };
+}
+
 export function renewsByMandate(subscription: Pick<Subscription, "ownerType" | "autoRenew" | "cancelledAt" | "lapsedAt">) {
   return (
     subscription.ownerType === SubscriptionOwnerType.CSP &&
@@ -293,7 +309,8 @@ export default class SubscriptionBillingService {
    * opened applies from the first renewal); `paidPerMachine` is the fallback
    * when the plan has no monthly price.
    */
-  async setUpNewSubscription(subscription: Subscription, paidPerMachine: Prisma.Decimal) {
+  /** `registrationPaymentId`: the gateway payment of the purchase (Razorpay: it also registered UPI AutoPay). */
+  async setUpNewSubscription(subscription: Subscription, paidPerMachine: Prisma.Decimal, registrationPaymentId?: string | null) {
     if (subscription.ownerType !== SubscriptionOwnerType.CSP) {
       return subscription;
     }
@@ -314,7 +331,7 @@ export default class SubscriptionBillingService {
       },
     });
 
-    await this.createMandate(updated);
+    await this.createMandate(updated, registrationPaymentId);
 
     return updated;
   }
@@ -404,7 +421,13 @@ export default class SubscriptionBillingService {
   // Mandates and renewals
   // ---------------------------------------------------------------------------
 
-  async createMandate(subscription: Subscription) {
+  /**
+   * A new monthly mandate for the subscription. Never throws for gateway
+   * problems (a purchase is already paid): the mandate is then left PENDING
+   * without an approval link, and the CSP can ask for one with
+   * POST /payments/mandates/setup.
+   */
+  async createMandate(subscription: Subscription, registrationPaymentId?: string | null) {
     const gateway = getMandateGateway();
     const amount = await this.monthlyAmount(subscription);
     // The first charge is on the end date (now, when it has already passed).
@@ -413,28 +436,181 @@ export default class SubscriptionBillingService {
 
     endAt.setFullYear(endAt.getFullYear() + MANDATE_YEARS);
 
-    const created = await gateway.createMandate({
-      subscriptionId: subscription.id,
-      ownerId: subscription.ownerId,
-      amount: Number(amount),
-      startAt,
-      endAt,
-    });
+    let created: Awaited<ReturnType<typeof gateway.createMandate>>;
+    let failure: string | null = null;
 
-    return this.db.subscriptionMandate.create({
+    try {
+      created = await gateway.createMandate({
+        subscriptionId: subscription.id,
+        ownerId: subscription.ownerId,
+        amount: Number(amount),
+        startAt,
+        endAt,
+        registrationPaymentId,
+        customer: await ownerContact(this.db, subscription.ownerId),
+      });
+    } catch (error) {
+      failure = (error as Error).message;
+      Logger.error(`[Billing] Mandate for ${subscription.subscriptionNumber} not created: ${failure}`);
+      created = {
+        providerMandateId: null,
+        providerCustomerId: null,
+        providerRegistrationId: null,
+        status: MandateStatus.PENDING,
+        authUrl: null,
+        maxAmount: null,
+      };
+    }
+
+    const mandate = await this.db.subscriptionMandate.create({
       data: {
         subscriptionId: subscription.id,
         ownerId: subscription.ownerId,
         provider: gateway.provider,
         providerMandateId: created.providerMandateId,
+        providerCustomerId: created.providerCustomerId,
+        providerRegistrationId: created.providerRegistrationId,
+        maxAmount: created.maxAmount,
         status: created.status,
         amount,
         startAt,
         endAt,
         authUrl: created.authUrl,
+        revokeReason: failure ? `Not set up: ${failure.slice(0, 200)}` : null,
         activatedAt: created.status === MandateStatus.ACTIVE ? new Date() : null,
       },
     });
+
+    if (mandate.providerMandateId) {
+      await this.applyWaitingTokenEvents(mandate.providerMandateId);
+    }
+
+    return this.db.subscriptionMandate.findUniqueOrThrow({ where: { id: mandate.id } });
+  }
+
+  /**
+   * CSP asks for a UPI AutoPay approval link for its running plan (no
+   * approved mandate yet, or it was removed in the UPI app). Pending
+   * mandates without a link are replaced.
+   */
+  async setUpMandate(ownerId: string) {
+    const subscription = await this.db.subscription.findFirst({
+      where: { ownerType: SubscriptionOwnerType.CSP, ownerId, status: SubscriptionStatus.ACTIVE },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (!subscription || !renewsByMandate(subscription)) {
+      throw new BadRequestError("You have no running plan that renews by UPI AutoPay.", "NO_RENEWING_PLAN");
+    }
+
+    await this.db.$queryRaw`SELECT id FROM "Subscription" WHERE id = ${subscription.id} FOR UPDATE`;
+
+    const existing = await this.db.subscriptionMandate.findFirst({
+      where: { subscriptionId: subscription.id, status: { in: [MandateStatus.ACTIVE, MandateStatus.PENDING] } },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (existing && (existing.status === MandateStatus.ACTIVE || existing.authUrl)) {
+      return existing;
+    }
+
+    const mandate = await this.createMandate(subscription);
+
+    await this.cancelMandates(subscription.id, MandateStatus.REPLACED, "A new approval link was made.", mandate.id);
+
+    return mandate;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Razorpay token events (webhooks)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The customer approved: the registration (purchase order or approval
+   * link) now has a UPI token. Links it to its mandate and applies token
+   * events that arrived before it.
+   */
+  async linkMandateToken(input: { registrationId: string; tokenId: string; customerId?: string | null; approved?: boolean }) {
+    const mandate = await this.db.subscriptionMandate.findUnique({ where: { providerRegistrationId: input.registrationId } });
+
+    if (!mandate) {
+      return false;
+    }
+
+    if (!mandate.providerMandateId) {
+      await this.db.subscriptionMandate.update({
+        where: { id: mandate.id },
+        data: {
+          providerMandateId: input.tokenId,
+          ...(input.customerId && !mandate.providerCustomerId && { providerCustomerId: input.customerId }),
+        },
+      });
+    }
+
+    // A captured first payment on a UPI AutoPay order / approval link means the
+    // customer approved the mandate (Razorpay doesn't capture it otherwise), so
+    // it's active without waiting for token.confirmed (not every account gets
+    // token webhooks).
+    if (input.approved) {
+      await this.db.subscriptionMandate.updateMany({
+        where: { id: mandate.id, status: MandateStatus.PENDING, cancelledAt: null },
+        data: { status: MandateStatus.ACTIVE, activatedAt: new Date(), authUrl: null },
+      });
+    }
+
+    await this.applyWaitingTokenEvents(input.tokenId);
+
+    return true;
+  }
+
+  /** token.confirmed / rejected / cancelled / paused. Returns false when no mandate has this token yet. */
+  async tokenStatusChanged(tokenId: string, status: "confirmed" | "rejected" | "cancelled" | "paused", reason?: string | null) {
+    const mandate = await this.db.subscriptionMandate.findUnique({ where: { providerMandateId: tokenId } });
+
+    if (!mandate) {
+      return false;
+    }
+
+    if (status === "confirmed") {
+      await this.db.subscriptionMandate.updateMany({
+        where: { id: mandate.id, status: { in: [MandateStatus.PENDING, MandateStatus.REVOKED] }, cancelledAt: null },
+        data: { status: MandateStatus.ACTIVE, activatedAt: new Date(), revokedAt: null, revokeReason: null, authUrl: null },
+      });
+
+      return true;
+    }
+
+    if (mandate.status === MandateStatus.REPLACED || mandate.status === MandateStatus.CANCELLED) {
+      // We cancelled it ourselves (price change, cancel): nothing to tell.
+      return true;
+    }
+
+    const why = {
+      rejected: "You didn't approve the UPI AutoPay request.",
+      cancelled: "The UPI AutoPay mandate was cancelled in your UPI app or bank.",
+      paused: "The UPI AutoPay mandate was paused in your UPI app.",
+    }[status];
+
+    await this.mandateRevoked(mandate.id, reason ? `${why} (${reason})` : why);
+
+    return true;
+  }
+
+  private async applyWaitingTokenEvents(tokenId: string) {
+    const events = await this.db.razorpayWebhookEvent.findMany({
+      where: { entityId: tokenId, processedAt: null, event: { startsWith: "token." } },
+      orderBy: { createdAt: "asc" },
+    });
+
+    for (const event of events) {
+      const status = event.event.slice("token.".length) as "confirmed" | "rejected" | "cancelled" | "paused";
+      const entity = (event.payload as { payload?: { token?: { entity?: { recurring_details?: { failure_reason?: string } } } } })
+        .payload?.token?.entity;
+
+      if (await this.tokenStatusChanged(tokenId, status, entity?.recurring_details?.failure_reason)) {
+        await this.db.razorpayWebhookEvent.update({ where: { id: event.id }, data: { processedAt: new Date() } });
+      }
+    }
   }
 
   /**
@@ -445,12 +621,18 @@ export default class SubscriptionBillingService {
     await this.db.$queryRaw`SELECT id FROM "Subscription" WHERE id = ${subscriptionId} FOR UPDATE`;
 
     const subscription = await this.db.subscription.findUnique({ where: { id: subscriptionId } });
+    const latestMandate = await this.db.subscriptionMandate.findFirst({
+      where: { subscriptionId, status: { in: [MandateStatus.ACTIVE, MandateStatus.PENDING] } },
+      orderBy: { createdAt: "desc" },
+    });
+    // Razorpay starts 48 h before the end date (UPI pre-debit notice); the dev stand-in on it.
+    const policy = getMandateGateway(latestMandate?.provider).policy;
 
     if (
       !subscription ||
       subscription.status !== SubscriptionStatus.ACTIVE ||
       !renewsByMandate(subscription) ||
-      subscription.endDate > new Date() ||
+      subscription.endDate.getTime() - policy.leadHours * 60 * MINUTE_MS > Date.now() ||
       (subscription.nextRenewalAttemptAt && subscription.nextRenewalAttemptAt > new Date())
     ) {
       return { status: "SKIPPED" as const };
@@ -461,7 +643,7 @@ export default class SubscriptionBillingService {
     });
 
     if (pending) {
-      if (Date.now() - pending.createdAt.getTime() < RENEWAL_PENDING_TIMEOUT_MINUTES * MINUTE_MS) {
+      if (Date.now() - pending.createdAt.getTime() < policy.pendingTimeoutMinutes * MINUTE_MS) {
         // Waiting for the gateway's answer (webhook).
         return { status: "WAITING" as const };
       }
@@ -514,10 +696,13 @@ export default class SubscriptionBillingService {
       },
     });
 
-    const result = await getMandateGateway().charge({
-      providerMandateId: mandate.providerMandateId,
+    const result = await getMandateGateway(mandate.provider).charge({
+      mandate,
       paymentId: payment.id,
+      paymentNumber: payment.paymentNumber,
+      subscriptionId,
       amount: Number(gst.totalAmount),
+      customer: await ownerContact(this.db, subscription.ownerId),
     });
 
     if (result.status === "SUCCESS") {
@@ -527,9 +712,19 @@ export default class SubscriptionBillingService {
     }
 
     if (result.status === "PENDING") {
+      if (result.transactionReference || result.gatewayPaymentId) {
+        await this.db.payment.update({
+          where: { id: payment.id },
+          data: {
+            transactionReference: result.transactionReference,
+            gatewayResponse: { orderId: result.transactionReference ?? null, gatewayPaymentId: result.gatewayPaymentId ?? null },
+          },
+        });
+      }
+
       await this.db.subscription.update({
         where: { id: subscriptionId },
-        data: { nextRenewalAttemptAt: new Date(Date.now() + RENEWAL_RETRY_MINUTES * MINUTE_MS) },
+        data: { nextRenewalAttemptAt: new Date(Date.now() + policy.retryMinutes * MINUTE_MS) },
       });
 
       return { status: "WAITING" as const };
@@ -697,6 +892,8 @@ export default class SubscriptionBillingService {
 
     const subscription = await this.db.subscription.findUniqueOrThrow({ where: { id: payment.subscriptionId } });
     const attempts = subscription.renewalAttempts + 1;
+    const mandate = payment.mandateId ? await this.db.subscriptionMandate.findUnique({ where: { id: payment.mandateId } }) : null;
+    const policy = getMandateGateway(mandate?.provider).policy;
 
     await this.repository.createHistory({
       subscriptionId: subscription.id,
@@ -704,10 +901,29 @@ export default class SubscriptionBillingService {
       previousPlanId: subscription.planId,
       newPlanId: subscription.planId,
       amount: 0,
-      remarks: `Attempt ${attempts} of ${RENEWAL_MAX_ATTEMPTS}: ${reason}`,
+      remarks: `Attempt ${attempts} of ${policy.maxAttempts}: ${reason}`,
     });
 
-    if (!retryable || attempts >= RENEWAL_MAX_ATTEMPTS) {
+    if (!retryable || attempts >= policy.maxAttempts) {
+      if (subscription.endDate > new Date()) {
+        // Failed before the end date (Razorpay starts 48 h early): the plan
+        // keeps working until its end date, then ends (no more charges).
+        await this.db.subscription.update({
+          where: { id: subscription.id },
+          data: { renewalAttempts: attempts, lastRenewalFailure: reason, autoRenew: false, nextRenewalAttemptAt: null },
+        });
+
+        await new NotificationService(this.db).notifyAgent(subscription.ownerId, {
+          title: "Renewal payment failed",
+          message: `We couldn't renew your plan through UPI AutoPay (${reason}). It keeps working until ${subscription.endDate.toISOString()} and then stops. Renew or take a new plan in the app to continue.`,
+          kind: NotificationKind.SUBSCRIPTION_RENEWAL_FAILED,
+          type: NotificationType.WARNING,
+          data: { subscriptionId: subscription.id, attempt: attempts, endsAt: subscription.endDate.toISOString(), autoRenew: false },
+        });
+
+        return;
+      }
+
       await this.db.subscription.update({
         where: { id: subscription.id },
         data: { renewalAttempts: attempts, lastRenewalFailure: reason },
@@ -718,7 +934,7 @@ export default class SubscriptionBillingService {
       return;
     }
 
-    const next = new Date(Date.now() + RENEWAL_RETRY_MINUTES * MINUTE_MS);
+    const next = new Date(Date.now() + policy.retryMinutes * MINUTE_MS);
 
     await this.db.subscription.update({
       where: { id: subscription.id },
@@ -731,7 +947,7 @@ export default class SubscriptionBillingService {
 
     await new NotificationService(this.db).notifyAgent(subscription.ownerId, {
       title: "Renewal payment failed",
-      message: `We couldn't charge your UPI mandate (${reason}). Your plan is paused until the payment goes through. We'll try again at ${next.toISOString()} (attempt ${attempts + 1} of ${RENEWAL_MAX_ATTEMPTS}). Keep enough balance in your account.`,
+      message: `We couldn't charge your UPI mandate (${reason}). Your plan is paused until the payment goes through. We'll try again at ${next.toISOString()} (attempt ${attempts + 1} of ${policy.maxAttempts}). Keep enough balance in your account.`,
       kind: NotificationKind.SUBSCRIPTION_RENEWAL_FAILED,
       type: NotificationType.WARNING,
       data: { subscriptionId: subscription.id, attempt: attempts, nextAttemptAt: next.toISOString() },
@@ -878,7 +1094,7 @@ export default class SubscriptionBillingService {
     });
 
     for (const mandate of mandates) {
-      await getMandateGateway().cancel(mandate.providerMandateId);
+      await getMandateGateway(mandate.provider).cancel(mandate);
     }
 
     await this.db.subscriptionMandate.updateMany({
@@ -898,7 +1114,7 @@ export default class SubscriptionBillingService {
     }
 
     const amount = await this.monthlyAmount(subscription);
-    const { applied } = await getMandateGateway().updateAmount(mandate.providerMandateId, Number(amount));
+    const { applied } = await getMandateGateway(mandate.provider).updateAmount(mandate, Number(amount));
 
     await this.db.subscriptionMandate.update({
       where: { id: mandate.id },

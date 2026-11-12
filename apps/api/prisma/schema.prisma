@@ -926,9 +926,16 @@ model SubscriptionMandate {
 
   provider MandateProvider
 
-  /// Gateway ids (Razorpay subscription / token / customer).
-  providerMandateId  String? @unique
-  providerCustomerId String?
+  /// Gateway ids. Razorpay: providerMandateId = the UPI token (token_...),
+  /// known once the customer approved; providerCustomerId = cust_...;
+  /// providerRegistrationId = the order (purchase that registered it) or the
+  /// registration link invoice (inv_...) the token came from.
+  providerMandateId      String? @unique
+  providerCustomerId     String?
+  providerRegistrationId String? @unique
+
+  /// Most one charge may take (incl. GST); above it the CSP must approve a new mandate.
+  maxAmount Decimal? @db.Decimal(12, 2)
 
   status MandateStatus @default(PENDING)
 
@@ -2932,6 +2939,29 @@ model NotificationPreference {
 }
 
 /// Each time an activation code + a fresh password were emailed (R24).
+/// Razorpay webhook deliveries (id = x-razorpay-event-id): each is applied
+/// once. Token events that arrive before the mandate knows its token wait here
+/// (processedAt null) and are applied when the token is linked.
+model RazorpayWebhookEvent {
+  id String @id
+
+  event String
+
+  // token_..., pay_..., order_..., inv_... the event is about.
+  entityId String?
+
+  payload Json
+
+  processedAt DateTime?
+
+  error String?
+
+  createdAt DateTime @default(now())
+
+  @@index([entityId])
+  @@index([createdAt])
+}
+
 enum EmailLogStatus {
   SENT
   FAILED

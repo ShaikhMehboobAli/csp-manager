@@ -5,14 +5,16 @@ import { withTransaction } from "../core/database/transaction";
 import { Logger } from "../core/utils/logger";
 import { SubscriptionOwnerType, SubscriptionStatus } from "../generated/prisma/enums";
 import SubscriptionBillingService from "../modules/subscriptions/billing/subscription-billing.service";
+import { getMandateGateway } from "../modules/subscriptions/billing/mandate-gateway";
 
 let running = false;
 
 /**
- * Every minute: charges the UPI mandate of CSP subscriptions whose end date
- * has come (on the day and time they end), and retries failed charges
- * 15 minutes apart. After the 3rd failed attempt (or with no active
- * mandate) the subscription stops at once.
+ * Every minute: charges the UPI mandate of CSP subscriptions that are due.
+ * Razorpay: from 48 h before the end date (Razorpay notifies the customer,
+ * debits ~25 h later and retries itself; we only retry when it refused to
+ * start). Dev stand-in: on the end date, retried twice 15 minutes apart.
+ * No successful charge by the end date: the plan stops (no grace).
  */
 export default class SubscriptionRenewalJob {
   static start() {
@@ -42,7 +44,8 @@ export default class SubscriptionRenewalJob {
           autoRenew: true,
           cancelledAt: null,
           lapsedAt: null,
-          endDate: { lte: now },
+          // Razorpay: from 48 h before the end date (UPI pre-debit notice); dev: on it.
+          endDate: { lte: new Date(now.getTime() + getMandateGateway().policy.leadHours * 60 * 60 * 1000) },
           OR: [{ nextRenewalAttemptAt: null }, { nextRenewalAttemptAt: { lte: now } }],
         },
         select: { id: true, subscriptionNumber: true },

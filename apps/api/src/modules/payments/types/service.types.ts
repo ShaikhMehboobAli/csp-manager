@@ -26,7 +26,13 @@ export interface VerifyPaymentInput {
   agentId: string;
   paymentId: string;
 
-  gatewayTransactionId: string;
+  /** Dev stand-in (no Razorpay keys). */
+  gatewayTransactionId?: string;
 
   transactionReference?: string;
+
+  /** From Razorpay Checkout's handler. */
+  razorpayOrderId?: string;
+  razorpayPaymentId?: string;
+  razorpaySignature?: string;
 }
