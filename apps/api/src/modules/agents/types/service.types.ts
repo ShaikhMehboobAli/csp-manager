@@ -1,4 +1,5 @@
 import { Agent, Prisma } from "../../../generated/prisma/client";
+import type { mapRequest } from "../../bc-links/bc-link.service";
 import {
   AgentType,
   SubscriptionOwnerType,
@@ -12,8 +13,19 @@ export interface CreateKOInput {
   email?: string;
   address?: string;
 
+  /** SBI kiosk User ID when it differs from agentId (upper-case). */
+  sbiUserId?: string;
+
   cashLimit?: number;
   openingCash?: number;
+  openingCashInAccount?: number;
+
+  /**
+   * KO creation form: the new cash in hand of existing agents (the CSP
+   * and/or its KOs) the CSP moved cash from / to. Omitted: the KO's cash in
+   * hand comes out of the CSP's own cash in hand (the rest raises the limit).
+   */
+  cashAdjustments?: { agentId: string; cashInHand: number }[];
 
   machineCount: number;
 }
@@ -60,6 +72,7 @@ export interface CreateCSPInput {
 
   cashLimit?: Prisma.Decimal | number;
   openingCash?: Prisma.Decimal | number;
+  openingCashInAccount?: Prisma.Decimal | number;
   //   cashLimit: string | null;
   //   openingCash: string | null;
 
@@ -84,6 +97,7 @@ export interface CreateAgentInternalInput {
 
   cashLimit?: Prisma.Decimal | number;
   openingCash?: Prisma.Decimal | number;
+  openingCashInAccount?: Prisma.Decimal | number;
 
   machineCount: number;
 
@@ -118,6 +132,7 @@ export interface AgentResponse {
   //   openingCash: Prisma.Decimal | null;
   cashLimit: string | null;
   openingCash: string | null;
+  openingCashInAccount: string | null;
 
   linkedAt: Date | null;
 
@@ -126,8 +141,10 @@ export interface AgentResponse {
 }
 
 export interface CreateCSPResponse {
-  csp: AgentResponse;
+  // null when an existing CSP was requested instead of linked (linkRequest).
+  csp: AgentResponse | null;
   kos: AgentResponse[];
+  linkRequest?: ReturnType<typeof mapRequest>;
 }
 
 export interface CreateKOResponse {

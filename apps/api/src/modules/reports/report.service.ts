@@ -1,6 +1,6 @@
 import { PrismaDb } from "../../core/database/prisma.types";
 
-import { withTransaction } from "../../core/database/transaction";
+import { withReadOnly } from "../../core/database/transaction";
 
 import ReportSummaryRepository from "./repository/report-summary.repository";
 
@@ -24,7 +24,7 @@ function hideBalances(rows: ReportSummaryRow[]): ReportSummaryRow[] {
 
 export default class ReportService {
   async getSummary(filter: ReportFilter) {
-    return withTransaction(async (tx: PrismaDb) => {
+    return withReadOnly(async (tx: PrismaDb) => {
       // check for subscription and access validation
 
       const resolver = new SubscriptionResolver(tx);
@@ -48,7 +48,7 @@ export default class ReportService {
   }
 
   async exportReport(filter: ReportFilter) {
-    return withTransaction(async (tx) => {
+    return withReadOnly(async (tx) => {
       // check for subscription and access validation
 
       const resolver = new SubscriptionResolver(tx);

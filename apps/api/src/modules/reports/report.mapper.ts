@@ -39,13 +39,19 @@ export function mapReportSummary(rows: ReportSummaryRow[]) {
     balanceEnquiry:
       row.services[TransactionCategory.BALANCE_ENQUIRY]?.count ?? 0,
 
-    // passbookPrint: row.services[TransactionCategory.PASSBOOK_PRINT] ?? 0,
+    passbookPrint:
+      row.services[TransactionCategory.PASSBOOK_PRINTING]?.count ?? 0,
 
-    // pmjjby: row.services[TransactionCategory.PMJJBY] ?? 0,
+    socialSecurity:
+      row.services[TransactionCategory.SOCIAL_SECURITY]?.count ?? 0,
 
-    // pmsby: row.services[TransactionCategory.PMSBY] ?? 0,
+    pmjjby: row.socialSecurity.PMJJBY,
 
-    // apy: row.services[TransactionCategory.APY] ?? 0,
+    pmsby: row.socialSecurity.PMSBY,
+
+    apy: row.socialSecurity.APY,
+
+    otherSocialSecurity: row.socialSecurity.OTHER,
 
     accountOpening:
       row.services[TransactionCategory.ACCOUNT_OPENING]?.count ?? 0,
