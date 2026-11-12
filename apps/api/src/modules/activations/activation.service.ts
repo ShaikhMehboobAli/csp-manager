@@ -1,4 +1,9 @@
+import prisma from "../../config/prisma";
 import { withTransaction, withReadOnly } from "../../core/database/transaction";
+import DesktopSettingsService from "../settings/desktop-settings.service";
+import { maskEmail } from "../machines/family/agent-email-otp.service";
+import NotificationService from "../notifications/notification.service";
+import { NotificationKind } from "../../generated/prisma/enums";
 import { withVisiblePassword } from "./activation-password-exposure";
 import { PrismaDb } from "../../core/database/prisma.types";
 import ActivationRepository from "./activation.repository";
@@ -16,6 +21,8 @@ import {
 } from "../../generated/prisma/enums";
 import { NotFoundError } from "../../core/errors/NotFoundError";
 import { BadRequestError } from "../../core/errors/BadRequestError";
+import { AppError } from "../../core/errors/AppError";
+import EmailService from "../../core/services/email.service";
 import { ForbiddenError } from "../../core/errors/ForbiddenError";
 
 import bcrypt from "bcrypt";
@@ -38,6 +45,7 @@ function withPendingRevoke<
 
 export default class ActivationService {
   private readonly passwordService = new ActivationPasswordService();
+  private readonly emailService = new EmailService();
 
   async generateActivations(data: GenerateActivationsInput, tx?: PrismaDb) {
     const execute = async (db: PrismaDb) => {
@@ -180,6 +188,89 @@ export default class ActivationService {
   }
 
   /**
+   * Emails an assigned, unused activation code with a fresh password to the
+   * agent (or to the owner, `to: "me"`). The old password stops working, so
+   * the app never keeps one. At most 5 sends per activation per hour.
+   */
+  async sendByEmail(activationId: string, user: JwtPayload, to: "agent" | "me" = "agent") {
+    const ownerId = user.agentId;
+
+    const result = await withTransaction(async (tx) => {
+      const subscription = await new SubscriptionResolver(tx).getEffectiveSubscription(ownerId);
+
+      SubscriptionAccessValidator.validate(subscription);
+
+      const repository = new ActivationRepository(tx);
+      const activation = await repository.findActivationForOwner(activationId, ownerId);
+
+      if (!activation) {
+        throw new NotFoundError("Activation not found.");
+      }
+
+      if (activation.status !== ActivationStatus.NOT_ACTIVATED) {
+        throw new BadRequestError("Activation has already been used.");
+      }
+
+      if (!activation.assignedAgentId) {
+        throw new BadRequestError("Activation has not been assigned.");
+      }
+
+      const recentSends = await tx.activationEmail.count({
+        where: { activationId, createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) } },
+      });
+
+      if (recentSends >= 5) {
+        throw new AppError("This code was emailed 5 times in the last hour. Try again later.", 429, "RATE_LIMITED");
+      }
+
+      const recipient =
+        to === "me"
+          ? (await tx.user.findUnique({ where: { id: user.userId }, select: { email: true } }))?.email
+          : (await tx.agent.findUnique({ where: { agentId: activation.assignedAgentId }, select: { email: true } }))?.email;
+
+      if (!recipient) {
+        throw new BadRequestError(
+          to === "me" ? "Your account has no email." : "Add an email for this agent first.",
+          "AGENT_HAS_NO_EMAIL",
+        );
+      }
+
+      // Refuse before the password changes, so a limited send keeps the old one.
+      await this.emailService.assertCanSend(recipient, "ACTIVATION");
+
+      const credentials = await this.passwordService.generateCredentials();
+
+      await repository.updateActivationPassword(activation.id, credentials.hash, credentials.password);
+
+      const sent = await tx.activationEmail.create({
+        data: { activationId, sentTo: recipient, sentByUserId: user.userId },
+      });
+
+      return {
+        recipient,
+        sentAt: sent.createdAt,
+        activationCode: activation.activationCode,
+        password: credentials.password,
+        agentId: activation.assignedAgentId,
+        expiresAt: activation.expiresAt,
+      };
+    });
+
+    await this.emailService.sendActivation(result.recipient, {
+      activationCode: result.activationCode,
+      password: result.password,
+      ...(await this.onboardingContext(result.agentId, ownerId)),
+      expiresAt: result.expiresAt,
+    });
+
+    return {
+      success: true,
+      message: `Code sent to ${result.recipient}.`,
+      data: { sentTo: result.recipient, sentAt: result.sentAt, activationCode: result.activationCode },
+    };
+  }
+
+  /**
    * SUPER_ADMIN revokes an activation directly. Owners (CSP / BC) raise a
    * revoke request instead, which the super admin approves (revoke-requests).
    */
@@ -200,6 +291,15 @@ export default class ActivationService {
         activation.id,
         user.userId,
       );
+
+      const machineCode = activation.machine?.machineCode ?? null;
+
+      await new NotificationService(tx).notifyAgent(activation.subscription.ownerId, {
+        title: "Activation revoked",
+        message: `Support revoked ${activation.activationCode}${machineCode ? `; the PC ${machineCode} has stopped working` : ""}. Assign the code again to use it on another PC.`,
+        kind: NotificationKind.ACTIVATION_REVOKED,
+        data: { activationId: activation.id, activationCode: activation.activationCode, machineCode },
+      });
 
       return {
         success: true,
@@ -246,7 +346,7 @@ export default class ActivationService {
   }
 
   async assignActivation(data: AssignActivationInput) {
-    return withTransaction(async (tx) => {
+    const assigned = await withTransaction(async (tx) => {
       const resolver = new SubscriptionResolver(tx);
 
       const subscription = await resolver.getEffectiveSubscription(
@@ -356,13 +456,83 @@ export default class ActivationService {
       //   message: "Activation assigned successfully.",
       // };
       return {
-        success: true,
-        message: "Activation assigned successfully.",
-        data: {
-          activationCode: activation.activationCode,
-          activationPassword: credentials.password,
-        },
+        activationId: activation.id,
+        activationCode: activation.activationCode,
+        password: credentials.password,
+        expiresAt: activation.expiresAt,
+        agentId: agent.agentId,
+        agentEmail: agent.email,
       };
     });
+
+    const email = await this.sendOnboardingEmail(assigned, data);
+
+    return {
+      success: true,
+      message: email.sent
+        ? `Activation assigned. The code and password were emailed to ${email.sentTo}.`
+        : "Activation assigned successfully.",
+      data: {
+        activationCode: assigned.activationCode,
+        activationPassword: assigned.password,
+        email,
+      },
+    };
+  }
+
+  /**
+   * Onboarding email right after a code is assigned. Never undoes the
+   * assignment: a missing email or a failed send is reported in `email` and
+   * the owner can use "Email to agent" (POST /activations/:id/send) later.
+   */
+  private async sendOnboardingEmail(
+    assigned: { activationId: string; activationCode: string; password: string; expiresAt: Date; agentId: string; agentEmail: string | null },
+    data: AssignActivationInput,
+  ): Promise<{ sent: true; sentTo: string } | { sent: false; reason: "NO_EMAIL" | "RATE_LIMITED" | "SEND_FAILED"; message: string }> {
+    if (!assigned.agentEmail) {
+      return { sent: false, reason: "NO_EMAIL", message: "This agent has no email. Share the code and password yourself, or add an email and use Email to agent." };
+    }
+
+    try {
+      await this.emailService.sendActivation(assigned.agentEmail, {
+        activationCode: assigned.activationCode,
+        password: assigned.password,
+        ...(await this.onboardingContext(assigned.agentId, data.assignedByOwnerId)),
+        expiresAt: assigned.expiresAt,
+      });
+
+      if (data.assignedByUserId) {
+        await prisma.activationEmail.create({
+          data: { activationId: assigned.activationId, sentTo: assigned.agentEmail, sentByUserId: data.assignedByUserId },
+        });
+      }
+
+      return { sent: true, sentTo: maskEmail(assigned.agentEmail) ?? assigned.agentEmail };
+    } catch (error) {
+      const limited = error instanceof AppError && error.statusCode === 429;
+
+      return {
+        sent: false,
+        reason: limited ? "RATE_LIMITED" : "SEND_FAILED",
+        message: limited ? (error as AppError).message : "We couldn't email the code. Share it yourself or use Email to agent later.",
+      };
+    }
+  }
+
+  /** Names and the installer link for the onboarding email. */
+  private async onboardingContext(agentId: string | null, ownerId: string) {
+    const [agent, ownerAgent, bc, desktop] = await Promise.all([
+      agentId ? prisma.agent.findUnique({ where: { agentId }, select: { name: true } }) : null,
+      prisma.agent.findUnique({ where: { agentId: ownerId }, select: { name: true } }),
+      prisma.businessCorrespondent.findUnique({ where: { bcId: ownerId }, select: { name: true } }),
+      new DesktopSettingsService(prisma).getSettings().catch(() => null),
+    ]);
+
+    return {
+      agentId,
+      agentName: agent?.name ?? null,
+      ownerName: ownerAgent?.name ?? bc?.name ?? null,
+      downloadUrl: desktop?.downloadUrl ?? null,
+    };
   }
 }

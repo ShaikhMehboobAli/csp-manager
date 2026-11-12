@@ -1,4 +1,5 @@
 import { PrismaDb } from "../../core/database/prisma.types";
+import { notifyCspOfKo } from "./cash-notify.helper";
 import { BadRequestError } from "../../core/errors/BadRequestError";
 import { ConflictError } from "../../core/errors/ConflictError";
 import { NotFoundError } from "../../core/errors/NotFoundError";
@@ -27,6 +28,7 @@ import { CashTaskService } from "./cash-task.service";
 import NotificationService from "../notifications/notification.service";
 import { NotificationKind, NotificationType } from "../../generated/prisma/enums";
 import CashRepository, { LockedAgentCash, LockedPool } from "./cash.repository";
+import CashReceiptCountService from "./cash-receipt-count.service";
 import {
   D,
   NOT_SET_UP_MESSAGE,
@@ -50,7 +52,7 @@ export interface CashReceipt {
 }
 
 export type ReceiptCashResult =
-  | { status: "APPLIED" }
+  | { status: "APPLIED"; denomination?: "PENDING" }
   | { status: "NOT_APPLIED"; reason: NotAppliedReason };
 
 /**
@@ -1460,6 +1462,18 @@ export default class CashService {
       },
     });
 
+    const system = cash.get(input.agentId)!.cashInHand;
+
+    await notifyCspOfKo(this.db, {
+      cspAgentId,
+      agentId: input.agentId,
+      kind: NotificationKind.CASH_REQUEST_RAISED,
+      title: "Cash change request",
+      message: (ko) => `${ko} asks to change cash in hand from ${rupees(system)} to ${rupees(D(input.cashInHand))}: ${input.reason}. Review it in Cash.`,
+      type: NotificationType.WARNING,
+      data: { requestId: request.id, systemCashInHand: system.toFixed(2), requestedCashInHand: D(input.cashInHand).toFixed(2) },
+    });
+
     return this.mapRequest(request);
   }
 
@@ -1613,7 +1627,7 @@ export default class CashService {
 
     const shownIds = shown.map((agent) => agent.agentId);
 
-    const [cashRows, running, adjustments] = await Promise.all([
+    const [cashRows, running, adjustments, pendingCounts] = await Promise.all([
       this.repository.findAgentCash(shownIds),
       this.db.activation.findMany({
         where: {
@@ -1629,9 +1643,16 @@ export default class CashService {
         where: { agentId: { in: shownIds }, status: "PENDING" },
         _count: { _all: true },
       }),
+      this.db.receipt.groupBy({
+        by: ["agentId"],
+        where: { agentId: { in: shownIds }, denominationPending: true },
+        _count: { _all: true },
+        _sum: { amount: true },
+      }),
     ]);
 
     const cash = new Map(cashRows.map((row) => [row.agentId, row]));
+    const counts = new Map(pendingCounts.map((row) => [row.agentId, row]));
     const withMachine = new Set(running.map((row) => row.assignedAgentId));
 
     return cspAgentIds.map((cspAgentId) => {
@@ -1668,6 +1689,11 @@ export default class CashService {
           // Open "Adjust" requests (notes to count on the desktop).
           pendingAdjustments:
             adjustments.find((item) => item.agentId === agent.agentId)?._count._all ?? 0,
+          // Cash receipts the agent uploaded without notes ("Count needed").
+          pendingCounts: {
+            count: counts.get(agent.agentId)?._count._all ?? 0,
+            amount: money(D(counts.get(agent.agentId)?._sum.amount ?? 0)),
+          },
         };
       });
 
@@ -1710,7 +1736,7 @@ export default class CashService {
       return null;
     }
 
-    const [pool, row, lastRequest, dues, openSettlement, tasks] = await Promise.all([
+    const [pool, row, lastRequest, dues, openSettlement, tasks, pendingCounts] = await Promise.all([
       this.repository.findPool(cspAgentId),
       this.db.agentCash.findUnique({ where: { agentId } }),
       this.db.cashRequest.findFirst({
@@ -1720,6 +1746,7 @@ export default class CashService {
       new CashDeskService(this.db).dueTotals(agentId),
       new CashSettlementService(this.db).openStepSummary(agentId),
       new CashTaskService(this.db).counts(agentId),
+      new CashReceiptCountService(this.db).pendingSummary(agentId),
     ]);
 
     const drawer = row ? drawerOf(row) : emptyDrawer();
@@ -1743,6 +1770,8 @@ export default class CashService {
       // What's waiting for the KO: its open settlement step, and tasks.
       openSettlement,
       tasks,
+      // Cash receipts uploaded without their notes ("Count needed" badge).
+      pendingCounts,
       // Mandatory: count the notes for the CSP's cash in hand changes first.
       pendingAdjustments: await this.listDrawerAdjustments({ agentIds: [agentId], status: "PENDING" }),
       updatedAt: (row?.updatedAt ?? pool?.updatedAt ?? null) as Date | null,

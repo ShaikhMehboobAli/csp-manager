@@ -3,6 +3,7 @@ import { Router } from "express";
 import * as MachineController from "./machine.controller";
 import machineAnalyticsRoutes from "./analytics/machine-analytics.routes";
 import machineRuntimeRoute from "./runtime/machine-runtime.routes";
+import { diagnosticsOwnerRoutes } from "./diagnostics/diagnostics.routes";
 import { authMiddleware } from "../../core/middlewares/auth.middleware";
 import {
   activationRateLimit,
@@ -53,5 +54,8 @@ router.use(
   verifyMachineSignature,
   machineRuntimeRoute,
 );
+
+// "Send PC log to support" (after /runtime, whose paths look like /:machineId/...).
+router.use(diagnosticsOwnerRoutes);
 
 export default router;

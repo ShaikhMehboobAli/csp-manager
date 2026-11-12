@@ -5,7 +5,7 @@ import { checkAgentSchema } from "./validations/check-agent.validation";
 import { signupSchema } from "./validations/signup.validation";
 import { verifyOtpSchema } from "./validations/verify-otp.validation";
 import { loginSchema } from "./validations/login.validation";
-import { refreshSchema, resendOtpSchema } from "./validations/refresh.validation";
+import { logoutSchema, refreshSchema, resendOtpSchema } from "./validations/refresh.validation";
 import { authRateLimit } from "../../core/middlewares/rate-limit.middleware";
 import { authMiddleware } from "../../core/middlewares/auth.middleware";
 import {
@@ -13,6 +13,7 @@ import {
   forgotPasswordSchema,
   resetPasswordSchema,
 } from "./validations/password.validation";
+import { updateProfileSchema, verifyProfileEmailSchema } from "./validations/profile.validation";
 
 const router = Router();
 
@@ -20,9 +21,22 @@ const router = Router();
 // limit (they need a valid refresh token; the general API limit still applies).
 router.post("/refresh", validate(refreshSchema), AuthController.refresh);
 
-router.post("/logout", validate(refreshSchema), AuthController.logout);
+router.post("/logout", validate(logoutSchema), AuthController.logout);
+
+// Own profile (any login; never blocked by the plan). Reading isn't rate
+// limited like the auth calls; changes are.
+router.get("/me", authMiddleware, AuthController.getProfile);
 
 router.use(authRateLimit);
+
+router.patch("/me", authMiddleware, validate(updateProfileSchema), AuthController.updateProfile);
+
+router.post(
+  "/me/email/verify",
+  authMiddleware,
+  validate(verifyProfileEmailSchema),
+  AuthController.verifyProfileEmail,
+);
 
 router.post(
   "/check-agent",

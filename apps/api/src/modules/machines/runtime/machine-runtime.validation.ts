@@ -38,10 +38,15 @@ const machineCredentials = {
   fingerprint: z.string().trim().min(1),
 };
 
-export const activityStartSchema = z.object({
-  ...machineCredentials,
-  agentId: z.string().trim().min(1),
-});
+export const activityStartSchema = z
+  .object({
+    ...machineCredentials,
+    // Our agent ID, or the User ID typed on the SBI kiosk (sbiUserId) when
+    // the desktop has no match in accessAgents. One of the two.
+    agentId: z.string().trim().min(1).optional(),
+    sbiUserId: z.string().trim().min(1).max(50).optional(),
+  })
+  .refine((data) => data.agentId || data.sbiUserId, "Send agentId or sbiUserId.");
 
 export const activityHeartbeatSchema = z.object({
   ...machineCredentials,

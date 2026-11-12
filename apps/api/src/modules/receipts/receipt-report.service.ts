@@ -3,7 +3,8 @@ import { BadRequestError } from "../../core/errors/BadRequestError";
 import { ConflictError } from "../../core/errors/ConflictError";
 import { NotFoundError } from "../../core/errors/NotFoundError";
 import { Prisma } from "../../generated/prisma/client";
-import { ReceiptReportStatus } from "../../generated/prisma/enums";
+import { NotificationKind, ReceiptReportStatus } from "../../generated/prisma/enums";
+import NotificationService from "../notifications/notification.service";
 
 export const RECEIPT_REPORT_REASONS = {
   WRONG_AMOUNT: "Wrong amount",
@@ -64,6 +65,13 @@ export default class ReceiptReportService {
       },
     });
 
+    await new NotificationService(this.db).notifySuperAdmins({
+      title: "Problem report",
+      message: `${input.reportedBy} reported receipt ${input.receipt.receiptId}: ${RECEIPT_REPORT_REASONS[input.reason] ?? input.reason}${input.details ? ` (${input.details})` : ""}`,
+      kind: NotificationKind.RECEIPT_REPORT_RAISED,
+      data: { reportId: report.id, receiptId: input.receipt.receiptId, ownerAgentId: report.ownerAgentId, reason: input.reason },
+    });
+
     return this.map(report);
   }
 
@@ -119,6 +127,15 @@ export default class ReceiptReportService {
     const updated = await this.db.receiptReport.update({
       where: { id },
       data: { status: input.status, resolution: input.resolution, resolvedBy, resolvedAt: new Date() },
+    });
+
+    const resolved = input.status === "RESOLVED";
+
+    await new NotificationService(this.db).notifyAgent(report.reportedBy, {
+      title: resolved ? "Problem report resolved" : "Problem report rejected",
+      message: `Receipt ${report.receiptId}: ${input.resolution}`,
+      kind: resolved ? NotificationKind.RECEIPT_REPORT_RESOLVED : NotificationKind.RECEIPT_REPORT_REJECTED,
+      data: { reportId: report.id, receiptId: report.receiptId, status: input.status },
     });
 
     return this.map(updated, { withSnapshot: true });

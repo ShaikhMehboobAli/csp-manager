@@ -3,7 +3,13 @@
 **Audience:** the web team building the **Super Admin** console in React / Next.js.
 **Not covered here:** the BC/CSP mobile app → `docs/mobile-app-kt.md` (read its sections 3 and 18 for API conventions, errors and dates; they apply here too); the desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api`.
-**Last updated:** 2026-11-08 (rev 21)
+**Last updated:** 2026-11-12 (rev 24)
+
+> **Rev 24 (2026-11-12): metric values are super-admin only** — `POST` / `PATCH /metrics/values` now refuse BC admins (403). Build the value entry screen in the console (§6).
+
+> **Rev 23 (2026-11-11): new §9M** — a super admin notification inbox: new revoke requests, new link requests and new problem reports now create notifications for every active super admin (`GET /notifications`, `POST /notifications/:id/read`). The super admin's own login also takes the optional push token fields (mobile KT §5.2); the console sends none.
+
+> **Rev 22 (2026-11-08): new §9L** — app config (support contacts, minimum app version: `GET` / `PATCH /admin/app-config`), desktop log uploads (`/admin/diagnostics`, `POST /admin/machines/:machineId/diagnostics`), and what the app / desktop requirements changed in data the console shows (BC unlink → link request `UNLINKED`, agent `sbiUserId`, receipt `source` / "Count needed", day close cash in account, ledger `RECEIPT_COUNT`, own profile `/auth/me`).
 
 > **Rev 21 (2026-11-08): read §9K** — one checklist of every API change in rev 19–20 (price change → new mandates, renewal blocking, free trial): request / response, success and failure handling, and which console screens they affect.
 
@@ -16,6 +22,29 @@
 > Describes the backend once PRs #3–#8 are merged into `development`.
 
 ---
+
+### UI wording (owner's terms, 2026-11-08)
+
+The owner renamed the user-facing terms in the mobile app; use the same words in the Super Admin console so support, BCs and CSPs talk about the same things. This KT keeps the API words because they are the field and code names; translate them only on screen.
+
+| In the API, database and code (unchanged) | Say on screen |
+|---|---|
+| CSP (`type: "CSP"`, `CSP_ADMIN`, the owner of a cash pool) | **KO** |
+| KO (`type: "KO"`, an operator under a CSP) | **Sub KO** |
+| BC | **BC** (unchanged) |
+| a CSP's `agentId` | **KO ID** |
+| a KO's `agentId` | **Sub KO ID** |
+| the login ID (`agentId` on login, signup, forgot password, profile) | **KO/BC ID** (CSP and BC owners both use it) |
+| `cashInAccount` (cash in account, the shared holding) | **Cash holding** |
+| `cashInTransit` (money sent to the bank in a KO settlement) and `cashLeftInBank` (what the bank didn't deliver) | **Current A/c** — one amount (their sum) where they're shown together; "Current account" where there's room, e.g. the ledger title "Sent to current account" |
+
+Rules:
+- **Only the words change.** Endpoint paths, field names, enum values, error `code`s and ledger types stay exactly as documented (`cashInAccount`, `CASH_IN_ACCOUNT`, `KO_CREATION`, `type: "KO"`, …). Never rename an API field to match the label.
+- Lower case in the middle of a sentence ("Added to cash holding", "goes through cash holding"); capital only at the start of a label ("Cash holding", "Current A/c").
+- Plan names stay as the super admin set them (e.g. "BC CSP Link").
+- Server `message` texts the user sees should follow the same words when they're next edited (e.g. "Not enough cash in account" → "Not enough cash holding").
+
+Where the console lists agents, show `type: "CSP"` as **KO** and `type: "KO"` as **Sub KO** (filters, columns, detail pages, link requests: "Link a KO", "KO and its Sub KOs"). Cash screens: Cash holding, Current A/c.
 
 ## 1. What the Super Admin does
 
@@ -152,10 +181,15 @@ Rules: new prices apply to new purchases; running subscriptions keep what they p
 | `POST /metrics` | `{ code, name, category, source, inputType?, description? }` | SUPER_ADMIN |
 | `PATCH /metrics/:metricId` | `{ name?, category?, source?, inputType?, description? }` | SUPER_ADMIN (code can't change) |
 | `PATCH /metrics/:metricId/status` | `{ isActive: boolean }` | SUPER_ADMIN |
+| `GET /metrics/values?agentId=&metricId=&from=&to=` | | entered values (any CSP) |
+| `POST /metrics/values` | `{ metricId, agentId (a CSP), date (YYYY-MM-DD), value ≥ 0 }` | **SUPER_ADMIN only (rev 24)** → 201 |
+| `PATCH /metrics/values/:valueId` | `{ value }` | **SUPER_ADMIN only (rev 24)** |
 
-Rules: `code` 2–50 chars, `^[A-Z0-9_]+$` (`Code must contain only uppercase letters, numbers, and underscores.`); `name` 2–100; `category` `SOCIAL_SECURITY|TRANSACTION|VISIT|MANUAL|OTHER`; `source` `RECEIPT` (counted from uploaded transactions, matched by `code` to a receipt type/category) or `MANUAL` (BCs enter daily values in the mobile app); `inputType` `COUNT|NUMBER|BOOLEAN`; `description` ≤ 500.
+Rules: `code` 2–50 chars, `^[A-Z0-9_]+$` (`Code must contain only uppercase letters, numbers, and underscores.`); `name` 2–100; `category` `SOCIAL_SECURITY|TRANSACTION|VISIT|MANUAL|OTHER`; `source` `RECEIPT` (counted from uploaded transactions, matched by `code` to a receipt type/category) or `MANUAL` (**the super admin enters daily values here**, rev 24; BCs no longer can); `inputType` `COUNT|NUMBER|BOOLEAN`; `description` ≤ 500.
 
-UI: table with an active toggle; a create/edit form. Warn before deactivating ("BCs can no longer enter values; dashboards stop showing it").
+UI: table with an active toggle; a create/edit form. Warn before deactivating ("values can no longer be entered; dashboards stop showing it").
+
+**Metric values screen (rev 24, new):** pick a CSP (search) and a date → list the active `MANUAL` metrics with number inputs → `POST /metrics/values` per metric (no bulk endpoint). An existing value for that CSP and date → 400 `Metric value already exists for this CSP and date.` → edit it with `PATCH /metrics/values/:valueId` (find the id with `GET /metrics/values?agentId=&from=&to=`). Other errors: `Metric not found.`, `Metric is inactive.`, `Values can only be entered manually for manual metrics.`, `Manual metric values can only be assigned to a CSP.`
 
 ## 7. Agents directory
 
@@ -432,6 +466,72 @@ Request and response unchanged (`{ graceDays?, gstPercent? }` → `{ graceDays, 
 - Registry: search box (by value) and filter by owner; **Delete** asks "Allow this {kind} to take part in a free trial again?". `value` is stored normalised (email lower-case without dots / `+tag` for Gmail, phone = last 10 digits, agent ID upper-case) — search with the same form.
 - 401 → login; 403 → "super admin only"; network / 5xx → keep the form, show "try again".
 
+## 9L. App config, desktop logs and new data (rev 22) — READY
+
+What the mobile (§19.4 of the mobile KT) and desktop (#35–#39 of the desktop doc) requirements added for the console. All SUPER_ADMIN; errors `{ success: false, code, message }`.
+
+### 9L.1 App config — `GET` / `PATCH /admin/app-config`
+
+What the mobile app reads at start (public `GET /app/config`): support contacts, legal links, minimum / latest version per platform, a banner.
+
+```json
+{ "support": { "phone": "+91…", "whatsapp": "+91…", "email": "support@…", "hours": "Mon–Sat, 9:00–19:00" },
+  "links": { "terms": "https://…", "privacy": "https://…" },
+  "android": { "minVersion": "1.3.0", "latestVersion": "1.4.0", "updateUrl": "https://play.google.com/…" },
+  "ios": { "minVersion": null, "latestVersion": null, "updateUrl": null },
+  "message": null }
+```
+- `GET` → the whole object (all `null` until saved). `PATCH` → any part; nested objects **merge** (send only what changes; `null` clears a field) → 200 `App config updated.` + the saved object.
+- Rules (400): versions like `1.4.0` (`Use a version like 1.4.0.`), URLs full `https://` (`Use a full https:// link.`), `support.email` a valid email, `phone` / `whatsapp` ≤ 20, `hours` ≤ 100, `message` ≤ 300; empty body → `Send at least one setting.`
+- Effect: an app below `minVersion` shows a full-screen "Please update" (with `updateUrl`) and stops working until updated — **raise `minVersion` only after the new build is live in the store.** `latestVersion` shows a dismissible "update available". `message` is a banner on every screen (maintenance etc.; `null` removes it). Changes reach apps within about an hour (cached).
+- UI: "App settings" page: support card, links card, one card per platform, banner text with a clear button. Confirm before saving a higher `minVersion`: "Apps below X stop working until updated."
+
+### 9L.2 Desktop logs (diagnostics)
+
+The PC uploads its desktop log (no personal data: page structure, steps, masked digits) **only when asked**. Requests are numbered `DIAG-YYYY-NNNNNN` and kept 14 days.
+
+| Call | Request | Success | Failures |
+|---|---|---|---|
+| `POST /admin/machines/:machineId/diagnostics` (`:machineId` = machine id or `MAC-…` code) | `{ fromDate?, toDate?, note? }` (IST `YYYY-MM-DD`; default today; **only the last 3 days** (today and the 2 before); not in the future; note ≤ 300) | 201 request `{ id, requestId, machineId, machineCode, fromDate, toDate, status: "OPEN", note, requestedByRole, partsExpected: null, partsReceived: [], bytesReceived: 0, receivedAt: null, createdAt }` | 404 `Machine not found.` · 400 `DIAGNOSTICS_RANGE_TOO_OLD` `Only the last 3 days of logs can be asked for (from 2026-11-06).` / `Dates can't be in the future.` / `` `fromDate` must be on or before `toDate`. `` |
+| `GET /admin/diagnostics?machineId=&status=OPEN\|RECEIVED\|CANCELLED&page=&limit=` | — | `{ items: [request], pagination }` newest first | 400 validation |
+| `GET /admin/diagnostics/:requestId` (id or `DIAG-…`) | — | the request | 404 `Diagnostics request not found.` |
+| `DELETE /admin/diagnostics/:requestId` | — | the request, `status: "CANCELLED"` (only an open one changes) | 404 |
+| `GET /admin/diagnostics/:requestId/parts/:part` | — | **`text/plain`** file download (`Content-Disposition: attachment; filename="MAC-…-DIAG-…-part1-2026-11-08.log"`) | 404 `That part hasn't arrived.` |
+
+- A new request for a PC **replaces** its open one (that one → `CANCELLED`). CSPs / BCs can ask too, from the app (`requestedByRole` shows who).
+- The PC sees the request on its next heartbeat (≈ 1 min) **while it's switched on**, then sends parts (≤ 1.5 MB each, one a minute). `status: RECEIVED` when all `partsExpected` parts are in (`partsReceived` lists them).
+- UI: Machine detail → "Request desktop log" (date pickers limited to today and the 2 days before, note) → a Diagnostics tab: list with status chips, "n of m parts", size, and a download button per part. Poll every 30 s while a request is open.
+
+### 9L.3 What changed in data the console shows
+
+| Where | Change | Show |
+|---|---|---|
+| Link requests (§4) | new `status: "UNLINKED"` (the BC unlinked an approved ₹799 link; `unlinkedAt`, `unlinkReason`), an audit row (`AGENT` `UPDATE`, "BC … unlinked CSP …") | chip "Unlinked" + date and reason; the CSP and its KOs no longer belong to that BC |
+| Agents directory (§7) | agent object adds `sbiUserId` (the SBI kiosk User ID when it differs from the agent ID; set by the CSP; unique) | column / detail row "SBI user ID" |
+| Receipts (§8) | `source` (`AUTOMATION` / `MANUAL` / null) and `denominationPending` (notes still to count on the desktop) | chips; filter later if needed |
+| Cash ledger viewer (§9H) | new type `RECEIPT_COUNT` (the agent entered a receipt's notes later; drawer only) | label "Notes counted" |
+| Day closes | `system.cashInAccount`, `counted.cashInAccount`, `accountDifference` (optional; the KO's SBI reading) | second difference column |
+| Own profile | `GET` / `PATCH /auth/me` and `POST /auth/me/email/verify` work for the super admin too (mobile KT §19.4 R20) | optional "My profile" page |
+| Push | sent through FCM since rev 23 / mobile rev 32; the phone's token comes with `/auth/login` and `/auth/refresh` (the console sends none) | nothing to build |
+
+## 9M. Super admin notifications (rev 23) — READY
+
+Every **active** super admin gets an in-app notification when:
+
+| `kind` | When | `data` | Open on click |
+|---|---|---|---|
+| `ACTIVATION_REVOKE_REQUESTED` | a CSP / BC asked to revoke an activation | `requestId, requestNumber, activationId, activationCode, ownerId, machineCode` | Revoke requests → that request (§3) |
+| `BC_LINK_REQUESTED` | a BC asked to link a CSP (message says when the CSP is linked to another BC) | `requestId, bcId, cspAgentId, isConflict` | Link requests → that request (§4) |
+| `RECEIPT_REPORT_RAISED` | an owner reported a problem on a receipt | `reportId, receiptId, ownerAgentId, reason` | Problem reports → that report (§9F) |
+
+Calls (same as the app, any login):
+- `GET /notifications?unreadOnly=true|false&page=&limit=` → `{ items: [{ id, title, message, type, kind, data, isRead, readAt, createdAt }], unread, pagination }`.
+- `POST /notifications/:id/read` (`:id` = `all` marks every unread one) → 200.
+
+**UI:** a bell in the header with the `unread` count; poll `GET /notifications?unreadOnly=true&limit=1` every 60 s (the console has no push). Clicking an item marks it read and opens the screen above. The pending-queue polling in §3 / §4 can use this count instead.
+
+What owners now get (for support questions; mobile KT §13D): revoke approved / rejected, direct revoke, link approved / rejected (BC) and "linked to a BC" (CSP), problem report resolved / rejected. Approve / reject / revoke / resolve responses are unchanged.
+
 ## 10. Other endpoints the console can use
 
 - `POST /csp-visits`, `GET /csp-visits/:id`, `GET /csp-visits/csp/:cspAgentId` — allowed for SUPER_ADMIN (mobile KT §16). Upload works the same from the browser (presigned POST via `FormData` / `fetch`).
@@ -527,6 +627,11 @@ The data exists today: `Subscription` (`ownerType`, `ownerId`, `planId`, `status
 
 ## 13. Changelog
 
+- 2026-11-12 (rev 24) — Metric values: super admin only (`POST` / `PATCH /metrics/values`); new value entry screen in §6.
+
+- 2026-11-11 (rev 23) — §9M super admin notifications (`ACTIVATION_REVOKE_REQUESTED`, `BC_LINK_REQUESTED`, `RECEIPT_REPORT_RAISED`) with the bell / polling guidance; push row in §9L.3 updated.
+
+- 2026-11-08 (rev 22) — New §9L: `GET` / `PATCH /admin/app-config` (support contacts, links, min / latest app version per platform, banner); desktop log requests and downloads (`POST /admin/machines/:machineId/diagnostics`, `GET` / `DELETE /admin/diagnostics/:requestId`, `GET …/parts/:part`); data changes: link request `UNLINKED`, agent `sbiUserId`, receipt `source` / `denominationPending`, ledger `RECEIPT_COUNT`, day close cash in account, own profile.
 - 2026-11-08 (rev 21) — New §9K: one checklist of every API change in rev 19–20 (price change → new mandates, BC-only grace, renewal in progress, refund due, the six free trial endpoints) with request / response, success and failure handling and the screens affected. `mandateFailures` is a count.
 - 2026-11-07 (rev 20) — §9J free trial: `GET/PATCH /admin/trial-settings`, `GET /admin/trials`, `PATCH /admin/trials/:subscriptionId` (extend days / machines, revive an ended trial), `GET/DELETE /admin/trial-usages`.
 - 2026-11-07 (rev 19) — Owner decisions: a CSP monthly price change replaces running mandates at the new price (§5: `mandatesReplaced`, `mandateFailures`; mandate status `REPLACED`); blocked during renewal retries (§9G); grace days apply to BC plans only (§9D); a purchase after a cancel starts now (confirmed).

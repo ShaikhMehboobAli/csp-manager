@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  ReceiptSource,
   ReceiptStatus,
   ReceiptType,
   TransactionCategory,
@@ -110,6 +111,13 @@ export const minimalReceiptSchema = z
     // or PENDING receipt is skipped (no count, commission or cash). Omitted
     // = SUCCESS (older desktops).
     status: z.nativeEnum(ReceiptStatus).optional(),
+    // AUTOMATION (Transaction Controller) or MANUAL (done by hand on the SBI
+    // kiosk, captured). Optional; stored on the receipt.
+    source: z.nativeEnum(ReceiptSource).optional(),
+    // The desktop says the notes weren't counted (cash withdrawal modal not
+    // saved). The server also works it out from a missing / empty
+    // cashDenomination; the agent fills the count later.
+    denominationPending: z.boolean().optional(),
   })
   .superRefine((receipt, ctx) => {
     if (

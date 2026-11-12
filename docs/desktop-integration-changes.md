@@ -2,7 +2,15 @@
 
 **Audience:** the engineer/agent implementing changes in the C# desktop repo (`ReceiptWarcher/`).
 **Source of truth for the backend:** `csp-manager/apps/api` (Express + Prisma). This doc lists what the desktop must add, modify, or remove to match the backend.
-**Last updated:** 2026-11-08 (rev 28)
+**Last updated:** 2026-11-12 (rev 31)
+
+> **Rev 31 (2026-11-12): resend timer on email OTPs.** Both email OTP calls return `resendAvailableAt` + `resendInSeconds` (60): disable "Send again" and show a countdown. "Too soon" / "too many" errors carry `details.retryAfterSeconds`; restart the countdown from it. The agent also gets a welcome email with its Agent ID, activation code and password when the CSP assigns the code (nothing to call on the desktop).
+
+> **Rev 30 (2026-11-11): email OTPs are now really emailed (Resend).** `POST /machines/activate/email/otp` and `POST /machines/runtime/cash/email/otp` can answer **503 `EMAIL_SEND_FAILED`** when the email provider fails: show `message` and allow "Send again" after the 60 s wait. Subjects: "Verify your email for CSP Manager" / "Your CSP Manager cash login code".
+
+> **Rev 30 (2026-11-11): new #40 "close the day" reminder** — heartbeat `dayCloseReminder` (from 30 min before the CSP's closing time, or 18:00 when none is set, until the logged-in cash agent closes the day). Also: the owner's app is told when this PC sends **no heartbeat for 1 hour** (once per outage), so keep the heartbeat running whenever the service runs.
+
+> **Rev 29 (2026-11-08): your asks 7–11 (desktop README, 2026-11-08) are built — items #35–#39.** #35 cash receipts without notes ("Count needed": `denominationPending`, `GET` / `POST /machines/runtime/cash/receipt-counts`, heartbeat `cash.pendingCounts`), #36 close the day with cash in account (`countedCashInAccount`), #37 SBI kiosk user id (`sbiUserId` in `accessAgents`, `activity/start` accepts it), #38 receipt `source`, #39 diagnostics log upload (heartbeat `diagnostics`, `POST /machines/runtime/diagnostics`). Each item says what is exactly as you asked and what differs.
 
 > **Rev 28 (2026-11-08): read #34** — one checklist of every API change in rev 26–27 (renewal blocking, free trial) for the desktop: request / response, success and failure handling, and where in the app to handle each. Sections C, D and Q2 now include the trial fields and refusals.
 
@@ -13,6 +21,29 @@
 > **Rev 25 (2026-11-07): items #25–#32 are new — read them first.** Plan blocking screens (#25), shared PCs with automatic cash login after the SBI kiosk login + email OTP fallback (#26), activation form pre-fill / difference source / KO email (#27), mandatory Adjust requests and a one-step cash transfer (#28), failed receipts skipped (#29), automation fixes from testing (#30), ₹450 plan removed (#31), KO replaced / deleted (#32).
 
 > Paths below are relative to the desktop project root (`ReceiptWarcher/`). The doc was written against `ReceiptWarcher.zip` (Downloads, 2026-10-24); verify each location against your current checkout before editing.
+
+### UI wording (owner's terms, 2026-11-08)
+
+The owner renamed the user-facing terms in the mobile app; the desktop should show the same words so a CSP and its operators see one vocabulary on the PC and on the phone. This doc keeps the API words because they are the field and code names; translate them only in the desktop UI.
+
+| In the API, database and code (unchanged) | Say on screen |
+|---|---|
+| CSP (`type: "CSP"`, `CSP_ADMIN`, the owner of a cash pool) | **KO** |
+| KO (`type: "KO"`, an operator under a CSP) | **Sub KO** |
+| BC | **BC** (unchanged) |
+| a CSP's `agentId` | **KO ID** |
+| a KO's `agentId` | **Sub KO ID** |
+| the login ID (`agentId` on login, signup, forgot password, profile) | **KO/BC ID** (CSP and BC owners both use it) |
+| `cashInAccount` (cash in account, the shared holding) | **Cash holding** |
+| `cashInTransit` (money sent to the bank in a KO settlement) and `cashLeftInBank` (what the bank didn't deliver) | **Current A/c** — one amount (their sum) where they're shown together; "Current account" where there's room, e.g. the ledger title "Sent to current account" |
+
+Rules:
+- **Only the words change.** Endpoint paths, field names, enum values, error `code`s and ledger types stay exactly as documented (`cashInAccount`, `CASH_IN_ACCOUNT`, `KO_CREATION`, `type: "KO"`, …). Never rename an API field to match the label.
+- Lower case in the middle of a sentence ("Added to cash holding", "goes through cash holding"); capital only at the start of a label ("Cash holding", "Current A/c").
+- Plan names stay as the super admin set them (e.g. "BC CSP Link").
+- Server `message` texts the user sees should follow the same words when they're next edited (e.g. "Not enough cash in account" → "Not enough cash holding").
+
+On the desktop that means: the activation and login screens ask for the **KO ID** (CSP) or **Sub KO ID** (an operator); the cash panel shows **Cash holding** for cash in account and **Current A/c** for money in a settlement step and left in bank; settlement directions read "Holding → Hand" / "Hand → Holding"; prompts like "Ask your CSP to renew" become "Ask your KO to renew".
 
 ## How to use this doc
 
@@ -61,6 +92,11 @@
 | 32 | **Rev 25: KO replaced / deleted**: the PC's agent can change under you | READY |
 | 33 | **Rev 27: free trial**: trial banner from heartbeat `isTrial`; activation refused for a PC / agent ID that already had another account's trial | READY |
 | 34 | **Rev 28: API change checklist** for rev 26–27 (what changed, success / failure handling, where) | READY |
+| 35 | **Rev 29 (your ask 7): cash receipts without notes** — "Count needed" list and fill, heartbeat `cash.pendingCounts` | READY |
+| 36 | **Rev 29 (your ask 8): close the day with cash in account** (`countedCashInAccount`, `accountDifference`) | READY |
+| 37 | **Rev 29 (your ask 9): SBI kiosk user id** (`sbiUserId` in `accessAgents`; `activity/start` matches it) | READY |
+| 38 | **Rev 29 (your ask 10): receipt `source`** (`AUTOMATION` / `MANUAL`) | READY |
+| 39 | **Rev 29 (your ask 11): diagnostics log upload** on request (heartbeat `diagnostics`, `POST /machines/runtime/diagnostics`) | READY |
 | 20 | Receipts older than the retention period (default 60 days, at least 15) are refused on upload; `totalCount` covers the last 12 months | READY (handle the new skip reason) |
 | — | **Part 3: Endpoint quick reference** (URL, request, response, how to use) | READY |
 | — | **Part 2: Desktop API reference** (all endpoints, validation, logic) | READY |
@@ -1158,7 +1194,7 @@ When an agent completes the SBI kiosk login **with a successful fingerprint veri
 Cash panel → "Log in to cash management":
 
 1. Dropdown of `accessAgents` (name + id). Disable entries with `emailMasked: null` ("No email — ask your CSP to add it in the app").
-2. **`POST /machines/runtime/cash/login/otp` `{ machineCode, fingerprint, agentId }`** → 200 `OTP sent to the agent's email.` `data: { sentTo: "ra***@gmail.com", expiresInSeconds: 600 }`. Errors: 400 `AGENT_EMAIL_MISSING`, 403 `AGENT_NOT_IN_FAMILY`, 400 `Please wait N seconds before asking for a new OTP.` (60 s between sends), `Too many OTPs sent. Try again in an hour.` (5 / hour).
+2. **`POST /machines/runtime/cash/login/otp` `{ machineCode, fingerprint, agentId }`** → 200 `OTP sent to the agent's email.` `data: { sentTo: "ra***@gmail.com", expiresInSeconds: 600, resendAvailableAt, resendInSeconds: 60 }` (rev 31: timer fields). Errors: 400 `AGENT_EMAIL_MISSING`, 403 `AGENT_NOT_IN_FAMILY`, 400 `OTP_RESEND_TOO_SOON` `Please wait N seconds before asking for a new OTP.` (60 s between sends), 400 `OTP_RESEND_LIMIT` `Too many OTPs sent. Please try again in an hour.` (5 / hour); both with `details: { retryAfterSeconds, resendAvailableAt }`. 429 `EMAIL_RATE_LIMITED` (central limit: 10 emails per address per hour), 503 `EMAIL_SEND_FAILED`.
 3. **`POST /machines/runtime/cash/login/verify` `{ machineCode, fingerprint, agentId, otp }`** (6 digits) → 200 `Logged in to cash management.` `data: { cashAgent: { agentId, name, type, emailMasked, emailVerified: true }, loginMethod: "EMAIL_OTP", cash: { … same as heartbeat cash … } }`. Errors: `Invalid OTP.` (5 tries), `OTP has expired. Ask for a new one.`, `Maximum OTP attempts exceeded. Ask for a new one.`, `OTP not found. Ask for a new one.` A successful login OTP also marks the agent's email verified.
 4. **`POST /machines/runtime/cash/logout`** → back to the PC's own agent. An email OTP login stays until logout or until a different agent's kiosk login replaces it.
 
@@ -1208,7 +1244,7 @@ On a plan **without** cash management, `cashInHand` / `cashDenomination` are no 
 
 ### 27.3 KO email at activation
 
-In the activation form show the agent's email (`agent.email`, editable) with **[Verify]**: `POST /api/v1/machines/activate/email/otp` `{ agentId, activationCode, activationPassword, email? }` → `{ sentTo, expiresInSeconds }`, then `POST /api/v1/machines/activate/email/verify` `{ agentId, activationCode, activationPassword, otp }` → `{ agentId, emailVerified: true }` (saves the email). Optional: the KO may skip and verify later in the cash panel (26.5); it needs a verified email for the email OTP cash login.
+In the activation form show the agent's email (`agent.email`, editable) with **[Verify]**: `POST /api/v1/machines/activate/email/otp` `{ agentId, activationCode, activationPassword, email? }` → `{ sentTo, expiresInSeconds, resendAvailableAt, resendInSeconds }`, then `POST /api/v1/machines/activate/email/verify` `{ agentId, activationCode, activationPassword, otp }` → `{ agentId, emailVerified: true }` (saves the email). Optional: the KO may skip and verify later in the cash panel (26.5); it needs a verified email for the email OTP cash login.
 
 ### 27.4 One activation per agent
 
@@ -1330,7 +1366,145 @@ From the CSP plan's `subscriptionEndDate` until a mandate charge succeeds (≤ 3
 
 `graceEndsAt` is always `null` for CSP plans; don't add your own grace.
 
+## 35. Cash receipts without notes: "Count needed" (rev 29, your ask 7) — READY
+
+Built as you described. **The amount moves the balances at upload, the notes move the drawer only when the agent fills the count.** Works for `CASH_WITHDRAWAL`, `CASH_DEPOSIT` and `MONEY_TRANSFER`.
+
+### 35.1 Upload: `POST /api/v1/receipts/upload-counts` (changed)
+
+Request per receipt adds (both optional):
+- **`denominationPending: true`** — the notes weren't counted (modal not saved). The server also works it out by itself: a successful cash receipt whose `cashDenomination` is **missing, `{}` or all zero** counts as "no notes".
+- **`source`** — see #38.
+
+A receipt becomes "Count needed" when **all** of these hold: its cash was **APPLIED** (a `NOT_APPLIED` receipt never needs one), it has no notes, and the PC's plan has `CASH_MANAGEMENT` (otherwise notes are never asked).
+
+| Per accepted receipt | Meaning | Desktop |
+|---|---|---|
+| `cash: { status: "APPLIED" }` | applied with its notes (as today) | mark uploaded |
+| `cash: { status: "APPLIED", denomination: "PENDING" }` | **new**: applied, notes still to count | mark uploaded and keep it in the Count needed list (or read the server list, 35.2) |
+| `cash: { status: "NOT_APPLIED", reason }` | as today; no count request | — |
+
+Cash in hand / cash in account move as for any cash receipt (withdrawal: hand − amount, account + amount; deposit / money transfer: the other way). The drawer doesn't move.
+
+### 35.2 List: `GET /api/v1/machines/runtime/cash/receipt-counts?status=PENDING|DONE|ALL`
+
+Credentials in headers like the other cash reads (or `POST` with them in the body). Default `PENDING`. For the **logged-in cash agent** (item 26), every day still kept by retention, **oldest first**, at most 200.
+
+```json
+"data": [ { "receiptId": "R-1", "agentId": "KO-002", "transactionCategory": "CASH_WITHDRAWAL",
+            "transactionType": "Cash Withdrawal", "amount": 4500, "transactionAt": "…",
+            "rrn": "6163467244324489", "status": "PENDING", "countedAt": null, "cashDenomination": null } ]
+```
+`DONE` rows have `countedAt` and the `cashDenomination` entered. Errors: the usual cash ones (403 `PLAN_NO_CASH_MANAGEMENT`, machine auth, section H).
+
+### 35.3 Fill: `POST /api/v1/machines/runtime/cash/receipt-counts/:receiptId`
+
+Body `{ machineCode, apiKey, fingerprint, cashDenomination: { all 12 keys } }` + header **`Idempotency-Key`** (a retry with the same key gets the first answer; same rules as the other cash writes).
+
+| Check (in order) | Error |
+|---|---|
+| the receipt is this agent's | 404 **`RECEIPT_NOT_FOUND`** `Receipt not found.` |
+| it still waits for its notes | 409 **`RECEIPT_COUNT_NOT_PENDING`** `This receipt's notes are already counted.` |
+| notes' total = the receipt amount | 400 **`DENOMINATION_MISMATCH`** `The notes' total (₹4000.00) must equal the cash withdrawal amount (₹4500.00).` (`cash deposit` / `money transfer` for those) |
+| withdrawal only: each count ≤ the drawer | 400 **`DRAWER_TOO_FEW_NOTES`** `Not enough ₹100 notes in the drawer.` |
+| no open Adjust request (item 28) | 409 **`ADJUSTMENT_PENDING`** — kept as for every cash write (**confirmed by the owner 2026-11-08: the Adjust comes first**; the receipt stays pending meanwhile) |
+
+Effect: withdrawal → the notes come **out** of the drawer; deposit / money transfer → they go **in** (no drawer check). Cash in hand doesn't change. The receipt keeps the denomination, `denominationPending: false`, `countedAt` set. Ledger **`RECEIPT_COUNT`** (`drawerChange` = the notes ±, `cashInHandChange` 0, `receiptId`, `remarks` `Notes for cash withdrawal ₹4500.00`).
+
+→ **200** `Count saved.` `data: { receiptId, status: "DONE", cash: { cashInHand, drawer, drawerTotal } }` → save `data.cash` to `machineConfig.json` and refresh the screen.
+
+### 35.4 Where it shows
+
+- **Heartbeat** `cash.pendingCounts: { count, amount }` → controller strip badge "1 count needed", Overview banner.
+- **`GET /machines/runtime/cash`** (and `?date=`): `today.transactions[]` `RECEIPT` entries carry **`denominationPending`** (true until filled) → the **Fill count** button on that row; the screen adds **`pendingCountAmount`** (next to `drawerMatchesCashInHand`) and `pendingCounts` → "₹6,500 still to count" instead of "doesn't match".
+- **Close the day** answer adds `pendingCounts` (never blocks) → warn "2 withdrawals still need their notes" before / after the close.
+- **CSP app:** "Count needed" on the receipt, and the pending total per agent on the Cash tab (no action for the CSP).
+
+Tested (rollback test on the dev DB): withdrawal ₹4,500 without notes + ₹1,000 with notes + deposit ₹2,000 with `{}` → hand 10,000 → 6,500 at once, drawer only −2 × ₹500; list shows both pending (₹6,500); mismatch 400, too few notes 400, fill → drawer −9 × ₹500, second fill 409, deposit fill +4 × ₹500; drawer then matches cash in hand.
+
+## 36. Close the day: cash in account too (rev 29, your ask 8) — READY
+
+Exactly as asked. `POST /machines/runtime/cash/day-close` takes optional **`countedCashInAccount`** (₹ ≥ 0, 2 decimals; 400 `VALIDATION_FAILED` otherwise). Nothing moves.
+
+- Answer `data`: `system.cashInAccount` and `counted.cashInAccount` (both `null` when not sent), **`accountDifference`** (counted − system; `null` when not sent), next to `difference` for cash in hand; plus `pendingCounts` (#35). Same fields in `GET /cash/day-close` and `dayClose` on the cash screen.
+- `message`: `Day closed. The count matches. Cash in account is ₹200 less than the system.` / `Day closed. You're ₹500 short. Cash in account is ₹200 more than the system.` (no account sentence when it matches or wasn't sent).
+- `GET /cash/days` items add `accountDifference`.
+- Ledger `DAY_CLOSE` `remarks`: `Matched · account ₹200 less`.
+- The CSP app shows both differences per close, each with its time. No correction request is made for cash in account (the CSP edits it in the app).
+
+## 37. Shared PCs: the SBI kiosk user id (rev 29, your ask 9) — READY
+
+We built **your option 2**. The CSP sets an agent's SBI kiosk User ID in the app **only when it differs from the agent ID** (`sbiUserId`, unique across agents, stored upper-case).
+
+- **Heartbeat `accessAgents[]`** (and `GET /cash/session`) items add **`sbiUserId`** (`null` = the SBI id is the `agentId`):
+  ```json
+  { "agentId": "KO-002", "sbiUserId": "3A950035", "name": "Sita", "type": "KO", "emailMasked": "si***@gmail.com", "emailVerified": true }
+  ```
+- **`POST /machines/runtime/activity/start`** takes **`agentId` or `sbiUserId`** (one is required: 400 `Send agentId or sbiUserId.`). The server matches, ignoring case: `agentId` = an agent's id → `sbiUserId` = an agent's `sbiUserId` or id → an `agentId` that is someone's `sbiUserId`. So sending the typed id in either field works.
+- Response 201 as today **plus `agentId`** (the agent the server matched — **use it for the receipts**) and `cashAgentId` (same).
+- 403 **`AGENT_NOT_IN_FAMILY`** `This SBI user can't use this PC: only the CSP that owns it and its KOs can.` (another CSP's agent or nobody) → stop automation for that login, as today.
+- Desktop: match the typed id against `sbiUserId` (else `agentId`) in `accessAgents`; when nothing matches send it as `sbiUserId` and use the `agentId` the server answers.
+
+## 38. Where a receipt came from: `source` (rev 29, your ask 10) — READY
+
+Exactly as asked.
+- `POST /receipts/upload-counts`: each receipt may carry **`source`: `"AUTOMATION"` | `"MANUAL"`** (optional; leave out = unknown). Stored on the receipt.
+- Any other value → that receipt is skipped with `INVALID_RECEIPT` `Invalid receipt (source): Invalid option: expected one of "AUTOMATION"|"MANUAL"` (the rest of the batch is accepted).
+- `GET /machines/runtime/cash` (and `?date=`): `today.transactions[]` entries with a `receiptId` carry **`source`** (`null` when unknown or not a receipt).
+- The CSP app shows "Automation" / "Manual" on receipts (`GET /receipts` items and detail have `source`).
+
+## 39. Diagnostics: desktop log upload on request (rev 29, your ask 11) — READY
+
+Built as asked. Nothing is sent without a request.
+
+**39.1 Asking** — the super admin (console: `POST /admin/machines/:machineId/diagnostics`) or the CSP / BC (app: `POST /machines/:machineId/diagnostics`) asks for `fromDate`–`toDate` (IST `YYYY-MM-DD`, default today, only the **last 3 days** (today and the 2 days before; owner decision 2026-11-08); older → 400 `DIAGNOSTICS_RANGE_TOO_OLD`). **Send only the asked days, never more than the last 3 days of log files.** One open request per PC: a new one replaces the open one (that one becomes `CANCELLED`).
+
+**39.2 Heartbeat and entitlements** add:
+```json
+"diagnostics": { "uploadRequested": true, "requestId": "DIAG-2026-000012", "fromDate": "2026-11-08", "toDate": "2026-11-08" }
+```
+`null` = nothing asked (also once the request is complete or cancelled).
+
+**39.3 Upload** — `POST /api/v1/machines/runtime/diagnostics` (machine auth like the other runtime calls; headers or body; signed requests work):
+```json
+{ "machineCode": "…", "apiKey": "…", "fingerprint": "…",
+  "requestId": "DIAG-2026-000012", "appVersion": "1.0.0", "part": 1, "parts": 3,
+  "fileName": "2026-11-08.log", "content": "<log text, UTF-8>" }
+```
+→ **201** `Diagnostics received.` `data: { requestId, part, received: true, complete }` (`complete: true` on the last missing part; the request becomes `RECEIVED` and the heartbeat stops asking).
+
+| Rule | Error |
+|---|---|
+| an **open** request with this `requestId` for this PC | 404 **`DIAGNOSTICS_REQUEST_NOT_FOUND`** → stop (it was cancelled or replaced; a new `requestId` comes in the heartbeat) |
+| `1 ≤ part ≤ parts ≤ 50`; the same `parts` on every part | 400 `VALIDATION_FAILED` / 400 `This request is being sent in 3 parts.` |
+| `content` ≤ 2 MB (UTF-8); body ≤ 2.2 MB; `Content-Encoding: gzip` accepted | 413 **`PAYLOAD_TOO_LARGE`** → split smaller |
+| rate limit (runtime limit per machine) | 429 → retry later |
+
+A retry of the same `part` replaces it (safe after a timeout). Parts are kept **14 days**, then deleted. Answers to your rules: one call a minute and ≤ 1.5 MB parts are fine.
+
 ---
+
+## 40. "Close the day" reminder and offline alerts (rev 30) — READY
+
+**Owner rule (2026-11-11):** remind every agent to close the day **30 minutes before the CSP's closing time** (team settings `workdayEnd`, set by the CSP in the app), or **at 18:00 IST** when the CSP set none. The CSP's app also gets one "Day not closed" notification per agent that worked today and hasn't closed.
+
+**Heartbeat** (`POST /machines/runtime/heartbeat`, Q2) adds:
+
+```json
+"dayCloseReminder": {
+  "closeTime": "18:00",
+  "remindAt": "2026-11-11T12:30:00.000Z",
+  "overdue": true,
+  "message": "It's past 18:00. Please close the day: count your cash and close it in Cash."
+}
+```
+
+- `null` = nothing to show: before the reminder time, the day is already closed (`POST /cash/day-close` done) by the **cash agent** (`cashAgentId`, the SBI kiosk / email OTP login), no cash pool, or the plan has no cash management.
+- Non-null: show a **Windows toast** once (per agent per day, remember it locally) with `message`, and a **banner** on the Cash screen with a "Close day" button until it turns `null`. `overdue: false` = before `closeTime` ("Please close the day by 18:00"); `overdue: true` = after it ("It's past 18:00…"); you may show the toast again when it flips to `overdue: true`.
+- It follows the cash login: when another agent logs in to cash on this PC, the field is about that agent.
+- Changes reach the PC within one heartbeat (60 s). Nothing new to call; closing the day is the existing `POST /cash/day-close` (#36).
+
+**Offline alert (no desktop work):** when this PC sends no heartbeat for **1 hour of the working day** (the CSP's start–closing time, or 09:00–19:00 IST when not set), the owner (CSP / BC) gets a "PC offline" notification in the app (once per outage; the next heartbeat re-arms it). Nothing is sent outside those hours, so switching the PC off at night is fine; if it is still off 1 hour after the day starts, the owner is told. Keep the service heartbeat running whenever the PC is on, also when no one is logged in.
 
 ## A. Conventions (all endpoints)
 
@@ -1745,7 +1919,10 @@ Response 200:
     "receiptCashDenominationConfirm": true
   },
   "latestWatcherVersion": "1.0.0", "minimumVersion": null, "downloadUrl": null,
-  "subscriptionType": "PAID", "isTrial": false
+  "subscriptionType": "PAID", "isTrial": false,
+  "accessAgents": [ { "agentId": "KO-002", "sbiUserId": null, "name": "Sita", "type": "KO", "emailMasked": "si***@gmail.com", "emailVerified": true } ],
+  "cash": { "…": "as before", "pendingCounts": { "count": 0, "amount": 0 } },
+  "diagnostics": null
 }
 ```
 
@@ -1756,6 +1933,7 @@ How to use:
 - `minimumVersion` > current → block automation, offer `downloadUrl`; `latestWatcherVersion` > current → "update available" (item #18).
 - The heartbeat also keeps the machine session alive, which Q7/Q8 need.
 - `isTrial` → trial banner "Free trial — ends <subscriptionEndDate>" (item #33/#34).
+- `cash.pendingCounts` → "Count needed" badge (#35); `accessAgents[].sbiUserId` → SBI login matching (#37); `diagnostics` → log upload (#39); `dayCloseReminder` → "close the day" toast + banner (#40).
 
 ### Q3. `POST /api/v1/machines/runtime/entitlements`
 
@@ -1898,6 +2076,14 @@ Response 200: `{ approved, next }` (next = step 2 or null) or `{ cancelled, next
 
 ## Changelog
 
+- 2026-11-12 (rev 31) — Email OTPs: `resendAvailableAt`, `resendInSeconds`; errors `details.retryAfterSeconds` (`OTP_RESEND_TOO_SOON`, `OTP_RESEND_LIMIT`); 429 `EMAIL_RATE_LIMITED`. Onboarding email to the agent on assign.
+
+- 2026-11-11 (rev 30) — Email OTPs sent through Resend; 503 `EMAIL_SEND_FAILED` on the two email OTP calls.
+
+- 2026-11-11 (rev 30) — #40: heartbeat `dayCloseReminder` (30 min before the CSP's closing time, or 18:00; until the cash agent closes the day); the owner's app gets "PC offline" after 1 hour without a heartbeat within the working day (else 09:00–19:00).
+
+- 2026-11-08 (rev 29, update) — #39: logs only for the last 3 days (`DIAGNOSTICS_RANGE_TOO_OLD`); #35: the Adjust-first rule confirmed by the owner.
+- 2026-11-08 (rev 29) — Your asks 7–11 built: #35 cash receipts without notes (`denominationPending`, `cash.denomination: "PENDING"` on upload, `GET` / `POST /machines/runtime/cash/receipt-counts`, ledger `RECEIPT_COUNT`, heartbeat `cash.pendingCounts`, cash screen `pendingCountAmount` and `today.transactions[].denominationPending`); #36 day close `countedCashInAccount` / `accountDifference`; #37 `sbiUserId` in `accessAgents` and on `activity/start` (response adds `agentId`); #38 receipt `source`; #39 diagnostics (heartbeat / entitlements `diagnostics`, `POST /machines/runtime/diagnostics`, 2 MB parts, 14 days).
 - 2026-11-08 (rev 28) — Item #34: one checklist of every API change in rev 26–27 (heartbeat `subscriptionType` / `isTrial`, trial activation refusals, CSP renewal blocking) with success / failure handling. Section C table rows 12–13, sections D and Q2 response updated.
 - 2026-11-07 (rev 27) — Item #33 free trial: heartbeat `subscriptionType` / `isTrial`; trial activation refused with 409 `TRIAL_ALREADY_USED_ON_MACHINE` / `TRIAL_ALREADY_USED`.
 - 2026-11-07 (rev 26) — Owner decisions: a CSP plan is blocked from its end date until the mandate renewal succeeds (25.2: `SUBSCRIPTION_EXPIRED` during the retries; it unblocks by itself); the grace period (#24) applies to BC plans only.

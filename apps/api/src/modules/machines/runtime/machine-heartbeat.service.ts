@@ -1,4 +1,5 @@
 import ReceiptFieldsSettingsService from "../../settings/receipt-fields-settings.service";
+import DayCloseReminderService from "../../alerts/day-close-reminder.service";
 import { PrismaDb } from "../../../core/database/prisma.types";
 
 import MachineAuthenticationService from "./machine-auth.service";
@@ -13,6 +14,7 @@ import SubscriptionEntitlementService from "../../subscriptions/subscription-ent
 import DesktopSettingsService from "../../settings/desktop-settings.service";
 import { resolveReceiptWatcher } from "./receipt-watcher-policy";
 import CashService from "../../cash/cash.service";
+import DiagnosticsService from "../diagnostics/diagnostics.service";
 import MachineFamilyService from "../family/machine-family.service";
 
 export default class MachineHeartbeatService {
@@ -57,7 +59,7 @@ export default class MachineHeartbeatService {
     const family = new MachineFamilyService(this.db);
     const cashAgent = await family.cashAgentOf(authenticated);
 
-    const [{ plan, features }, watcher, desktop, cash, receiptFields, accessAgents] = await Promise.all([
+    const [{ plan, features }, watcher, desktop, cash, receiptFields, accessAgents, diagnostics, cashPlan] = await Promise.all([
       new SubscriptionEntitlementService(this.db).getPlanEntitlements(
         authenticated.subscription.planId,
       ),
@@ -68,7 +70,15 @@ export default class MachineHeartbeatService {
       new CashService(this.db).getMachineCash(cashAgent.agentId),
       new ReceiptFieldsSettingsService(this.db).allowed(),
       family.agents(authenticated),
+      new DiagnosticsService(this.db).forMachine(authenticated.machine.id),
+      new SubscriptionEntitlementService(this.db).canViewCashManagement(authenticated.subscription),
     ]);
+
+    // "Close the day" banner / toast: from 30 min before the CSP's closing
+    // time (18:00 when none is set) until the cash agent closes the day.
+    const dayCloseReminder = cash && cashPlan
+      ? await new DayCloseReminderService(this.db).forDesktop(cashAgent.agentId)
+      : null;
 
     return {
       serverTime: new Date(),
@@ -101,6 +111,9 @@ export default class MachineHeartbeatService {
       cashLoginMethod: cashAgent.method,
       // Optional receipt fields the desktop may send (save in machineConfig).
       receiptFields: { allowed: receiptFields },
+      // Log upload asked by support (null = nothing asked).
+      diagnostics,
+      dayCloseReminder,
     };
   }
 }

@@ -14,6 +14,8 @@ export function mapAgent(agent: Agent) {
     // Verified by OTP on the desktop (null = not verified; cleared when the email changes).
     emailVerifiedAt: agent.emailVerifiedAt ?? null,
     address: agent.address,
+    // SBI kiosk User ID when it differs from agentId (null = same as agentId).
+    sbiUserId: agent.sbiUserId ?? null,
 
     bcId: agent.bcId,
     parentAgentId: agent.parentAgentId,
