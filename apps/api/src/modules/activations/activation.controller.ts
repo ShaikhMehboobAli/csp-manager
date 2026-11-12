@@ -141,6 +141,7 @@ export const assignActivation = async (req: Request, res: Response) => {
     assignedAgentId: req.body.assignedAgentId,
     assignedByOwnerType: getOwnerType(req.user!.role),
     assignedByOwnerId: req.user!.agentId,
+    assignedByUserId: req.user!.userId,
   });
 
   return res.status(200).json(result);

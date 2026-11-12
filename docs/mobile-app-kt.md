@@ -3,9 +3,13 @@
 **Audience:** the React Native team building the CSP Manager mobile app for **BC** and **CSP** users.
 **Not covered here:** the Super Admin console (React / Next.js) → `docs/admin-web-kt.md`; the Windows desktop app → `docs/desktop-integration-changes.md`.
 **Backend source of truth:** `csp-manager/apps/api` (Express + Prisma + PostgreSQL).
-**Last updated:** 2026-11-11 (rev 32)
+**Last updated:** 2026-11-12 (rev 33)
 
 > Describes the backend once PRs #3–#8 are merged into `development`. Where an older build behaves differently it says so.
+>
+> **Rev 33 (2026-11-12): onboarding email on assign + resend timers.** `POST /activations/assign` now emails the agent its code and password (result in `data.email`, §8); every code-sending call returns `resendAvailableAt` + `resendInSeconds`, "too soon" errors carry `details.retryAfterSeconds`, and every email has a central limit (429 `EMAIL_RATE_LIMITED`): §5.2 "Email codes, resend timer and limits".
+>
+> **Rev 32 (2026-11-11): emails are sent for real (Resend)** — signup / resend OTP, forgot password, profile email change, activation code emails. Any of them (except forgot password, which always answers the same) can now fail with **503 `EMAIL_SEND_FAILED`** (or `EMAIL_NOT_CONFIGURED`): show `message`, keep the user on the screen, allow a retry after the usual 60 s resend wait.
 >
 > **Rev 32 (2026-11-11): `MACHINE_OFFLINE`** (a PC with no heartbeat for 1 hour) and **`CASH_DAY_NOT_CLOSED`** (30 min before the team's closing time, or 18:00): §13D.
 >
@@ -386,7 +390,7 @@ A linked CSP drops out of the BC's data while its own plan has lapsed, and comes
 | Machines | all PCs of its CSPs and KOs | `GET /machines/list`, detail calls as for the CSP |
 | Reports | one row per CSP (with its KOs), export; transactions with filters | `/reports/*`, `/receipts/*` |
 | Cash (read-only) | a CSP's pool, ledger, dues, day closes, tasks, settlements | the §13A GETs with **`agentId` = the CSP (or a KO)** (400 without it) |
-| More → Metrics | daily manual values per CSP | `GET /metrics`, `GET|POST /metrics/values`, `PATCH /metrics/values/:id` (§15) |
+| More → Metrics | daily manual values per CSP (read-only, rev 33) | `GET /metrics`, `GET /metrics/values` (§15) |
 | More → CSP visits | one visit per CSP per month: photo + ≥ 5 reviews | `POST /uploads/presigned-url` → S3 → `POST /csp-visits`; `GET /csp-visits/csp/:cspAgentId` (§16) |
 
 **E. Renew, change, expire:** as for the CSP. Moving a machine plan to `BC_CSP_LINK` (0 machines) stops its PCs: warn before paying.
@@ -454,7 +458,7 @@ The last column points to the section with every field and error. Super-admin-on
 |---|---|---|---|---|---|---|
 | GET | `/activations` | *own* | *own* (none on ₹799) | active | → activations `{ id, activationCode, status, assignedAgentId, machine, pendingRevokeRequest, … }` | 8 |
 | GET | `/activations/:activationId` | *own* | *own* | active | → one, with `canRegenerate` | 8 |
-| POST | `/activations/assign` | to itself or its KOs | to its CSPs / KOs | active | `{ activationId, assignedAgentId }` → `{ activationCode, activationPassword }` (once) | 8 |
+| POST | `/activations/assign` | to itself or its KOs | to its CSPs / KOs | active | `{ activationId, assignedAgentId }` → `{ activationCode, activationPassword, email }` (once; rev 33: `email` = onboarding email result) | 8 |
 | POST | `/activations/:activationId/regenerate-password` | *own* | *own* | active | → new password (once; only `NOT_ACTIVATED`) | 8 |
 | POST | `/activations/:activationId/revoke-requests` | *own* | *own* | active | `{ reason? }` → 201 request `PENDING` (super admin decides) | 8 |
 | GET | `/activations/revoke-requests?status=&activationId=&page=&limit=` | *own* | *own* | active | → requests | 8 |
@@ -562,8 +566,8 @@ BCs read a CSP's cash with `agentId` = the CSP (or one of its KOs); without it �
 | GET | `/metrics` | ✓ | ✓ | login | → metric definitions | 15 |
 | GET | `/metrics/:metricId` | ✓ | ✓ | login | → one definition | 15 |
 | GET | `/metrics/values?agentId=&metricId=&from=&to=` | in scope | in scope | login | → entered values | 15 |
-| POST | `/metrics/values` | — | ✓ | login | `{ metricId, agentId (a CSP), date, value }` | 15 |
-| PATCH | `/metrics/values/:valueId` | — | ✓ | login | `{ value }` | 15 |
+| POST | `/metrics/values` | — | — | super admin only (rev 33) | `{ metricId, agentId (a CSP), date, value }` | 15 |
+| PATCH | `/metrics/values/:valueId` | — | — | super admin only (rev 33) | `{ value }` | 15 |
 | POST | `/uploads/presigned-url` | (not used) | ✓ | login | `{ fileName, contentType }` → `{ key, uploadUrl, fields }` (S3 POST, 5 min, ≤ 5 MB) | 16 |
 | GET | `/uploads/presigned-url?key=` | (not used) | ✓ (own keys) | login | → signed download URL | 16 |
 | DELETE | `/uploads` | (not used) | ✓ (own keys) | login | `{ key }` (a discarded photo) | 16 |
@@ -589,7 +593,7 @@ BCs read a CSP's cash with `agentId` = the CSP (or one of its KOs); without it �
 | CSP, BC (₹199 / ₹399) | Activation codes | `GET /activations` → `POST /activations/assign` → `POST …/regenerate-password` → `POST …/revoke-requests` → `GET /activations/revoke-requests` |
 | CSP (cash plans) | Cash | `GET /cash-management` → settle / adjust `POST /transactions` → `GET /requests` + review → `GET /settlements` → `GET /ledger` → `GET /dues` → `GET /day-closes` → `GET|POST|PATCH|DELETE /tasks` → `GET|POST|PATCH /labels` |
 | BC | CSP → Cash | the same GETs with `agentId` = the CSP |
-| BC | More → Metrics | `GET /metrics` → `GET /metrics/values` → `POST` / `PATCH /metrics/values` |
+| BC | More → Metrics (read-only, rev 33) | `GET /metrics` → `GET /metrics/values` |
 | BC | More → CSP visits | `POST /uploads/presigned-url` → S3 POST → `POST /csp-visits` → `GET /csp-visits/csp/:cspAgentId` → `GET /csp-visits/:id` |
 
 ## 5. Auth
@@ -656,9 +660,24 @@ Errors: 404 `User not found.`; 403 `Please verify your account first.` (→ OTP 
 - A refresh token lasts **7 days** from its last use (each refresh restarts the 7 days). One session per login, so each phone has its own.
 - Not under the strict `/auth` rate limit (20 / 15 min); the general limit applies.
 
+#### Email codes, resend timer and limits (rev 33)
+
+Every call that emails a code returns the countdown fields, and every "too soon" error says how long to wait:
+
+| Call | Success `data` adds | Too soon / limit errors |
+|---|---|---|
+| `POST /auth/signup` | `resendAvailableAt`, `resendInSeconds` (60) | — |
+| `POST /auth/resend-otp` | `expiresAt`, `resendAvailableAt`, `resendInSeconds` | 409 `OTP_RESEND_TOO_SOON` / `OTP_RESEND_LIMIT` |
+| `POST /auth/forgot-password` | `resendAvailableAt`, `resendInSeconds` (always, same answer for every ID) | — |
+| `PATCH /auth/me` (new email, 202) | `pendingEmail`, `expiresAt`, `resendAvailableAt`, `resendInSeconds` | 409 `OTP_RESEND_TOO_SOON` / `OTP_RESEND_LIMIT` |
+
+- **Timer:** after a send, disable "Send a new code" and count down from `resendInSeconds` (or to `resendAvailableAt`; trust the server time, not the phone clock). One code per minute, 5 per hour per purpose.
+- **Errors now carry `details`:** `{ "success": false, "code": "OTP_RESEND_TOO_SOON", "message": "Please wait 40 seconds before asking for a new OTP.", "details": { "retryAfterSeconds": 40, "resendAvailableAt": "…" } }` → restart the countdown from `details.retryAfterSeconds`. `OTP_RESEND_LIMIT` → `details.retryAfterSeconds` up to an hour ("Try again at 19:35").
+- **Every email (any purpose) also has a central limit:** the same kind of email to one address at most once per 30 s, and at most 10 emails per address per hour → **429 `EMAIL_RATE_LIMITED`** with `details.retryAfterSeconds`. Show `message`; normal use never hits it. 503 `EMAIL_SEND_FAILED` / `EMAIL_NOT_CONFIGURED` / `EMAIL_DAILY_LIMIT` = the provider couldn't send: "try again later".
+
 **`POST /auth/logout`** (public) `{ refreshToken }` → 200 `Logged out.` Ends that session (any token, even an old or invalid one, answers 200) **and removes the push token saved for that session** (rev 32; no push token needed in the body). Call it on Logout, then delete the tokens.
 
-**`POST /auth/resend-otp`** (public) `{ agentId }` → 200 `OTP sent again.` `data: { expiresAt, resendAvailableAt }`: a new code to the same email (the old one stops working). Errors: 409 `OTP_RESEND_TOO_SOON` `Please wait N seconds before asking for a new OTP.` (one per minute: use `resendAvailableAt` for the countdown), 409 `OTP_RESEND_LIMIT` `Too many OTPs sent. Please try again in an hour.` (5 per hour), 409 `ACCOUNT_EXISTS` (already verified → Login), 404 `User not found.` Use it for "Send a new code"; signup again is no longer needed.
+**`POST /auth/resend-otp`** (public) `{ agentId }` → 200 `OTP sent again.` `data: { expiresAt, resendAvailableAt, resendInSeconds }` (rev 33; timer and `details` on errors: see "Email codes, resend timer and limits" below): a new code to the same email (the old one stops working). Errors: 409 `OTP_RESEND_TOO_SOON` `Please wait N seconds before asking for a new OTP.` (one per minute: use `resendAvailableAt` for the countdown), 409 `OTP_RESEND_LIMIT` `Too many OTPs sent. Please try again in an hour.` (5 per hour), 409 `ACCOUNT_EXISTS` (already verified → Login), 404 `User not found.` Use it for "Send a new code"; signup again is no longer needed.
 
 **Forgot password (rev 25).** Login screen → "Forgot password?" → enter agent ID → OTP + new password screen → Login.
 
@@ -1132,7 +1151,16 @@ Buying a machine plan creates one activation per machine (`machineLimit`; for a 
 |---|---|---|
 | `GET /activations` | owner | all activations of the owner's subscriptions |
 | `GET /activations/:activationId` | owner | adds `canRegenerate` |
-| `POST /activations/assign` `{ activationId, assignedAgentId }` | owner | returns `{ activationCode, activationPassword }` **once** |
+| `POST /activations/assign` `{ activationId, assignedAgentId }` | owner | returns `{ activationCode, activationPassword, email }` **once** |
+
+**Onboarding email on assign (rev 33).** When the agent has an email, the server emails it right away: "Welcome to CSP Manager: your activation details" (Agent ID, activation code, password, how to install and activate, the code's end date, the installer link when the super admin set one). The assignment never fails because of the email; `data.email` says what happened:
+
+| `data.email` | `message` (200) | App |
+|---|---|---|
+| `{ "sent": true, "sentTo": "si*****@gmail.com" }` | `Activation assigned. The code and password were emailed to si*****@gmail.com.` | toast with `message`; the code + password modal can still show Copy / Share |
+| `{ "sent": false, "reason": "NO_EMAIL", "message": "This agent has no email…" }` | `Activation assigned successfully.` | show the modal (share yourself) + hint "Add an email to send it" → after adding, **Email to agent** (`POST /activations/:id/send`) |
+| `{ "sent": false, "reason": "RATE_LIMITED" \| "SEND_FAILED", "message": "…" }` | `Activation assigned successfully.` | show the modal + `email.message`; offer **Email to agent** later (it makes a new password) |
+
 | `POST /activations/:activationId/regenerate-password` | owner | only while `NOT_ACTIVATED`; returns a new password once |
 | `POST /activations/:activationId/revoke-requests` `{ reason? }` | owner (CSP / BC) | asks the super admin to revoke it: see **Revoke** below |
 | `GET /activations/revoke-requests?status=&activationId=&page=&limit=` | owner | own requests, newest first |
@@ -1790,7 +1818,7 @@ In-app notifications for the CSP (and BC) login. Every notification is also sent
 | `CASH_SETTLEMENT_CANCELLED` | CSP | a KO cancelled an open step (money went back) | `agentId, settlementId, direction, amount` | settlements | same |
 | `CASH_REQUEST_RAISED` (`type: WARNING`) | CSP | a KO asked to change its cash in hand | `agentId, requestId, systemCashInHand, requestedCashInHand` | cash | Cash → requests → that request (approve / reject) |
 | `CASH_DAY_CLOSE_DIFFERENCE` (`type: WARNING`) | CSP | a KO closed the day short / over, or its cash in account reading differs | `agentId, dayCloseId, date (YYYY-MM-DD), difference, accountDifference` | cash | Cash → that KO → day closes |
-| `MACHINE_OFFLINE` (`type: WARNING`) | CSP / BC owner | a PC sent no heartbeat for **1 hour** (any time of day; once per outage, again after it comes back and drops again) | `machineId, machineCode, machineName, agentId, activationCode, lastHeartbeatAt` | machines | Machines → that PC |
+| `MACHINE_OFFLINE` (`type: WARNING`) | CSP / BC owner | a PC sent no heartbeat for **1 hour of the working day**: the CSP's `workdayStart`–`workdayEnd` (`/team/settings`), or **09:00–19:00 IST** when not set; nothing outside those hours (a PC off overnight alerts 1 hour after the day starts if still off). Once per outage; again after it comes back and drops again | `machineId, machineCode, machineName, agentId, activationCode, lastHeartbeatAt` | machines | Machines → that PC |
 | `CASH_DAY_NOT_CLOSED` (`type: WARNING`) | CSP | an agent (a KO or the CSP itself) that worked today hasn't closed the day by the reminder time: **30 min before the team's closing time** (`/team/settings` `workdayEnd`), or **18:00** when none is set; once per agent per day | `agentId, date, closeTime, remindedAt` | cash | Cash → that agent (the desktop shows its own reminder) |
 | `RECEIPT_REPORT_RESOLVED` / `RECEIPT_REPORT_REJECTED` | whoever reported | the super admin closed its problem report (message = "What was done") | `reportId, receiptId, status` | requests | My reports → that report |
 
@@ -1798,7 +1826,7 @@ In-app notifications for the CSP (and BC) login. Every notification is also sent
 - Only KO actions notify the CSP; the CSP's own desktop actions don't.
 - `ACTIVATION_REVOKE_REQUESTED`, `BC_LINK_REQUESTED`, `RECEIPT_REPORT_RAISED` go to the super admin only (admin console); the app never receives them.
 - Group `machines` has `ACTIVATION_REVOKED` and `MACHINE_OFFLINE`; `settlements` has the three settlement kinds; `cash` adds `CASH_DAY_NOT_CLOSED`.
-- Team settings screen: tell the CSP that "Closing time" also sets the day-close reminder (30 min before; 18:00 when empty).
+- Team settings screen: tell the CSP that the working day also sets the alerts: "PC offline" only between start and closing time (09:00–19:00 when empty), and the day-close reminder 30 min before closing (18:00 when empty).
 
 ## 14. Reports
 
@@ -1813,18 +1841,18 @@ UI: period chips; horizontal-scroll table (`FlatList` with sticky first column) 
 
 ## 15. Metrics (manual entries)
 
-Metric definitions are managed by the Super Admin. BCs enter daily values for **manual** metrics (e.g. social-security enrolments) for their CSPs; they show in the dashboard `socialSecurity` sections.
+Metric definitions **and values** are managed by the Super Admin (rev 33: BCs can no longer enter values). The app only **reads** them: they show in the dashboard `socialSecurity` sections and in a read-only Metrics list.
 
 | Call | Who | Notes |
 |---|---|---|
 | `GET /metrics` | any | `[{ id, code, name, category, source (RECEIPT\|MANUAL), inputType, description, isActive }]` |
 | `GET /metrics/values?agentId=&metricId=&from=&to=` | any (scoped) | entered values |
-| `POST /metrics/values` `{ metricId, agentId, date, value ≥ 0 }` | BC | |
-| `PATCH /metrics/values/:valueId` `{ value }` | BC | |
+| `POST /metrics/values` `{ metricId, agentId, date, value ≥ 0 }` | **Super admin only** (rev 33; a BC / CSP gets 403) | done in the admin console |
+| `PATCH /metrics/values/:valueId` `{ value }` | **Super admin only** (rev 33) | |
 
 Errors: `Metric not found.`, `Metric is inactive.`, `Values can only be entered manually for manual metrics.`, `Manual metric values can only be assigned to a CSP.`, `Metric value already exists for this CSP and date.` (→ offer to edit the existing value).
 
-UI: pick CSP + date, list active `MANUAL` metrics with number inputs, save one by one (no bulk endpoint).
+UI (rev 33): **remove the BC entry form**; show values read-only (pick CSP + date range → `GET /metrics/values`).
 
 ## 16. CSP visits (photo upload)
 
@@ -2131,7 +2159,7 @@ Differences from your ask:
 - Groups (rev 32): `plan` = `GENERAL`, `SUBSCRIPTION_*`, `MANDATE_*`, `TRIAL_*` (always on); `cash` = `CASH_ACTIVATION_DIFFERENCE`, `CASH_REQUEST_RAISED`, `CASH_DAY_CLOSE_DIFFERENCE`, `CASH_DAY_NOT_CLOSED`; `settlements` = `CASH_SETTLEMENT_STARTED` / `_COMPLETED` / `_CANCELLED`; `machines` = `ACTIVATION_REVOKED`, `MACHINE_OFFLINE`; `requests` = `BC_UNLINKED`, `BC_LINKED`, `BC_LINK_APPROVED` / `_REJECTED`, `ACTIVATION_REVOKE_APPROVED` / `_REJECTED`, `RECEIPT_REPORT_RESOLVED` / `_REJECTED`. Full list with `data` and tap targets: §13D. A switched-off group still shows in the in-app list; only the push is skipped.
 
 **R24 · Email the activation code** — `POST /activations/:activationId/send` (CSP_ADMIN / BC_ADMIN; needs a running plan, like regenerate) `{ to?: "agent" | "me" }` → 200 `Code sent to <email>.` `data: { sentTo, sentAt, activationCode }` as asked. Differences:
-- **The email isn't delivered yet** (email provider pending, checklist): the server makes the fresh password and records the send; in development read the password from `GET /activations` (`activationPassword`, dev only).
+- **Emails are sent through Resend (rev 32).** The server makes a fresh password, records the send and emails it. If the email provider fails → **503 `EMAIL_SEND_FAILED`** ("We couldn't send the email right now…"): the password was already replaced, so show the message and let the user tap Send again (counts toward 5 per hour). In development `GET /activations` still shows `activationPassword` (dev only).
 - Errors: 404 `Activation not found.` · 400 `Activation has already been used.` (not `NOT_ACTIVATED`) · 400 `Activation has not been assigned.` · 400 `AGENT_HAS_NO_EMAIL` (`Add an email for this agent first.`; with `to: "me"`: `Your account has no email.`) · 429 **`RATE_LIMITED`** (5 sends per activation per hour) · 400 `` `to` must be "agent" or "me". `` · 403 subscription messages (§7.3).
 - `to: "me"` sends to the login email (the owner forwards it).
 - **App:** on the code + password sheet add **[Email to agent]** (disabled with "Add an email for <agent> first" when the agent has no `email`); after 200 show "Sent to <sentTo>. The old password no longer works." and hide the password shown before.
@@ -2273,7 +2301,10 @@ Errors: none new (as §11).
 ## 20. Changelog
 
 - 2026-11-08 (rev 32, app team ask) — New §19.6 R25: `services[].lastTransactionAt` in `/dashboard/summary` and a `CIF` receipt type for money transfer, for the new Home "Today's services" card and Service counts screen.
-- 2026-11-11 (rev 32) — `MACHINE_OFFLINE` (1 hour without a heartbeat, once per outage) and `CASH_DAY_NOT_CLOSED` (30 min before `workdayEnd`, else 18:00; once per agent per day).
+- 2026-11-12 (rev 33) — Metric values are super-admin only: `POST` / `PATCH /metrics/values` refuse BC and CSP (403); the app's Metrics screen becomes read-only.
+- 2026-11-12 (rev 33) — Onboarding email on `POST /activations/assign` (`data.email`: `sent` / `NO_EMAIL` / `RATE_LIMITED` / `SEND_FAILED`); `resendAvailableAt` + `resendInSeconds` on signup, resend-otp, forgot password, profile email change; error `details.retryAfterSeconds` on `OTP_RESEND_TOO_SOON` / `OTP_RESEND_LIMIT`; central 429 `EMAIL_RATE_LIMITED`.
+- 2026-11-11 (rev 32) — Emails through Resend; new 503 `EMAIL_SEND_FAILED` / `EMAIL_NOT_CONFIGURED` on `/auth/signup`, `/auth/resend-otp`, `PATCH /auth/me` (email change), `POST /activations/:id/send`. Forgot password is unchanged (always the same answer).
+- 2026-11-11 (rev 32) — `MACHINE_OFFLINE` (1 hour without a heartbeat within the working day, else 09:00–19:00; once per outage) and `CASH_DAY_NOT_CLOSED` (30 min before `workdayEnd`, else 18:00; once per agent per day).
 - 2026-11-11 (rev 32) — New notification kinds (§13D table): `ACTIVATION_REVOKE_APPROVED` / `_REJECTED`, `ACTIVATION_REVOKED`, `BC_LINK_APPROVED` / `_REJECTED`, `BC_LINKED`, `CASH_SETTLEMENT_STARTED` / `_COMPLETED` / `_CANCELLED`, `CASH_REQUEST_RAISED`, `CASH_DAY_CLOSE_DIFFERENCE`, `RECEIPT_REPORT_RESOLVED` / `_REJECTED`; push groups `settlements` and `machines` now used.
 - 2026-11-11 (rev 32) — Push delivery through FCM (§19.4 R23). **Push token moved onto auth:** optional `pushToken` / `platform` / `appVersion` on `/auth/login`, `/auth/refresh`, `/auth/change-password`; `/auth/logout` removes the session's token; `POST` / `DELETE /notifications/devices` removed; pushes only to live sessions. App Firebase setup (`@react-native-firebase/messaging`, config files, Android channel `default`), push `data` keys (`notificationId`, `kind`, notification data as strings), dead tokens removed by the server.
 - 2026-11-08 (rev 31) — §19.4 R20–R24 **built** (backend status block with every request, response and error, and the differences from the ask: `emailVerified` / `pendingEmail` on the profile, email change returns 202, unlink needs no plan and sets link request `UNLINKED`, `updateAvailable` in `/app/config`, push and activation emails stored but not delivered until FCM / the email provider). New §19.5: receipt `source` and `denominationPending`, pool `agents[].pendingCounts`, ledger `RECEIPT_COUNT`, day close cash in account, agent `sbiUserId`, "Send PC log to support" (`/machines/:machineId/diagnostics`), `BC_UNLINKED`.

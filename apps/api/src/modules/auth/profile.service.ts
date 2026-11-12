@@ -1,4 +1,5 @@
 import { TRANSACTION_OPTIONS } from "../../core/database/transaction";
+import { resendLimitError, resendTimer, resendTooSoonError } from "../../core/services/otp-timer.helper";
 import { PrismaDb } from "../../core/database/prisma.types";
 import { NotFoundError } from "../../core/errors/NotFoundError";
 import { BadRequestError } from "../../core/errors/BadRequestError";
@@ -186,14 +187,12 @@ export default class ProfileService {
     });
     const age = last ? now - last.createdAt.getTime() : Infinity;
 
-    if (age < RESEND_WAIT_MS) {
-      const wait = Math.ceil((RESEND_WAIT_MS - age) / 1000);
-
-      throw new ConflictError(`Please wait ${wait} second${wait === 1 ? "" : "s"} before asking for a new OTP.`);
+    if (last && age < RESEND_WAIT_MS) {
+      throw resendTooSoonError(last.createdAt);
     }
 
     if (last && last.resendCount >= RESEND_MAX && age < RESEND_WINDOW_MS) {
-      throw new ConflictError("Too many OTPs sent. Please try again in an hour.");
+      throw resendLimitError(last.createdAt);
     }
 
     const otpCode = this.otpService.generate();
@@ -213,8 +212,8 @@ export default class ProfileService {
       });
     });
 
-    await this.emailService.sendOtp(email, otpCode);
+    await this.emailService.sendOtp(email, otpCode, "EMAIL_CHANGE");
 
-    return { pendingEmail: email, expiresAt, resendAvailableAt: new Date(now + RESEND_WAIT_MS) };
+    return { pendingEmail: email, expiresAt, ...resendTimer(now) };
   }
 }
